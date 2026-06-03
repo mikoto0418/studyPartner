@@ -1,0 +1,213 @@
+version: '3.8'
+
+name: study-partner-prod
+
+networks:
+  sp-network-prod:
+    driver: bridge
+
+services:
+  # 1. PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: sp-postgres-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-studypartner}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      TZ: Asia/Shanghai
+    volumes:
+      - sp-postgres-data-prod:/var/lib/postgresql/data
+    networks:
+      - sp-network-prod
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-studypartner}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis Cache & Task Queue
+  redis:
+    image: redis:7-alpine
+    container_name: sp-redis-prod
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - sp-redis-data-prod:/data
+    networks:
+      - sp-network-prod
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 3. MinIO Object Storage
+  minio:
+    image: minio/minio:latest
+    container_name: sp-minio-prod
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+      TZ: Asia/Shanghai
+    volumes:
+      - sp-minio-data-prod:/data
+    ports:
+      - "9001:9001" # MinIO Web interface
+    networks:
+      - sp-network-prod
+
+  # 4. Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: sp-qdrant-prod
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - sp-qdrant-data-prod:/qdrant/storage
+    networks:
+      - sp-network-prod
+
+  # 5. Backend Server (FastAPI)
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: sp-backend-prod
+    restart: unless-stopped
+    environment:
+      - APP_NAME=AI伴学与智能体协同平台
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-studypartner}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
+      - SMTP_HOST=${SMTP_HOST:-smtp.qq.com}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sp-network-prod
+
+  # 6. Frontend Server (Nginx Gateway)
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: sp-frontend-prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - sp-network-prod
+
+  # 7. Celery Worker
+  worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: sp-worker-prod
+    command: celery -A app.core.celery_app:celery_app worker --loglevel=info
+    restart: unless-stopped
+    environment:
+      - APP_NAME=AI伴学与智能体协同平台
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-studypartner}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
+      - SMTP_HOST=${SMTP_HOST:-smtp.qq.com}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sp-network-prod
+
+  # 8. Celery Beat Scheduler
+  beat:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: sp-beat-prod
+    command: celery -A app.core.celery_app:celery_app beat --loglevel=info
+    restart: unless-stopped
+    environment:
+      - APP_NAME=AI伴学与智能体协同平台
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-studypartner}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
+      - SMTP_HOST=${SMTP_HOST:-smtp.qq.com}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - sp-network-prod
+
+volumes:
+  sp-postgres-data-prod:
+  sp-redis-data-prod:
+  sp-minio-data-prod:
+  sp-qdrant-data-prod:
+

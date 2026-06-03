@@ -1,0 +1,127 @@
+version: '3.8'
+
+name: study-partner
+
+networks:
+  sp-network:
+    driver: bridge
+
+services:
+  # 1. PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: sp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-studypartner}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      TZ: Asia/Shanghai
+    volumes:
+      - sp-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "15432:5432"
+    networks:
+      - sp-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-studypartner}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis Cache & Task Queue
+  redis:
+    image: redis:7-alpine
+    container_name: sp-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - sp-redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - sp-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 3. MinIO Object Storage
+  minio:
+    image: minio/minio:latest
+    container_name: sp-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      TZ: Asia/Shanghai
+    volumes:
+      - sp-minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - sp-network
+
+  # 4. Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: sp-qdrant
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - sp-qdrant-data:/qdrant/storage
+    ports:
+      - "6333:6333"
+    networks:
+      - sp-network
+
+  # 5. Backend Server (FastAPI)
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: sp-backend
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./server:/code
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=AI伴学与智能体协同平台
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-studypartner}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-4eb8be4fbf0e854d92a106f376f9d784a3c2be3c16260840b2f56b5dfbc5eeaa}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - qdrant
+    networks:
+      - sp-network
+
+volumes:
+  sp-postgres-data:
+  sp-redis-data:
+  sp-minio-data:
+  sp-qdrant-data:

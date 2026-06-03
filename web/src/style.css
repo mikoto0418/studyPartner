@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Muted Elegant Colors for light mode */
+  --bg-main: #F9FAFB;
+  --bg-card: #FFFFFF;
+  --border-thin: #E5E7EB;
+  --brand-primary: #2563EB;
+}
+
+.dark {
+  /* Zinc-950 and Zinc-900 for dark mode */
+  --bg-main: #09090B;
+  --bg-card: #18181B;
+  --border-thin: #27272A;
+  --brand-primary: #3B82F6;
+}
+
+body {
+  background-color: var(--bg-main);
+  color: #374151;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
+  margin: 0;
+  padding: 0;
+}
+
+.dark body {
+  color: #D4D4D8;
+}
+
+/* Minimalist Card design */
+.minimal-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-thin);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.minimal-card:hover {
+  border-color: var(--brand-primary);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+}
+
+.minimal-card:active {
+  transform: scale(0.985);
+}
+
+/* Transition utility for layout elements */
+.layout-transition {
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), 
+              padding 0.25s cubic-bezier(0.4, 0, 0.2, 1), 
+              margin 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Custom scrollbars for clean look */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #E5E7EB;
+  border-radius: 3px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #27272A;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #D1D5DB;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #3F3F46;
+}
