@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Activity, Brain, FileText, HeartHandshake, LineChart, RefreshCw, ShieldCheck, Trophy } from 'lucide-vue-next'
+import { Activity, Brain, FileText, HeartHandshake, LineChart, RefreshCw, Trophy } from 'lucide-vue-next'
 import { authApi } from '../../api/modules/auth'
 import { learningPathApi } from '../../api/modules/learning_path'
 import type { StudentGrowthOverviewOut } from '../../api/modules/learning_path'
@@ -50,7 +50,7 @@ onMounted(loadGrowth)
             <h2 class="text-lg font-bold text-gray-900 dark:text-zinc-50">我的成长全览</h2>
           </div>
           <p class="mt-2 text-xs leading-relaxed text-gray-500 dark:text-zinc-400 max-w-3xl">
-            汇总学习路径、每日复盘和 Memory 变化，形成可以给自己、老师和家长看的成长档案。
+            集中呈现学习路径进度、复盘趋势与 Memory 沉淀，帮助快速把握阶段成长状态。
           </p>
         </div>
         <button
@@ -108,15 +108,12 @@ onMounted(loadGrowth)
 
         <section class="xl:col-span-4 minimal-card bg-white dark:bg-zinc-900 p-6">
           <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50 flex items-center gap-2">
-            <ShieldCheck class="w-4 h-4 text-emerald-600" />
-            <span>家长视图摘要</span>
+            <FileText class="w-4 h-4 text-emerald-600" />
+            <span>阶段成长摘要</span>
           </h3>
           <p class="mt-4 text-xs leading-relaxed text-gray-600 dark:text-zinc-300 whitespace-pre-wrap">
             {{ growth.parent_summary }}
           </p>
-          <div class="mt-5 p-3 rounded border border-emerald-100 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/20 text-[10px] text-emerald-700 dark:text-emerald-300">
-            已脱敏：仅呈现学习趋势、完成度与可行动建议，不展示完整对话和隐私内容。
-          </div>
         </section>
       </div>
 
