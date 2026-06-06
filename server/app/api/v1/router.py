@@ -5,6 +5,7 @@ from app.api.v1 import (
     announcements,
     auth,
     bilibili,
+    bilibili_stream,
     calendar,
     files,
     heatmap,
@@ -37,6 +38,7 @@ api_router.include_router(reviews.router, prefix="/reviews", tags=["每日复盘
 api_router.include_router(files.router, prefix="/files", tags=["文件系统"])
 api_router.include_router(knowledge.router, prefix="/knowledge", tags=["知识库中心"])
 api_router.include_router(bilibili.router, prefix="/bilibili", tags=["B站资源"])
+api_router.include_router(bilibili_stream.router, prefix="/bilibili", tags=["B站播放"])
 api_router.include_router(study_time.router, prefix="/study-time", tags=["学习时长"])
 api_router.include_router(heatmap.router, prefix="/heatmap", tags=["学习热力图"])
 api_router.include_router(learning_paths.router, prefix="/learning-paths", tags=["学习路径任务"])

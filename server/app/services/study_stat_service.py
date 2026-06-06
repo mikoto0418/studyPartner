@@ -1,5 +1,6 @@
 import uuid
 import logging
+import httpx
 from datetime import datetime, timezone, date, timedelta
 from typing import List, Dict, Any, Tuple, Optional
 from uuid import UUID
@@ -16,7 +17,50 @@ from app.core.exceptions import NotFoundError, ValidationError
 
 logger = logging.getLogger(__name__)
 
+BILIBILI_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.bilibili.com/",
+}
+
 class BilibiliService:
+    @staticmethod
+    async def fetch_resource_metadata(bvid: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=12.0, headers=BILIBILI_HEADERS) as client:
+            response = await client.get(
+                "https://api.bilibili.com/x/web-interface/view",
+                params={"bvid": bvid},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        if payload.get("code") != 0 or not payload.get("data"):
+            raise ValidationError(payload.get("message") or "B站视频信息识别失败")
+
+        data = payload["data"]
+        pages = data.get("pages") or []
+
+        return {
+            "bvid": data.get("bvid") or bvid,
+            "title": data.get("title") or bvid,
+            "description": data.get("desc"),
+            "cover_url": data.get("pic"),
+            "author_name": (data.get("owner") or {}).get("name"),
+            "total_episodes": len(pages) or 1,
+            "total_duration": data.get("duration"),
+            "episodes_info": [
+                {
+                    "page": page.get("page"),
+                    "cid": page.get("cid"),
+                    "title": page.get("part"),
+                    "duration": page.get("duration"),
+                }
+                for page in pages
+            ],
+        }
 
     @staticmethod
     async def add_resource(
@@ -136,6 +180,70 @@ class BilibiliService:
         await db.commit()
         await db.refresh(log)
         return log
+
+    @staticmethod
+    async def get_watch_stats(
+        db: AsyncSession,
+        user_id: UUID,
+        resource_id: Optional[UUID] = None,
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        stmt = (
+            select(BilibiliWatchLog, BilibiliResource)
+            .join(BilibiliResource, BilibiliWatchLog.resource_id == BilibiliResource.id)
+            .where(
+                and_(
+                    BilibiliWatchLog.user_id == user_id,
+                    BilibiliResource.deleted_at.is_(None),
+                )
+            )
+            .order_by(BilibiliWatchLog.created_at.asc())
+        )
+
+        if resource_id:
+            stmt = stmt.where(BilibiliWatchLog.resource_id == resource_id)
+
+        rows = (await db.execute(stmt)).all()
+        sessions: List[Dict[str, Any]] = []
+        current: Optional[Dict[str, Any]] = None
+
+        for log, resource in rows:
+            should_start = (
+                current is None
+                or log.event_type == "open"
+                or current["resource_id"] != log.resource_id
+                or current["episode_number"] != log.episode_number
+                or (log.created_at - current["end_time"]).total_seconds() > 20 * 60
+            )
+
+            if should_start:
+                if current and (current["watch_seconds"] > 0 or current["pause_count"] > 0):
+                    sessions.append(current)
+                current = {
+                    "resource_id": log.resource_id,
+                    "resource_title": resource.title,
+                    "episode_number": log.episode_number,
+                    "start_time": log.created_at,
+                    "end_time": log.created_at,
+                    "watch_seconds": 0,
+                    "pause_count": 0,
+                    "completed": False,
+                }
+
+            if current is None:
+                continue
+
+            current["end_time"] = log.created_at
+            current["watch_seconds"] += max(log.watch_duration or 0, 0)
+            if log.event_type == "pause":
+                current["pause_count"] += 1
+            if log.is_completed or log.event_type == "manual_complete":
+                current["completed"] = True
+
+        if current and (current["watch_seconds"] > 0 or current["pause_count"] > 0):
+            sessions.append(current)
+
+        return list(reversed(sessions))[:limit]
 
 
 class StudyTimeService:

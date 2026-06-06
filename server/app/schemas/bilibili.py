@@ -29,7 +29,7 @@ class BilibiliResourceOut(BilibiliResourceBase):
 
 class BilibiliWatchLogCreate(BaseModel):
     resource_id: UUID = Field(..., description="B站资源ID")
-    event_type: str = Field(..., description="事件类型：open, heartbeat, close, manual_complete")
+    event_type: str = Field(..., description="事件类型：open, heartbeat, pause, close, manual_complete")
     episode_number: int = Field(1, description="当前播放的分集编号")
     watch_duration: int = Field(0, description="观看时长增量（秒）")
     is_completed: bool = Field(False, description="是否手动标记完成")
@@ -55,3 +55,24 @@ class StudyTimeHeartbeatReq(BaseModel):
 class HeatmapPointOut(BaseModel):
     date: str = Field(..., description="日期, 格式 YYYY-MM-DD")
     count: int = Field(..., description="活跃计数/学情权重积分")
+
+
+class BilibiliMetaOut(BaseModel):
+    bvid: str
+    title: str
+    description: Optional[str] = None
+    cover_url: Optional[str] = None
+    author_name: Optional[str] = None
+    total_episodes: int = 1
+    total_duration: Optional[int] = None
+    episodes_info: Optional[List[Any]] = None
+
+class BilibiliWatchStatOut(BaseModel):
+    resource_id: UUID
+    resource_title: str
+    episode_number: int
+    start_time: datetime
+    end_time: datetime
+    watch_seconds: int
+    pause_count: int
+    completed: bool = False
