@@ -10,10 +10,14 @@ import ChatView from '../views/student/ChatView.vue'
 import CalendarView from '../views/student/CalendarView.vue'
 import KnowledgeView from '../views/student/KnowledgeView.vue'
 import BilibiliView from '../views/student/BilibiliView.vue'
+import StudentLearningPathsView from '../views/student/LearningPathsView.vue'
+import GrowthView from '../views/student/GrowthView.vue'
 
 import WorkbenchView from '../views/teacher/WorkbenchView.vue'
 import StudentsView from '../views/teacher/StudentsView.vue'
 import TasksView from '../views/teacher/TasksView.vue'
+import TeacherLearningPathsView from '../views/teacher/LearningPathsView.vue'
+import ClassOverviewView from '../views/teacher/ClassOverviewView.vue'
 
 import OverviewView from '../views/admin/OverviewView.vue'
 import UsersView from '../views/admin/UsersView.vue'
@@ -73,6 +77,18 @@ const routes: Array<RouteRecordRaw> = [
         name: 'StudentBilibili',
         component: BilibiliView,
         meta: { title: 'B站学习室' }
+      },
+      {
+        path: 'learning-paths',
+        name: 'StudentLearningPaths',
+        component: StudentLearningPathsView,
+        meta: { title: '我的学习路径' }
+      },
+      {
+        path: 'growth',
+        name: 'StudentGrowth',
+        component: GrowthView,
+        meta: { title: '成长数据全览' }
       }
     ]
   },
@@ -100,6 +116,18 @@ const routes: Array<RouteRecordRaw> = [
         name: 'TeacherTasks',
         component: TasksView,
         meta: { title: '学习任务发布' }
+      },
+      {
+        path: 'learning-paths',
+        name: 'TeacherLearningPaths',
+        component: TeacherLearningPathsView,
+        meta: { title: '学习路径任务' }
+      },
+      {
+        path: 'classes',
+        name: 'TeacherClasses',
+        component: ClassOverviewView,
+        meta: { title: '班级 Memory 看板' }
       }
     ]
   },

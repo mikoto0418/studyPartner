@@ -11,6 +11,20 @@ from app.models.ai_conversation import AIConversation, AIMessage
 from app.models.student_memory import DailyReview, StudentMemory
 from app.models.knowledge import FileModel, KnowledgeDocument, KnowledgeChunk
 from app.models.bilibili import StudyTimeLog, BilibiliResource, BilibiliWatchLog
+from app.models.learning_path import (
+    ClassGroup,
+    ClassMember,
+    LearningPathAssignee,
+    LearningPathEdge,
+    LearningPathNode,
+    LearningPathResource,
+    LearningPathStage,
+    LearningPathTask,
+    LearningNodeProgress,
+    LearningNodeSubmission,
+    ClassMemorySnapshot,
+    StudentGrowthReport,
+)
 
 # Explicitly export so metadata registers them
 __all__ = [
@@ -22,5 +36,9 @@ __all__ = [
     "AIConversation", "AIMessage",
     "DailyReview", "StudentMemory",
     "FileModel", "KnowledgeDocument", "KnowledgeChunk",
-    "StudyTimeLog", "BilibiliResource", "BilibiliWatchLog"
+    "StudyTimeLog", "BilibiliResource", "BilibiliWatchLog",
+    "ClassGroup", "ClassMember",
+    "LearningPathTask", "LearningPathStage", "LearningPathNode", "LearningPathEdge",
+    "LearningPathResource", "LearningPathAssignee", "LearningNodeProgress",
+    "LearningNodeSubmission", "ClassMemorySnapshot", "StudentGrowthReport",
 ]

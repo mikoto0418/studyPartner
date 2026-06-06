@@ -13,7 +13,10 @@ import {
   ChevronRight,
   ClipboardList,
   Users,
-  Settings2
+  Settings2,
+  GitBranch,
+  BarChart3,
+  TrendingUp
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -36,7 +39,9 @@ const menuItems = computed(() => {
     return [
       { name: '工作台', path: '/teacher/workbench', icon: LayoutDashboard },
       { name: '学生列表', path: '/teacher/students', icon: Users },
-      { name: '任务管理', path: '/teacher/tasks', icon: ClipboardList }
+      { name: '任务管理', path: '/teacher/tasks', icon: ClipboardList },
+      { name: '路径任务', path: '/teacher/learning-paths', icon: GitBranch },
+      { name: '班级看板', path: '/teacher/classes', icon: BarChart3 }
     ]
   } else {
     // Default student menu
@@ -45,7 +50,9 @@ const menuItems = computed(() => {
       { name: 'AI伴学', path: '/student/ai-chat', icon: MessageSquare },
       { name: '月历计划', path: '/student/calendar', icon: Calendar },
       { name: '知识库', path: '/student/knowledge', icon: BookOpen },
-      { name: 'B站学习', path: '/student/bilibili', icon: Tv }
+      { name: 'B站学习', path: '/student/bilibili', icon: Tv },
+      { name: '学习路径', path: '/student/learning-paths', icon: GitBranch },
+      { name: '成长全览', path: '/student/growth', icon: TrendingUp }
     ]
   }
 })
