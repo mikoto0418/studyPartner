@@ -353,9 +353,9 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Prompt recommendations panel -->
+      <!-- 推荐教学提问面板 -->
       <div v-if="messages.length <= 1" class="pb-3 space-y-2 flex-shrink-0">
-        <span class="text-[9px] text-gray-400 block font-medium">推荐教学提问 Prompt：</span>
+        <span class="text-[9px] text-gray-400 block font-medium">推荐教学提问：</span>
         <div class="flex flex-col gap-1.5">
           <button
             v-for="(pr, idx) in quickPrompts"

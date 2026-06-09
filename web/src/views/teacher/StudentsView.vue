@@ -316,7 +316,7 @@ onMounted(() => {
           <div class="lg:col-span-7 minimal-card p-6 bg-white dark:bg-zinc-900 flex flex-col h-[400px]">
             <h4 class="text-xs font-bold text-gray-900 dark:text-zinc-50 mb-3 flex items-center space-x-1.5 flex-shrink-0">
               <Brain class="w-4 h-4 text-indigo-500" />
-              <span>学情复盘与 Memory 分析</span>
+              <span>学情复盘与记忆分析</span>
             </h4>
 
             <div class="flex-1 overflow-y-auto space-y-4 pr-1" v-loading="loadingReviewDetail">
@@ -333,31 +333,27 @@ onMounted(() => {
                   </div>
                 </div>
 
-                <!-- Highlights -->
                 <div class="space-y-1.5">
-                  <span class="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold block">★ 学习亮点（Highlights）</span>
+                  <span class="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold block">★ 学习亮点</span>
                   <ul class="list-disc pl-4 space-y-1 text-gray-600 dark:text-zinc-300">
                     <li v-for="(h, idx) in selectedReview.highlights" :key="idx">{{ h }}</li>
                   </ul>
                 </div>
 
-                <!-- Concerns -->
                 <div class="space-y-1.5">
-                  <span class="text-[10px] text-amber-600 dark:text-amber-400 font-bold block">▲ 关注与薄弱项（Concerns）</span>
+                  <span class="text-[10px] text-amber-600 dark:text-amber-400 font-bold block">▲ 关注与薄弱项</span>
                   <ul class="list-disc pl-4 space-y-1 text-gray-600 dark:text-zinc-300">
                     <li v-for="(c, idx) in selectedReview.concerns" :key="idx">{{ c }}</li>
                   </ul>
                 </div>
 
-                <!-- Suggestions -->
                 <div class="space-y-1.5">
-                  <span class="text-[10px] text-blue-600 dark:text-blue-400 font-bold block">✔ AI 伴学诊断与建议（Suggestions）</span>
+                  <span class="text-[10px] text-blue-600 dark:text-blue-400 font-bold block">✔ AI 伴学诊断与建议</span>
                   <ul class="list-disc pl-4 space-y-1 text-gray-600 dark:text-zinc-300">
                     <li v-for="(s, idx) in selectedReview.suggestions" :key="idx">{{ s }}</li>
                   </ul>
                 </div>
 
-                <!-- Memory changes -->
                 <div v-if="selectedReview.new_memories && selectedReview.new_memories.length > 0" class="space-y-1.5 p-3 bg-indigo-50/30 dark:bg-indigo-950/10 rounded-lg border border-indigo-100/30 dark:border-indigo-900/20">
                   <span class="text-[10px] text-indigo-600 dark:text-indigo-400 font-bold block flex items-center space-x-1">
                     <Brain class="w-3.5 h-3.5" />
@@ -375,7 +371,7 @@ onMounted(() => {
               <!-- Default Placeholder -->
               <div v-else class="h-full flex flex-col items-center justify-center text-center text-gray-400 space-y-2 py-16">
                 <BookOpen class="w-8 h-8 text-gray-200 dark:text-zinc-700" />
-                <p>请点击左侧列表的复盘日志，查看当天的详细学情与 Memory 诊断。</p>
+                <p>请点击左侧列表的复盘日志，查看当天的详细学情与记忆诊断。</p>
               </div>
             </div>
           </div>

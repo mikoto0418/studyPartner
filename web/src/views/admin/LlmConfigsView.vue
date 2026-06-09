@@ -27,8 +27,8 @@ const taskTypes = [
   { value: 'student_chat', label: '学生伴学对话' },
   { value: 'teacher_assistant', label: '教师智脑助教' },
   { value: 'daily_review', label: '每日自动复盘' },
-  { value: 'memory_extract', label: 'Memory 提取' },
-  { value: 'memory_update', label: 'Memory 更新' },
+  { value: 'memory_extract', label: '学情记忆提取' },
+  { value: 'memory_update', label: '学情记忆更新' },
   { value: 'knowledge_qa', label: '知识库 RAG 问答' },
   { value: 'document_summary', label: '文档摘要' },
   { value: 'knowledge_embedding', label: '知识库 Embedding' }

@@ -4,6 +4,7 @@ import { Activity, Brain, FileText, HeartHandshake, LineChart, RefreshCw, Trophy
 import { authApi } from '../../api/modules/auth'
 import { learningPathApi } from '../../api/modules/learning_path'
 import type { StudentGrowthOverviewOut } from '../../api/modules/learning_path'
+import { memoryCategoryLabel } from '../../utils/memoryLabels'
 
 const loading = ref(false)
 const growth = ref<StudentGrowthOverviewOut | null>(null)
@@ -50,7 +51,7 @@ onMounted(loadGrowth)
             <h2 class="text-lg font-bold text-gray-900 dark:text-zinc-50">我的成长全览</h2>
           </div>
           <p class="mt-2 text-xs leading-relaxed text-gray-500 dark:text-zinc-400 max-w-3xl">
-            集中呈现学习路径进度、复盘趋势与 Memory 沉淀，帮助快速把握阶段成长状态。
+            集中呈现学习路径进度、复盘趋势与学情记忆沉淀，帮助快速把握阶段成长状态。
           </p>
         </div>
         <button
@@ -148,7 +149,7 @@ onMounted(loadGrowth)
         <section class="xl:col-span-5 minimal-card bg-white dark:bg-zinc-900 p-6">
           <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50 flex items-center gap-2 mb-4">
             <Brain class="w-4 h-4 text-indigo-500" />
-            <span>我的 Memory 卡片</span>
+            <span>我的学情记忆卡片</span>
           </h3>
           <div class="space-y-3 max-h-[420px] overflow-y-auto">
             <div
@@ -157,14 +158,14 @@ onMounted(loadGrowth)
               class="p-3 rounded-lg border border-gray-100 dark:border-zinc-800 bg-gray-50/40 dark:bg-zinc-950/30"
             >
               <div class="flex items-center justify-between">
-                <span class="text-[10px] px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300">{{ memory.category }}</span>
+                <span class="text-[10px] px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300">{{ memoryCategoryLabel(memory.category) }}</span>
                 <span class="text-[10px] text-gray-400">{{ Math.round((memory.confidence || 0) * 100) }}%</span>
               </div>
               <p class="mt-2 text-xs leading-relaxed text-gray-700 dark:text-zinc-300">{{ memory.content }}</p>
               <p v-if="memory.evidence" class="mt-2 text-[10px] text-gray-400 line-clamp-2">{{ memory.evidence }}</p>
             </div>
             <div v-if="growth.memory_cards.length === 0" class="py-8 text-center text-xs text-gray-400">
-              暂无 Memory，完成复盘后会逐渐沉淀。
+              暂无学情记忆，完成复盘后会逐渐沉淀。
             </div>
           </div>
         </section>

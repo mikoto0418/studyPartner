@@ -6,6 +6,7 @@ import { learningPathApi } from '../../api/modules/learning_path'
 import type { ClassOut, ClassOverviewOut } from '../../api/modules/learning_path'
 import { userApi } from '../../api/modules/user'
 import type { UserOut } from '../../api/modules/user'
+import { localizeMemorySummaryText, memoryCategoryLabel } from '../../utils/memoryLabels'
 
 const classes = ref<ClassOut[]>([])
 const students = ref<UserOut[]>([])
@@ -81,7 +82,7 @@ const metricCards = computed(() => {
     { label: '班级人数', value: metrics.student_count || 0, unit: '人', icon: Users, tone: 'blue' },
     { label: '平均路径进度', value: metrics.avg_progress || 0, unit: '%', icon: Activity, tone: 'emerald' },
     { label: '活跃路径分配', value: metrics.active_paths || 0, unit: '条', icon: LineChart, tone: 'amber' },
-    { label: 'Memory 条目', value: metrics.memory_count || 0, unit: '条', icon: Brain, tone: 'indigo' }
+    { label: '学情记忆条目', value: metrics.memory_count || 0, unit: '条', icon: Brain, tone: 'indigo' }
   ]
 })
 
@@ -93,7 +94,7 @@ onMounted(loadData)
     <aside class="w-80 minimal-card bg-white dark:bg-zinc-900 p-5 flex flex-col">
       <div class="flex items-center justify-between pb-4 border-b border-gray-100 dark:border-zinc-800">
         <div>
-          <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">班级 Memory 看板</h3>
+          <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">班级学情记忆看板</h3>
           <p class="mt-1 text-[10px] text-gray-400">以班级为单位查看学情概况</p>
         </div>
         <button
@@ -178,7 +179,7 @@ onMounted(loadData)
                 <BarChart3 class="w-4 h-4 text-blue-600" />
                 <span>近 7 天班级趋势</span>
               </h3>
-              <span class="text-[10px] text-gray-400">基于路径进度、活跃学生和 Memory 累积</span>
+              <span class="text-[10px] text-gray-400">基于路径进度、活跃学生和学情记忆累积</span>
             </div>
             <div class="h-72 flex items-end gap-3 border-b border-l border-gray-100 dark:border-zinc-800 p-4">
               <div
@@ -195,9 +196,11 @@ onMounted(loadData)
           <div class="xl:col-span-4 minimal-card bg-white dark:bg-zinc-900 p-6">
             <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50 flex items-center gap-2">
               <Brain class="w-4 h-4 text-indigo-500" />
-              <span>Memory 聚合</span>
+              <span>学情记忆聚合</span>
             </h3>
-            <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-zinc-400">{{ overview.memory_summary.summary }}</p>
+            <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-zinc-400">
+              {{ localizeMemorySummaryText(overview.memory_summary.summary) }}
+            </p>
             <div class="mt-5 space-y-3">
               <div
                 v-for="item in overview.memory_summary.top_categories"
@@ -205,7 +208,7 @@ onMounted(loadData)
                 class="space-y-1"
               >
                 <div class="flex justify-between text-[10px] text-gray-500">
-                  <span>{{ item.category }}</span>
+                  <span>{{ memoryCategoryLabel(item.category) }}</span>
                   <span>{{ item.count }}</span>
                 </div>
                 <div class="h-1.5 bg-gray-100 dark:bg-zinc-800 rounded">
@@ -213,7 +216,7 @@ onMounted(loadData)
                 </div>
               </div>
               <div v-if="overview.memory_summary.top_categories.length === 0" class="py-8 text-center text-xs text-gray-400">
-                暂无 Memory 聚合数据。
+                暂无学情记忆聚合数据。
               </div>
             </div>
           </div>
@@ -264,7 +267,7 @@ onMounted(loadData)
       <div v-else class="h-full minimal-card bg-white dark:bg-zinc-900 flex flex-col items-center justify-center text-center text-gray-400">
         <Users class="w-10 h-10 mb-3 text-gray-300" />
         <p class="text-sm font-semibold">暂无可查看的班级概况</p>
-        <p class="mt-1 text-xs">创建班级后即可沉淀班级级 Memory 看板。</p>
+        <p class="mt-1 text-xs">创建班级后即可沉淀班级学情记忆看板。</p>
       </div>
     </section>
 

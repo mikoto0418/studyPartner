@@ -403,7 +403,7 @@ const handleSend = async () => {
   }
 }
 
-// Memory states
+// 学情记忆状态
 const studentId = ref<string>('')
 const shortTermMemories = ref<StudentMemoryOut[]>([])
 const longTermMemories = ref<StudentMemoryOut[]>([])
@@ -460,7 +460,7 @@ const handleSummarizeMemory = async () => {
   try {
     await memoryApi.generateDailyReview({ date: todayString() })
     await loadStudentProfileAndMemories()
-    ElMessage.success('今日复盘与 Memory 已同步生成')
+    ElMessage.success('今日复盘与学情记忆已同步生成')
   } catch (err) {
     console.warn('Failed to summarize memory', err)
   } finally {
@@ -568,7 +568,7 @@ onMounted(() => {
             @click="handleSummarizeMemory"
             :disabled="summarizingMemory || !studentId"
             class="ui-icon-button h-8 w-8"
-            title="手动总结 Memory"
+            title="手动总结学情记忆"
           >
             <RefreshCw class="h-3.5 w-3.5" :class="summarizingMemory ? 'animate-spin' : ''" />
           </button>
@@ -670,7 +670,7 @@ onMounted(() => {
                 :aria-pressed="contextOptions.include_memory"
                 @click="contextOptions.include_memory = !contextOptions.include_memory"
               >
-                Memory
+                学情记忆
               </button>
               <button
                 type="button"
@@ -737,7 +737,7 @@ onMounted(() => {
 
     </div>
 
-    <!-- Right Column: Memory Drawer -->
+    <!-- Right Column: 学情记忆抽屉 -->
     <div class="hidden h-full w-72 flex-shrink-0 flex-col overflow-y-auto border-l border-gray-200 bg-gray-50/50 p-5 dark:border-zinc-800 dark:bg-zinc-950/40 xl:flex">
       <div class="flex items-center justify-between gap-2 mb-4 pb-3 border-b border-gray-200 dark:border-zinc-800">
         <div class="flex items-center space-x-2 min-w-0">
@@ -748,7 +748,7 @@ onMounted(() => {
           @click="handleSummarizeMemory"
           :disabled="summarizingMemory || !studentId"
           class="ui-button-secondary flex-shrink-0 px-2 py-1"
-          title="手动总结今日 Memory"
+          title="手动总结今日学情记忆"
         >
           <RefreshCw class="w-3.5 h-3.5" :class="summarizingMemory ? 'animate-spin' : ''" />
           <span>手动总结</span>
@@ -759,7 +759,7 @@ onMounted(() => {
       <div class="space-y-5" v-loading="memoriesLoading">
         <!-- Short term focus -->
         <div class="space-y-2">
-          <h4 class="text-[10px] font-semibold text-gray-400 dark:text-zinc-500 uppercase tracking-wider">短期关注 (Focus)</h4>
+          <h4 class="text-[10px] font-semibold text-gray-400 dark:text-zinc-500">短期关注</h4>
           <div class="flex flex-wrap gap-1.5" v-if="shortTermMemories.length > 0">
             <span 
               v-for="m in shortTermMemories" 
@@ -777,7 +777,7 @@ onMounted(() => {
 
         <!-- Long term habits -->
         <div class="space-y-2.5">
-          <h4 class="text-[10px] font-semibold text-gray-400 dark:text-zinc-500 uppercase tracking-wider">长期习惯 (Habits)</h4>
+          <h4 class="text-[10px] font-semibold text-gray-400 dark:text-zinc-500">长期习惯</h4>
           
           <div class="space-y-2" v-if="longTermMemories.length > 0">
             <div 
