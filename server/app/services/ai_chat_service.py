@@ -143,12 +143,21 @@ class AIChatService:
         res = await db.execute(stmt)
         user = res.scalars().first()
         if user:
-            nickname = user.nickname or user.username
-            profile_str = f"学生基本信息：\n- 称呼：{nickname}\n"
+            display_name = user.nickname.strip() if user.nickname else ""
+            profile_str = "学生基本信息：\n"
+            if display_name:
+                profile_str += f"- 学生自定义姓名/称呼：{display_name}\n"
+                profile_str += "- 只能使用该自定义姓名/称呼来称呼学生；不要根据登录用户名、历史对话或 Memory 猜测姓名。\n"
+            else:
+                profile_str += "- 学生尚未在个人设置中填写姓名/称呼；回复时不要猜测或编造学生姓名。\n"
             if user.student_profile:
                 p: StudentProfile = user.student_profile
                 profile_str += f"- 年级专业：{p.grade or '未知'}{p.major or '未知'}\n"
                 profile_str += f"- 研究方向：{p.research_direction or '未知'}\n"
+                if p.student_id:
+                    profile_str += f"- 学号：{p.student_id}\n"
+                if p.bio:
+                    profile_str += f"- 个人简介：{p.bio}\n"
             system_instructions.append(profile_str)
 
         # 2. Memories Context

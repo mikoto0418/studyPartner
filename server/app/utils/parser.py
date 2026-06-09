@@ -27,7 +27,7 @@ def parse_document(file_bytes: bytes, filename: str) -> str:
             return file_bytes.decode("utf-8", errors="ignore")
             
         else:
-            # Fallback plain text representation for unhandled formats
+            # Plain text representation for unhandled formats
             return file_bytes.decode("utf-8", errors="ignore")
             
     except Exception as e:

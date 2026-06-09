@@ -93,8 +93,7 @@ class MinioService:
             return url
         except Exception as e:
             logger.error(f"MinIO get_download_url failed for {object_name}: {e}", exc_info=True)
-            # Fallback local redirect path
-            return f"/api/v1/files/download?path={object_name}"
+            raise e
 
     @classmethod
     def delete_file(cls, object_name: str) -> bool:

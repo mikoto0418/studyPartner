@@ -55,7 +55,7 @@ export const memoryApi = {
     return request.get('/reviews', { params })
   },
 
-  generateDailyReview(data: { student_id: string; date: string }) {
+  generateDailyReview(data: { student_id?: string; date: string }) {
     return request.post('/reviews/generate', data)
   }
 }

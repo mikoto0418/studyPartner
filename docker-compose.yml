@@ -1,5 +1,3 @@
-version: '3.8'
-
 name: study-partner
 
 networks:
@@ -98,6 +96,7 @@ services:
       - APP_NAME=AI伴学与智能体协同平台
       - APP_ENV=development
       - APP_DEBUG=true
+      - ENABLE_INLINE_SCHEDULER=false
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-studypartner}
@@ -110,13 +109,123 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-4eb8be4fbf0e854d92a106f376f9d784a3c2be3c16260840b2f56b5dfbc5eeaa}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_me_generate_with_openssl_rand_hex_32}
       - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
+      - SILICONFLOW_BASE_URL=${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
+      - SILICONFLOW_CHAT_MODEL=${SILICONFLOW_CHAT_MODEL:-deepseek-ai/DeepSeek-V4-Flash}
+      - SILICONFLOW_EMBEDDING_MODEL=${SILICONFLOW_EMBEDDING_MODEL:-BAAI/bge-m3}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
     depends_on:
-      - postgres
-      - redis
-      - minio
-      - qdrant
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
+    networks:
+      - sp-network
+
+  # 6. Celery Worker
+  worker:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: sp-worker
+    restart: unless-stopped
+    command: celery -A app.core.celery_app:celery_app worker --loglevel=info
+    volumes:
+      - ./server:/code
+    environment:
+      - APP_NAME=AI伴学与智能体协同平台
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - ENABLE_INLINE_SCHEDULER=false
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-studypartner}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_me_generate_with_openssl_rand_hex_32}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
+      - SILICONFLOW_BASE_URL=${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
+      - SILICONFLOW_CHAT_MODEL=${SILICONFLOW_CHAT_MODEL:-deepseek-ai/DeepSeek-V4-Flash}
+      - SILICONFLOW_EMBEDDING_MODEL=${SILICONFLOW_EMBEDDING_MODEL:-BAAI/bge-m3}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
+    networks:
+      - sp-network
+
+  # 7. Celery Beat Scheduler
+  beat:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: sp-beat
+    restart: unless-stopped
+    command: celery -A app.core.celery_app:celery_app beat --loglevel=info
+    volumes:
+      - ./server:/code
+    environment:
+      - APP_NAME=AI伴学与智能体协同平台
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - ENABLE_INLINE_SCHEDULER=false
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-studypartner}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_me_generate_with_openssl_rand_hex_32}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
+      - SILICONFLOW_BASE_URL=${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
+      - SILICONFLOW_CHAT_MODEL=${SILICONFLOW_CHAT_MODEL:-deepseek-ai/DeepSeek-V4-Flash}
+      - SILICONFLOW_EMBEDDING_MODEL=${SILICONFLOW_EMBEDDING_MODEL:-BAAI/bge-m3}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-465}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      qdrant:
+        condition: service_started
     networks:
       - sp-network
 

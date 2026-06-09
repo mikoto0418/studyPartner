@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
@@ -19,7 +20,7 @@ from app.core.security import get_password_hash
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("db_seeder")
 
-async def get_or_create_user(db: AsyncSession, username: str, email: str, role_code: str, nickname: str, password_plain: str) -> User:
+async def get_or_create_user(db: AsyncSession, username: str, email: str, role_code: str, nickname: Optional[str], password_plain: str) -> User:
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalars().first()
     
@@ -90,15 +91,15 @@ async def seed_data():
         # 3. Seed Users
         admin = await get_or_create_user(db, "admin", "admin@example.com", "admin", "系统管理员", "admin123")
         teacher = await get_or_create_user(db, "teacher", "teacher@example.com", "teacher", "张教授", "teacher123")
-        student = await get_or_create_user(db, "student", "student@example.com", "student", "李自学", "student123")
+        student = await get_or_create_user(db, "student", "student@example.com", "student", None, "student123")
 
-        # 4. Seed Mock TODOs for the Student user
-        logger.info("Checking and seeding mock TODOs...")
+        # 4. Seed sample TODOs for the Student user
+        logger.info("Checking and seeding sample TODOs...")
         todo_result = await db.execute(select(Todo).where(Todo.user_id == student.id))
         existing_todos = todo_result.scalars().all()
         
         if not existing_todos:
-            mock_todos = [
+            sample_todos = [
                 Todo(
                     user_id=student.id,
                     title="阅读关于 AI Agent Memory 的最新论文",
@@ -137,18 +138,18 @@ async def seed_data():
                     sort_order=4
                 )
             ]
-            db.add_all(mock_todos)
-            logger.info("Mock TODOs seeded successfully.")
+            db.add_all(sample_todos)
+            logger.info("Sample TODOs seeded successfully.")
         else:
             logger.info("Student already has TODOs. Skipping.")
 
-        # 5. Seed Mock Notes for the Student user
-        logger.info("Checking and seeding mock Notes...")
+        # 5. Seed sample Notes for the Student user
+        logger.info("Checking and seeding sample Notes...")
         note_result = await db.execute(select(Note).where(Note.user_id == student.id))
         existing_notes = note_result.scalars().all()
         
         if not existing_notes:
-            mock_notes = [
+            sample_notes = [
                 Note(
                     user_id=student.id,
                     title="DP 转移方程",
@@ -166,8 +167,8 @@ async def seed_data():
                     sort_order=2
                 )
             ]
-            db.add_all(mock_notes)
-            logger.info("Mock Notes seeded successfully.")
+            db.add_all(sample_notes)
+            logger.info("Sample Notes seeded successfully.")
         else:
             logger.info("Student already has Notes. Skipping.")
             

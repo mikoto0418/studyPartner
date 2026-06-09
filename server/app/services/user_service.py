@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
-from sqlalchemy import select, and_, update, func
+from sqlalchemy import select, and_, update, func, false
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.models.user import User, Role, StudentProfile, UserRole
@@ -57,7 +57,7 @@ class UserService:
         db_user = User(
             username=user_in.username,
             email=user_in.email,
-            nickname=user_in.nickname or user_in.username,
+            nickname=user_in.nickname,
             phone=user_in.phone,
             status=user_in.status,
             password_hash=get_password_hash(user_in.password),
@@ -144,11 +144,19 @@ class UserService:
         return True
 
     @staticmethod
-    async def list_users(db: AsyncSession, role_code: Optional[str] = None, page: int = 1, page_size: int = 20):
+    async def list_users(
+        db: AsyncSession,
+        role_code: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+        user_ids: Optional[List[UUID]] = None,
+    ):
         # Build query
         query = select(User).where(User.deleted_at.is_(None))
         if role_code:
             query = query.join(User.roles).where(Role.code == role_code)
+        if user_ids is not None:
+            query = query.where(User.id.in_(user_ids) if user_ids else false())
 
         # Count total
         count_query = select(func.count()).select_from(query.subquery())

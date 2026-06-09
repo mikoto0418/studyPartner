@@ -4,6 +4,7 @@ import LoginView from '../views/common/LoginView.vue'
 import NotFoundView from '../views/common/NotFoundView.vue'
 import ForbiddenView from '../views/common/ForbiddenView.vue'
 import ProfileView from '../views/common/ProfileView.vue'
+import AnnouncementsView from '../views/common/AnnouncementsView.vue'
 
 import DashboardView from '../views/student/DashboardView.vue'
 import ChatView from '../views/student/ChatView.vue'
@@ -128,6 +129,12 @@ const routes: Array<RouteRecordRaw> = [
         name: 'TeacherClasses',
         component: ClassOverviewView,
         meta: { title: '班级 Memory 看板' }
+      },
+      {
+        path: 'announcements',
+        name: 'TeacherAnnouncements',
+        component: AnnouncementsView,
+        meta: { title: '公告发布' }
       }
     ]
   },
@@ -161,6 +168,12 @@ const routes: Array<RouteRecordRaw> = [
         name: 'AdminSettings',
         component: SettingsView,
         meta: { title: '全局系统设置' }
+      },
+      {
+        path: 'announcements',
+        name: 'AdminAnnouncements',
+        component: AnnouncementsView,
+        meta: { title: '公告发布' }
       }
     ]
   },

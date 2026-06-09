@@ -88,7 +88,8 @@ const handleLogin = async () => {
     authStore.login({
       token: data.access_token,
       role: data.user.roles[0]?.code || 'student',
-      username: data.user.username
+      username: data.user.username,
+      displayName: data.user.display_name === '未设置姓名' ? null : data.user.display_name || data.user.nickname || null
     })
 
     ElMessage.success('登录成功')
@@ -143,7 +144,8 @@ const handleRegister = async () => {
     authStore.login({
       token: data.access_token,
       role: data.user.roles[0]?.code || 'student',
-      username: data.user.username
+      username: data.user.username,
+      displayName: data.user.display_name === '未设置姓名' ? null : data.user.display_name || data.user.nickname || null
     })
     
     const userRole = data.user.roles[0]?.code || 'student'

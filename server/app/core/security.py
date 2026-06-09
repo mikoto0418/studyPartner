@@ -1,11 +1,33 @@
+import base64
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Union
+from cryptography.fernet import Fernet, InvalidToken
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from app.config import settings
 
 # Password hashing configuration
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _fernet() -> Fernet:
+    digest = hashlib.sha256(settings.JWT_SECRET_KEY.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+def encrypt_secret(value: str) -> str:
+    if not value:
+        return ""
+    return "fernet:" + _fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+
+def decrypt_secret(value: str) -> str:
+    if not value:
+        return ""
+    if not value.startswith("fernet:"):
+        return value
+    try:
+        return _fernet().decrypt(value.removeprefix("fernet:").encode("utf-8")).decode("utf-8")
+    except InvalidToken:
+        return ""
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)

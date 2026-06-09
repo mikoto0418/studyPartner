@@ -38,7 +38,7 @@ export const reviewsApi = {
     return request.get(`/reviews/${dateVal}`, { params })
   },
 
-  generateReview(data: { student_id: string; date: string }) {
+  generateReview(data: { student_id?: string; date: string }) {
     return request.post('/reviews/generate', data)
   }
 }

@@ -5,6 +5,7 @@ export interface ClassMemberOut {
   user_id: string
   username?: string
   nickname?: string
+  display_name?: string
   status: string
   joined_at?: string
 }

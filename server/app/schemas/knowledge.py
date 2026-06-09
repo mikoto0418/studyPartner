@@ -26,6 +26,13 @@ class KnowledgeDocumentBase(BaseModel):
 class KnowledgeDocumentCreate(KnowledgeDocumentBase):
     file_id: UUID = Field(..., description="关联上传的文件ID")
 
+class KnowledgeDocumentUpdate(BaseModel):
+    title: Optional[str] = Field(None, max_length=255, description="Document title")
+    description: Optional[str] = Field(None, description="Document description")
+    category: Optional[str] = Field(None, description="Folder/category")
+    tags: Optional[List[str]] = Field(None, description="Tag list")
+    visibility: Optional[str] = Field(None, description="public, teachers_only, private")
+
 class KnowledgeDocumentOut(KnowledgeDocumentBase):
     id: UUID
     file_id: UUID
@@ -53,3 +60,12 @@ class CitationItem(BaseModel):
 class RAGAnswerOut(BaseModel):
     answer: str
     citations: List[CitationItem] = []
+
+class TeacherAssignedFileOut(BaseModel):
+    file: FileOut
+    task_id: UUID
+    task_title: str
+    task_description: Optional[str] = None
+    due_date: Optional[datetime] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None

@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, date as Date
 from typing import Optional, List, Any
 from uuid import UUID
 from pydantic import BaseModel, Field
@@ -42,11 +42,11 @@ class MemoryUpdateLogOut(BaseModel):
     layer: str = Field(..., description="short_term, long_term")
     confidence: float
     source: str = Field(..., description="来源, 如 daily_review, manual")
-    review_date: Optional[date] = None
+    review_date: Optional[Date] = None
     created_at: datetime
 
 class DailyReviewBase(BaseModel):
-    review_date: date
+    review_date: Date
     summary: Optional[str] = None
     study_stats: Optional[Any] = None
     task_stats: Optional[Any] = None
@@ -62,7 +62,7 @@ class DailyReviewBase(BaseModel):
 class DailyReviewOut(BaseModel):
     id: UUID
     student_id: UUID
-    date: date
+    date: Date
     summary: Optional[str] = None
     study_time_minutes: int = 0
     metrics: Optional[Any] = None
@@ -77,12 +77,12 @@ class DailyReviewOut(BaseModel):
 
 class DailyReviewListOut(BaseModel):
     id: UUID
-    date: date
+    date: Date
     study_time_minutes: int = 0
     summary_preview: Optional[str] = None
     concern_count: int = 0
     generated_at: datetime
 
 class DailyReviewGenerateReq(BaseModel):
-    student_id: UUID = Field(..., description="学生ID")
-    date: date = Field(..., description="需要复盘的日期, 格式 YYYY-MM-DD")
+    student_id: Optional[UUID] = Field(None, description="学生ID。学生端可省略，默认生成自己的复盘；老师/管理员触发时必填。")
+    date: Date = Field(..., description="需要复盘的日期, 格式 YYYY-MM-DD")

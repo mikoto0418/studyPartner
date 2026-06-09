@@ -1,25 +1,39 @@
 from typing import List, Optional
 from uuid import UUID
 from datetime import date
-from fastapi import APIRouter, Depends, Query, Path, Body, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, Path, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.schemas.common import BaseResponse, PageData
 from app.schemas.student_memory import DailyReviewOut, DailyReviewListOut, DailyReviewGenerateReq
 from app.services.memory_service import MemoryService
-from app.api.deps import get_current_user, require_admin
+from app.api.deps import get_current_user
 from app.models.user import User
 from app.core.exceptions import PermissionDenied, ValidationError
+from app.services.access_control import AccessControlService
 
 router = APIRouter()
 
-def verify_student_or_staff_review(current_user: User, student_id: UUID):
-    user_roles = [role.code for role in current_user.roles]
-    if "student" in user_roles and current_user.id != student_id:
-        raise PermissionDenied("权限不足，学生只能查看自己的每日复盘报告")
-    if not any(r in user_roles for r in ["student", "teacher", "admin"]):
-        raise PermissionDenied("无权查看该每日复盘报告")
+
+async def resolve_review_student_id(
+    db: AsyncSession,
+    current_user: User,
+    requested_student_id: Optional[UUID],
+) -> UUID:
+    if "student" in current_user.role_codes:
+        if requested_student_id and requested_student_id != current_user.id:
+            raise PermissionDenied("学生只能生成自己的每日复盘与 Memory")
+        return current_user.id
+
+    if not any(r in current_user.role_codes for r in ["teacher", "admin"]):
+        raise PermissionDenied("无权操作每日复盘报告")
+
+    if not requested_student_id:
+        raise ValidationError("老师/管理员触发复盘时必须指定学生ID", code="STUDENT_ID_REQUIRED")
+
+    await AccessControlService.ensure_can_access_student(db, current_user, requested_student_id)
+    return requested_student_id
 
 @router.get("/{date_val}", response_model=BaseResponse[DailyReviewOut], summary="获取每日复盘报告")
 async def get_daily_review(
@@ -28,8 +42,7 @@ async def get_daily_review(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    target_student_id = student_id or current_user.id
-    verify_student_or_staff_review(current_user, target_student_id)
+    target_student_id = await resolve_review_student_id(db, current_user, student_id)
     
     review = await MemoryService.get_daily_review(db, target_student_id, date_val)
     
@@ -60,13 +73,8 @@ async def get_daily_review(
                 elif current_section == "suggestions":
                     suggestions.append(cleaned)
                     
-    # Default fallbacks if parsing didn't find lists
-    if not highlights:
-        highlights = ["完成了平台设定的日常待办事项学习进度", f"发起了 {review.behavior_stats.get('ai_chat_count', 0) if review.behavior_stats else 0} 次 AI 对话"]
     if not concerns and review.task_stats and review.task_stats.get("todos_created", 0) > review.task_stats.get("todos_completed", 0):
         concerns = ["今日有待办事项未全部完成，请注意跟进进度"]
-    if not suggestions:
-        suggestions = ["继续保持专注的学习姿态，合理拆解第二天的待办日程", "针对不熟悉的知识点，可以配合伴学助手做针对性的对话练习"]
 
     study_time = review.study_stats.get("study_time_minutes", 0) if review.study_stats else 0
 
@@ -95,8 +103,7 @@ async def list_daily_reviews(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    target_student_id = student_id or current_user.id
-    verify_student_or_staff_review(current_user, target_student_id)
+    target_student_id = await resolve_review_student_id(db, current_user, student_id)
     
     reviews, total = await MemoryService.list_daily_reviews(
         db, target_student_id, page, page_size, start_date, end_date
@@ -131,20 +138,26 @@ async def list_daily_reviews(
     page_data = PageData.create(items=list_items, total=total, page=page, page_size=page_size)
     return BaseResponse.success(data=page_data, message="获取成功")
 
-@router.post("/generate", response_model=BaseResponse[dict], status_code=202, summary="手动触发复盘生成")
+@router.post("/generate", response_model=BaseResponse[DailyReviewOut], summary="手动触发复盘生成")
 async def generate_daily_review_endpoint(
     req_body: DailyReviewGenerateReq = Body(...),
-    current_user: User = Depends(require_admin), # restricted to admin only
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    from app.tasks.celery_tasks import generate_single_student_review_task
-    task = generate_single_student_review_task.delay(str(req_body.student_id), str(req_body.date))
-    return BaseResponse.success(
-        data={
-            "task_id": task.id,
-            "student_id": req_body.student_id,
-            "date": req_body.date
-        },
-        message="复盘生成任务已提交"
+    target_student_id = await resolve_review_student_id(db, current_user, req_body.student_id)
+    review = await MemoryService.generate_daily_review(db, target_student_id, req_body.date)
+    study_time = review.study_stats.get("study_time_minutes", 0) if review.study_stats else 0
+    data = DailyReviewOut(
+        id=review.id,
+        student_id=review.user_id,
+        date=review.review_date,
+        summary=review.summary,
+        study_time_minutes=study_time,
+        metrics=review.behavior_stats,
+        highlights=[],
+        concerns=[],
+        suggestions=[],
+        new_memories=review.new_memories or [],
+        generated_at=review.created_at,
     )
-
+    return BaseResponse.success(data=data, message="复盘与 Memory 已同步生成")

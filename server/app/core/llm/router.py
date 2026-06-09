@@ -6,6 +6,7 @@ from uuid import UUID
 from app.core.database import SessionLocal
 from app.models.llm import LLMUsageLog, LLMProviderConfig
 from app.core.llm.base import LLMProvider, ChatMessage, ChatResponse
+from app.core.security import decrypt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class UsageLogger:
 class LLMRouter:
     """
     Task type driven LLM Router.
-    Routes queries dynamically based on DB configurations and provides automatic fallbacks.
+    Routes queries dynamically based on DB configurations or explicit environment configuration.
     """
 
     def __init__(self, providers: Dict[str, LLMProvider]):
@@ -82,30 +83,20 @@ class LLMRouter:
             res = await db.execute(stmt)
             route_configs = res.scalars().all()
 
-        # 2. Fallback to hardcoded settings if no provider config exists in the database
+        # 2. Use explicit environment configuration if no provider config exists in the database.
         if not route_configs:
-            # Check environment variables
             from app.config import settings
             sf_key = settings.SILICONFLOW_API_KEY
-            if sf_key:
-                # Default mock router config pointing to SiliconFlow
-                fallback_config = {
-                    "provider_name": "siliconflow",
-                    "model_name": settings.SILICONFLOW_CHAT_MODEL,
-                    "temperature": 0.7,
-                    "max_tokens": 2048
-                }
-            else:
-                # Fallback to MockProvider
-                fallback_config = {
-                    "provider_name": "mock",
-                    "model_name": "mock-model",
-                    "temperature": 0.7,
-                    "max_tokens": 2048
-                }
-            
-            # Populate array for processing
-            configs_to_try = [fallback_config]
+            if not sf_key:
+                raise RuntimeError(f"No available LLM provider configured. Task: {task_type}")
+            configs_to_try = [{
+                "provider_name": "siliconflow",
+                "model_name": settings.SILICONFLOW_CHAT_MODEL,
+                "temperature": 0.7,
+                "max_tokens": 2048,
+                "api_key": sf_key,
+                "base_url": settings.SILICONFLOW_BASE_URL
+            }]
         else:
             configs_to_try = [
                 {
@@ -113,7 +104,7 @@ class LLMRouter:
                     "model_name": config.model_name,
                     "temperature": 0.7,
                     "max_tokens": 2048,
-                    "api_key": config.api_key_enc,
+                    "api_key": decrypt_secret(config.api_key_enc),
                     "base_url": config.base_url
                 }
                 for config in route_configs
@@ -133,17 +124,13 @@ class LLMRouter:
                 api_key = route_config.get("api_key")
                 base_url = route_config.get("base_url")
                 
-                # Check config or fallback to settings
+                # Use environment configuration when DB config does not carry credentials.
                 if not api_key:
                     from app.config import settings
                     api_key = settings.SILICONFLOW_API_KEY
                     base_url = settings.SILICONFLOW_BASE_URL
                 
                 provider = SiliconFlowProvider({"api_key": api_key, "base_url": base_url})
-                self.providers[provider_name] = provider
-            elif not provider and provider_name == "mock":
-                from app.core.llm.providers.mock import MockProvider
-                provider = MockProvider()
                 self.providers[provider_name] = provider
 
             if not provider:

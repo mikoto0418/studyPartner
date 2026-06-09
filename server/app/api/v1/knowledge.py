@@ -1,31 +1,36 @@
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, Body, Query, Path, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc, func
 
+from fastapi import APIRouter, Body, Depends, Path, Query
+from sqlalchemy import and_, desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_current_user
 from app.core.database import get_db
+from app.core.exceptions import NotFoundError
+from app.models.knowledge import FileModel, KnowledgeDocument
+from app.models.task import Task, TaskAssignee
+from app.models.user import User
 from app.schemas.common import BaseResponse, PageData
 from app.schemas.knowledge import (
-    KnowledgeDocumentCreate, 
-    KnowledgeDocumentOut, 
-    RAGQueryReq, 
+    CitationItem,
+    KnowledgeDocumentCreate,
+    KnowledgeDocumentOut,
+    KnowledgeDocumentUpdate,
     RAGAnswerOut,
-    CitationItem
+    RAGQueryReq,
+    TeacherAssignedFileOut,
 )
 from app.services.knowledge_service import KnowledgeService
-from app.models.knowledge import KnowledgeDocument
-from app.api.deps import get_current_user
-from app.models.user import User
-from app.core.exceptions import NotFoundError, ValidationError
 
 router = APIRouter()
 
-@router.post("/documents", response_model=BaseResponse[KnowledgeDocumentOut], summary="上传创建知识库文档")
+
+@router.post("/documents", response_model=BaseResponse[KnowledgeDocumentOut], summary="Create knowledge document")
 async def create_document(
     doc_in: KnowledgeDocumentCreate = Body(...),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     doc = await KnowledgeService.create_document(
         db=db,
@@ -35,138 +40,188 @@ async def create_document(
         description=doc_in.description,
         category=doc_in.category,
         tags=doc_in.tags,
-        visibility=doc_in.visibility
-    )
-    
-    # Dispatch Celery async task for background document parsing
-    from app.tasks.celery_tasks import parse_document_task
-    parse_document_task.delay(str(doc.id))
-    
-    return BaseResponse.success(
-        data=KnowledgeDocumentOut.from_attributes(doc),
-        message="文档关联成功，切片提取与向量化任务已提交 Celery 后台队列处理"
+        visibility=doc_in.visibility,
     )
 
-@router.get("/documents", response_model=BaseResponse[PageData[KnowledgeDocumentOut]], summary="获取知识库文档列表")
+    from app.tasks.celery_tasks import parse_document_task
+
+    parse_document_task.delay(str(doc.id))
+    return BaseResponse.success(
+        data=KnowledgeDocumentOut.model_validate(doc),
+        message="Document created and parsing task queued",
+    )
+
+
+@router.get("/documents", response_model=BaseResponse[PageData[KnowledgeDocumentOut]], summary="List knowledge documents")
 async def list_documents(
-    page: int = Query(1, ge=1, description="页码"),
-    page_size: int = Query(20, ge=1, le=100, description="每页条数"),
-    category: Optional[str] = Query(None, description="分类"),
-    visibility: Optional[str] = Query(None, description="可见性: public, teachers_only, private"),
-    keyword: Optional[str] = Query(None, description="关键字检索标题"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    category: Optional[str] = Query(None),
+    visibility: Optional[str] = Query(None),
+    keyword: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     stmt = select(KnowledgeDocument).where(KnowledgeDocument.deleted_at.is_(None))
-    
-    # Filter based on role permissions
+
     user_roles = [role.code for role in current_user.roles]
     if "student" in user_roles:
-        # Students can see public docs OR their own private ones
         stmt = stmt.where(
-            and_(
-                KnowledgeDocument.deleted_at.is_(None),
-                (KnowledgeDocument.visibility == "public") | (KnowledgeDocument.uploader_id == current_user.id)
-            )
+            (KnowledgeDocument.visibility == "public") | (KnowledgeDocument.uploader_id == current_user.id)
         )
     elif "teacher" in user_roles:
-        # Teachers can see public, teachers_only OR their own
         stmt = stmt.where(
-            and_(
-                KnowledgeDocument.deleted_at.is_(None),
-                (KnowledgeDocument.visibility.in_(["public", "teachers_only"])) | (KnowledgeDocument.uploader_id == current_user.id)
-            )
+            (KnowledgeDocument.visibility.in_(["public", "teachers_only"]))
+            | (KnowledgeDocument.uploader_id == current_user.id)
         )
-    # Admin can see everything
-    
+
     if category:
         stmt = stmt.where(KnowledgeDocument.category == category)
     if visibility:
         stmt = stmt.where(KnowledgeDocument.visibility == visibility)
     if keyword:
         stmt = stmt.where(KnowledgeDocument.title.ilike(f"%{keyword}%"))
-        
-    stmt = stmt.order_by(desc(KnowledgeDocument.created_at))
-    
-    # Count
+
     count_stmt = select(func.count()).select_from(stmt.subquery())
-    count_res = await db.execute(count_stmt)
-    total = count_res.scalar() or 0
-    
-    # Limit
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-    res = await db.execute(stmt)
-    items = list(res.scalars().all())
-    
-    outs = [KnowledgeDocumentOut.from_attributes(doc) for doc in items]
-    page_data = PageData.create(items=outs, total=total, page=page, page_size=page_size)
-    
-    return BaseResponse.success(data=page_data, message="获取成功")
+    total = (await db.execute(count_stmt)).scalar() or 0
 
-@router.get("/documents/{document_id}", response_model=BaseResponse[KnowledgeDocumentOut], summary="获取知识库文档详情")
-async def get_document_details(
-    document_id: UUID = Path(..., description="文档ID"),
+    stmt = stmt.order_by(desc(KnowledgeDocument.created_at)).offset((page - 1) * page_size).limit(page_size)
+    res = await db.execute(stmt)
+    docs = [KnowledgeDocumentOut.model_validate(doc) for doc in res.scalars().all()]
+    page_data = PageData.create(items=docs, total=total, page=page, page_size=page_size)
+    return BaseResponse.success(data=page_data, message="OK")
+
+
+@router.get("/teacher-files", response_model=BaseResponse[List[TeacherAssignedFileOut]], summary="List teacher assigned files")
+async def list_teacher_assigned_files(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(KnowledgeDocument).where(
-        and_(KnowledgeDocument.id == document_id, KnowledgeDocument.deleted_at.is_(None))
+    task_stmt = (
+        select(Task, TaskAssignee.status)
+        .join(TaskAssignee, Task.id == TaskAssignee.task_id)
+        .where(
+            and_(
+                TaskAssignee.user_id == current_user.id,
+                Task.deleted_at.is_(None),
+                Task.attachment_ids.is_not(None),
+            )
+        )
+        .order_by(desc(Task.created_at))
     )
-    res = await db.execute(stmt)
-    doc = res.scalars().first()
-    if not doc:
-        raise NotFoundError("文档不存在或已删除")
-        
-    return BaseResponse.success(data=KnowledgeDocumentOut.from_attributes(doc), message="获取成功")
+    task_rows = (await db.execute(task_stmt)).all()
 
-@router.delete("/documents/{document_id}", response_model=BaseResponse[bool], summary="删除知识库文档")
-async def delete_document(
-    document_id: UUID = Path(..., description="文档ID"),
+    file_ids: set[UUID] = set()
+    task_file_map: list[tuple[Task, str, UUID]] = []
+    for task, status in task_rows:
+        for raw_id in task.attachment_ids or []:
+            try:
+                file_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+            except (ValueError, TypeError):
+                continue
+            file_ids.add(file_id)
+            task_file_map.append((task, status, file_id))
+
+    if not file_ids:
+        return BaseResponse.success(data=[], message="OK")
+
+    file_res = await db.execute(select(FileModel).where(FileModel.id.in_(file_ids)))
+    files_by_id = {item.id: item for item in file_res.scalars().all()}
+
+    items: list[TeacherAssignedFileOut] = []
+    for task, status, file_id in task_file_map:
+        db_file = files_by_id.get(file_id)
+        if not db_file:
+            continue
+        items.append(
+            TeacherAssignedFileOut(
+                file=db_file,
+                task_id=task.id,
+                task_title=task.title,
+                task_description=task.description,
+                due_date=task.due_date,
+                priority=task.priority,
+                status=status,
+            )
+        )
+
+    return BaseResponse.success(data=items, message="OK")
+
+
+@router.get("/documents/{document_id}", response_model=BaseResponse[KnowledgeDocumentOut], summary="Get knowledge document")
+async def get_document_details(
+    document_id: UUID = Path(...),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+):
+    doc = await KnowledgeService.get_document_for_user(db, document_id, current_user)
+    return BaseResponse.success(data=KnowledgeDocumentOut.model_validate(doc), message="OK")
+
+
+@router.patch("/documents/{document_id}", response_model=BaseResponse[KnowledgeDocumentOut], summary="Update knowledge document")
+async def update_document_metadata(
+    document_id: UUID = Path(...),
+    doc_in: KnowledgeDocumentUpdate = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    doc = await KnowledgeService.update_document(
+        db=db,
+        document_id=document_id,
+        user_id=current_user.id,
+        title=doc_in.title,
+        description=doc_in.description,
+        category=doc_in.category,
+        tags=doc_in.tags,
+        visibility=doc_in.visibility,
+    )
+    return BaseResponse.success(data=KnowledgeDocumentOut.model_validate(doc), message="Updated")
+
+
+@router.delete("/documents/{document_id}", response_model=BaseResponse[bool], summary="Delete knowledge document")
+async def delete_document(
+    document_id: UUID = Path(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     await KnowledgeService.delete_document(db, document_id, current_user.id)
-    return BaseResponse.success(data=True, message="删除成功")
+    return BaseResponse.success(data=True, message="Deleted")
 
-@router.post("/search", response_model=BaseResponse[List[dict]], summary="知识库语义段落搜索")
+
+@router.post("/search", response_model=BaseResponse[List[dict]], summary="Search knowledge chunks")
 async def search_knowledge_chunks(
     req: RAGQueryReq = Body(...),
-    limit: int = Query(5, ge=1, le=20, description="最大返回数量"),
+    limit: int = Query(5, ge=1, le=20),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     results = await KnowledgeService.search_knowledge(
         db=db,
         query_text=req.query,
         user_id=current_user.id,
-        limit=limit
+        limit=limit,
     )
-    return BaseResponse.success(data=results, message="搜索成功")
+    return BaseResponse.success(data=results, message="OK")
 
-@router.post("/qa", response_model=BaseResponse[RAGAnswerOut], summary="知识库 RAG 增强问答")
+
+@router.post("/qa", response_model=BaseResponse[RAGAnswerOut], summary="Knowledge base QA")
 async def knowledge_base_qa(
     req: RAGQueryReq = Body(...),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     answer, citations = await KnowledgeService.knowledge_qa(
         db=db,
         query_text=req.query,
-        user_id=current_user.id
+        user_id=current_user.id,
     )
-    
     citation_outs = [
         CitationItem(
             source_index=c["source_index"],
             document_id=c["document_id"],
             document_title=c["document_title"],
-            score=c["score"]
+            score=c["score"],
         )
         for c in citations
     ]
-    
-    data = RAGAnswerOut(
-        answer=answer,
-        citations=citation_outs
-    )
-    return BaseResponse.success(data=data, message="回答成功")
+    return BaseResponse.success(data=RAGAnswerOut(answer=answer, citations=citation_outs), message="OK")

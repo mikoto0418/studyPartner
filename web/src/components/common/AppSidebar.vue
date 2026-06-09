@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   LayoutDashboard,
@@ -16,7 +16,8 @@ import {
   Settings2,
   GitBranch,
   BarChart3,
-  TrendingUp
+  TrendingUp,
+  Megaphone
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -24,7 +25,10 @@ const route = useRoute()
 
 const collapsed = ref(false)
 const userRole = ref(localStorage.getItem('sp_role') || 'student')
-const username = ref(localStorage.getItem('sp_username') || '学习者')
+const displayName = ref(localStorage.getItem('sp_display_name') || '')
+const username = ref(localStorage.getItem('sp_username') || '')
+const shownName = computed(() => displayName.value || '未设置姓名')
+const avatarText = computed(() => (displayName.value || '未').charAt(0).toUpperCase())
 
 // Define menu items based on role
 const menuItems = computed(() => {
@@ -33,6 +37,7 @@ const menuItems = computed(() => {
       { name: '管理概览', path: '/admin/overview', icon: LayoutDashboard },
       { name: '用户管理', path: '/admin/users', icon: Users },
       { name: '模型配置', path: '/admin/llm-configs', icon: Settings2 },
+      { name: '公告发布', path: '/admin/announcements', icon: Megaphone },
       { name: '系统设置', path: '/admin/settings', icon: Settings }
     ]
   } else if (userRole.value === 'teacher') {
@@ -41,7 +46,8 @@ const menuItems = computed(() => {
       { name: '学生列表', path: '/teacher/students', icon: Users },
       { name: '任务管理', path: '/teacher/tasks', icon: ClipboardList },
       { name: '路径任务', path: '/teacher/learning-paths', icon: GitBranch },
-      { name: '班级看板', path: '/teacher/classes', icon: BarChart3 }
+      { name: '班级看板', path: '/teacher/classes', icon: BarChart3 },
+      { name: '公告发布', path: '/teacher/announcements', icon: Megaphone }
     ]
   } else {
     // Default student menu
@@ -67,6 +73,19 @@ const handleLogout = () => {
   localStorage.clear()
   router.push('/login')
 }
+
+const refreshIdentity = () => {
+  displayName.value = localStorage.getItem('sp_display_name') || ''
+  username.value = localStorage.getItem('sp_username') || ''
+}
+
+onMounted(() => {
+  window.addEventListener('profile-updated', refreshIdentity)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('profile-updated', refreshIdentity)
+})
 </script>
 
 <template>
@@ -123,10 +142,10 @@ const handleLogout = () => {
       <!-- User info card -->
       <div class="flex items-center space-x-3 overflow-hidden">
         <div class="w-8 h-8 rounded-full bg-gray-200 dark:bg-zinc-800 flex items-center justify-center text-xs font-semibold text-gray-600 dark:text-zinc-300 flex-shrink-0">
-          {{ username.charAt(0) }}
+          {{ avatarText }}
         </div>
         <div v-if="!collapsed" class="overflow-hidden">
-          <p class="text-xs font-medium text-gray-900 dark:text-zinc-50 truncate">{{ username }}</p>
+          <p class="text-xs font-medium text-gray-900 dark:text-zinc-50 truncate">{{ shownName }}</p>
           <p class="text-[10px] text-gray-400 dark:text-zinc-500 truncate capitalize">{{ userRole }}</p>
         </div>
       </div>

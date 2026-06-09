@@ -30,7 +30,7 @@ export function useWebSocket() {
     let base = import.meta.env.VITE_WS_BASE_URL as string
     if (!base) {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const host = import.meta.env.DEV ? 'localhost:8000' : window.location.host
+      const host = window.location.host
       base = `${protocol}//${host}/api/v1`
     }
     

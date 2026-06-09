@@ -4,7 +4,7 @@ import router from '../router'
 
 const request = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
-  timeout: 10000,
+  timeout: Number(import.meta.env.VITE_API_TIMEOUT_MS) || 30000,
   headers: {
     'Content-Type': 'application/json'
   }
@@ -40,6 +40,7 @@ request.interceptors.response.use(
   (error) => {
     const status = error.response?.status
     const data = error.response?.data
+    const isTimeout = error.code === 'ECONNABORTED' || String(error.message || '').toLowerCase().includes('timeout')
     
     if (status === 401) {
       // Unauthorized: clear storage and redirect to login
@@ -48,6 +49,8 @@ request.interceptors.response.use(
       router.push('/login')
     } else if (status === 403) {
       ElMessage.error('权限不足，无法进行此操作')
+    } else if (isTimeout) {
+      ElMessage.error('请求超时，当前网络或隧道响应较慢，请稍后重试')
     } else {
       const errMsg = data?.message || error.message || '系统繁忙，请稍后再试'
       ElMessage.error(errMsg)

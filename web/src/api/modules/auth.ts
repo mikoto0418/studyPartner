@@ -1,5 +1,5 @@
 import request from '../request'
-import { UserOut } from './user'
+import type { UserOut } from './user'
 
 export interface TokenOut {
   access_token: string
@@ -28,5 +28,9 @@ export const authApi = {
 
   getMe() {
     return request.get('/auth/me')
+  },
+
+  changePassword(data: { old_password: string; new_password: string }) {
+    return request.post('/auth/change-password', data)
   }
 }

@@ -11,6 +11,7 @@ from app.services.study_stat_service import HeatmapService
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.core.exceptions import PermissionDenied
+from app.services.access_control import AccessControlService
 
 router = APIRouter()
 
@@ -24,10 +25,9 @@ async def get_heatmap_data(
 ):
     target_user_id = student_id or current_user.id
     
-    # Permission verification
-    user_roles = [r.code for r in current_user.roles]
-    if "student" in user_roles and current_user.id != target_user_id:
-        raise PermissionDenied("学生无权查看其他用户的学情行为热力图")
+    if not any(r in current_user.role_codes for r in ["student", "teacher", "admin"]):
+        raise PermissionDenied("无权查看学情行为热力图")
+    await AccessControlService.ensure_can_access_student(db, current_user, target_user_id)
         
     points = await HeatmapService.get_heatmap_data(
         db=db,

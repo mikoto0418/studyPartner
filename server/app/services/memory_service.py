@@ -14,6 +14,8 @@ from app.models.todo import Todo
 from app.models.task import Task, TaskAssignee, TaskSubmission
 from app.models.calendar_event import CalendarEvent
 from app.models.ai_conversation import AIConversation, AIMessage
+from app.models.bilibili import StudyTimeLog, BilibiliWatchLog
+from app.models.knowledge import FileModel
 from app.core.llm import llm_router, ChatMessage
 from app.core.exceptions import NotFoundError, ValidationError
 
@@ -117,7 +119,7 @@ class MemoryService:
                 "layer": m.memory_type,
                 "confidence": m.confidence,
                 "source": "daily_review" if m.source_review_id else "manual",
-                "review_date": start_date or date.today(), # fallback representation
+                "review_date": m.created_at.date() if m.created_at else None,
                 "created_at": m.created_at
             })
             
@@ -192,7 +194,7 @@ class MemoryService:
         if existing and existing.status == "completed":
             return existing
 
-        # Create or update placeholder
+        # Create or update processing review record
         if existing:
             review = existing
             review.status = "processing"
@@ -258,7 +260,7 @@ class MemoryService:
             )
             calendar_res = await db.execute(calendar_stmt)
             calendar_events = calendar_res.scalars().all()
-            calendar_completed = len(calendar_events) # Mock as completed
+            calendar_completed = sum(1 for e in calendar_events if e.status == "completed")
 
             # D. AI chat messages on that day
             conv_stmt = (
@@ -277,9 +279,39 @@ class MemoryService:
             ai_chats = conv_res.scalars().all()
             ai_chat_count = len(ai_chats)
 
+            study_time_minutes = int((await db.execute(
+                select(func.coalesce(func.sum(StudyTimeLog.duration_seconds), 0)).where(
+                    and_(
+                        StudyTimeLog.user_id == student_id,
+                        StudyTimeLog.start_time >= start_dt,
+                        StudyTimeLog.start_time < end_dt,
+                    )
+                )
+            )).scalar() or 0) // 60
+
+            bilibili_watch_minutes = int((await db.execute(
+                select(func.coalesce(func.sum(BilibiliWatchLog.watch_duration), 0)).where(
+                    and_(
+                        BilibiliWatchLog.user_id == student_id,
+                        BilibiliWatchLog.created_at >= start_dt,
+                        BilibiliWatchLog.created_at < end_dt,
+                    )
+                )
+            )).scalar() or 0) // 60
+
+            files_uploaded = int((await db.execute(
+                select(func.count(FileModel.id)).where(
+                    and_(
+                        FileModel.uploader_id == student_id,
+                        FileModel.created_at >= start_dt,
+                        FileModel.created_at < end_dt,
+                    )
+                )
+            )).scalar() or 0)
+
             # Build stats maps
             study_stats = {
-                "study_time_minutes": 120 + 20 * (todos_completed + tasks_completed), # Mock study time proportional to completions
+                "study_time_minutes": study_time_minutes,
                 "calendar_events_completed": calendar_completed
             }
             task_stats = {
@@ -290,20 +322,24 @@ class MemoryService:
             }
             behavior_stats = {
                 "ai_chat_count": ai_chat_count,
-                "knowledge_views": 3 if ai_chat_count > 0 else 0,
-                "bilibili_watch_minutes": 45 if tasks_completed > 0 else 0,
-                "files_uploaded": 1 if tasks_submitted > 0 else 0
+                "knowledge_views": 0,
+                "bilibili_watch_minutes": bilibili_watch_minutes,
+                "files_uploaded": files_uploaded
             }
 
             # 2. Format Context for LLM
-            nickname = user.nickname or user.username
+            display_name = user.nickname.strip() if user.nickname else "未设置"
             activity_summary = (
-                f"学生姓名/昵称：{nickname}\n"
+                f"学生自定义姓名/称呼：{display_name}\n"
+                "姓名口径说明：只使用个人设置中的自定义姓名/称呼；未设置时不要根据登录用户名猜测姓名。\n"
                 f"复盘日期：{review_date.strftime('%Y-%m-%d')}\n\n"
                 f"今日活动统计：\n"
                 f"- 新建待办事项：{todos_created} 个，完成：{todos_completed} 个\n"
                 f"- 完成课程任务：{tasks_completed} 个，提交任务：{tasks_submitted} 个\n"
                 f"- 参加日历日程数：{calendar_completed} 个\n"
+                f"- 平台学习时长：{study_time_minutes} 分钟\n"
+                f"- B站学习室观看时长：{bilibili_watch_minutes} 分钟\n"
+                f"- 上传文件数：{files_uploaded} 个\n"
                 f"- 发起 AI 伴学对话次数：{ai_chat_count} 次\n\n"
             )
             
@@ -430,13 +466,14 @@ class MemoryService:
                     logger.warning(f"Failed to parse consolidated memories JSON: {raw_update_json}. Error: {e}")
                     consolidation = {"conflicts": [], "updates": []}
                 
-                conflicted_ids = [c.get("memory_id") for c in consolidation.get("conflicts", []) if c.get("memory_id")]
-                updated_map = {u["memory_id"]: u for u in consolidation.get("updates", []) if u.get("memory_id")}
+                conflicted_ids = {str(c.get("memory_id")) for c in consolidation.get("conflicts", []) if c.get("memory_id")}
+                updated_map = {str(u["memory_id"]): u for u in consolidation.get("updates", []) if u.get("memory_id")}
 
                 # Process updates
                 for m in existing_memories:
                     # If conflict or update, we supersede the old memory
-                    if m.id in conflicted_ids or m.id in updated_map:
+                    memory_key = str(m.id)
+                    if memory_key in conflicted_ids or memory_key in updated_map:
                         m.status = "superseded"
                         db.add(m)
                         
@@ -445,8 +482,8 @@ class MemoryService:
                         new_confidence = m.confidence
                         new_evidence = m.evidence
                         
-                        if m.id in updated_map:
-                            up = updated_map[m.id]
+                        if memory_key in updated_map:
+                            up = updated_map[memory_key]
                             new_content = up.get("content", m.content)
                             new_confidence = min(1.0, max(0.0, up.get("confidence", m.confidence + 0.1))) # decay/promotion rules
                             new_evidence = (m.evidence or "") + "\n" + (up.get("evidence", "行为再次验证"))

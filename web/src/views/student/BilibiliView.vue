@@ -157,7 +157,7 @@ function startHeartbeat() {
       })
       loadWatchStats()
     } catch (error) {
-      // Keep local timer alive even when telemetry fails.
+      console.warn('Failed to report bilibili watch heartbeat', error)
     }
   }, 30000)
 }
@@ -296,8 +296,6 @@ async function enterRoom(resource: BilibiliResourceOut) {
   pauseCountInSession.value = 0
   watchStats.value = []
 
-  startLocalTiming()
-  startHeartbeat()
   bilibiliApi.logWatchEvent({
     resource_id: resource.id,
     event_type: 'open',
@@ -313,7 +311,7 @@ async function leaveRoom() {
   stopHeartbeat()
 
   const resource = activeResource.value
-  const duration = Math.max(1, watchTimeInCurrentPeriod.value)
+  const duration = Math.max(0, watchTimeInCurrentPeriod.value)
   watchTimeInCurrentPeriod.value = 0
   try {
     await bilibiliApi.logWatchEvent({
@@ -334,6 +332,8 @@ async function leaveRoom() {
 }
 
 function selectEmbeddedPlayer() {
+  stopLocalTiming()
+  stopHeartbeat()
   showBackupPlayer.value = false
 }
 
@@ -346,7 +346,9 @@ async function selectBackupPlayer() {
 
 async function handleEpisodeChange(ep: number) {
   if (!activeResource.value || ep === currentEpisode.value) return
-  const previousDuration = Math.max(1, watchTimeInCurrentPeriod.value)
+  stopLocalTiming()
+  stopHeartbeat()
+  const previousDuration = Math.max(0, watchTimeInCurrentPeriod.value)
   try {
     await bilibiliApi.logWatchEvent({
       resource_id: activeResource.value.id,
@@ -408,11 +410,13 @@ function handleNativeTimeUpdate(event: Event) {
 
 function handleNativePlay() {
   startLocalTiming()
+  startHeartbeat()
 }
 
 async function handleNativePause() {
   if (!activeResource.value) return
   stopLocalTiming()
+  stopHeartbeat()
   pauseCountInSession.value += 1
   try {
     await bilibiliApi.logWatchEvent({

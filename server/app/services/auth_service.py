@@ -29,13 +29,14 @@ class AuthService:
         user.last_login_at = datetime.now(timezone.utc)
         db.add(user)
         await db.commit()
+        user = await UserService.get_user(db, user.id)
 
         # Generate tokens
         from app.config import settings
         access_token = create_access_token(subject=user.id)
         refresh_token = create_refresh_token(subject=user.id)
 
-        user_out = UserOut.from_attributes(user)
+        user_out = UserOut.model_validate(user)
 
         return TokenOut(
             access_token=access_token,
@@ -64,8 +65,9 @@ class AuthService:
         from app.config import settings
         access_token = create_access_token(subject=user.id)
         new_refresh_token = create_refresh_token(subject=user.id)
+        user = await UserService.get_user(db, user.id)
 
-        user_out = UserOut.from_attributes(user)
+        user_out = UserOut.model_validate(user)
 
         return TokenOut(
             access_token=access_token,

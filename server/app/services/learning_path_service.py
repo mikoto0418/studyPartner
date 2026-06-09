@@ -33,6 +33,9 @@ from app.schemas.learning_path import (
     LearningPathStageIn,
     LearningPathUpdate,
 )
+from app.services.access_control import AccessControlService
+from app.services.notification_service import NotificationService
+from app.utils.display_name import user_display_name
 
 
 class LearningPathPlanner:
@@ -275,6 +278,15 @@ class LearningPathService:
 
         await db.commit()
         await db.refresh(task)
+        for student_id in assignee_ids:
+            await NotificationService.create_notification(
+                db,
+                user_id=student_id,
+                title="新的学习路径任务",
+                content=f"老师发布了学习路径「{task.title}」。",
+                notification_type="learning_path",
+                link_url="/student/learning-paths",
+            )
         return task
 
     @staticmethod
@@ -418,7 +430,7 @@ class LearningPathService:
         student_id: UUID,
         submission_in: LearningNodeSubmitReq,
     ) -> LearningNodeSubmission:
-        await LearningPathService.get_student_task(db, task_id, student_id)
+        task = await LearningPathService.get_student_task(db, task_id, student_id)
         progress = await LearningPathService._get_or_create_progress(db, task_id, node_id, student_id)
         if progress.status == "locked":
             raise ValidationError("当前节点尚未解锁，请先完成前置步骤")
@@ -445,6 +457,14 @@ class LearningPathService:
 
         await db.commit()
         await db.refresh(submission)
+        await NotificationService.create_notification(
+            db,
+            user_id=task.creator_id,
+            title="学习路径节点已提交",
+            content=f"学习路径「{task.title}」收到新的节点提交。",
+            notification_type="learning_path",
+            link_url="/teacher/learning-paths",
+        )
         return submission
 
     @staticmethod
@@ -487,6 +507,14 @@ class LearningPathService:
         await LearningPathService._recalculate_assignee_progress(db, submission.task_id, submission.user_id)
         await db.commit()
         await db.refresh(submission)
+        await NotificationService.create_notification(
+            db,
+            user_id=submission.user_id,
+            title="学习路径提交已批改",
+            content=f"学习路径「{submission.task.title}」的节点提交已批改。",
+            notification_type="learning_path",
+            link_url="/student/learning-paths",
+        )
         return submission
 
     @staticmethod
@@ -497,10 +525,11 @@ class LearningPathService:
         memory_summary = await LearningPathService._memory_summary(db, student_ids)
         attention_students = await LearningPathService._attention_students(db, student_ids, class_group.members)
         recent_paths = await LearningPathService._recent_class_paths(db, class_id)
+        trend = await LearningPathService._class_trend(db, class_id, student_ids, metrics)
         return {
             "class_info": LearningPathService._class_to_dict(class_group),
             "metrics": metrics,
-            "trend": LearningPathService._mock_trend(metrics),
+            "trend": trend,
             "memory_summary": memory_summary,
             "attention_students": attention_students,
             "recent_paths": recent_paths,
@@ -508,10 +537,9 @@ class LearningPathService:
 
     @staticmethod
     async def get_student_growth(db: AsyncSession, student_id: UUID, requester: User) -> Dict[str, Any]:
-        if "student" in requester.role_codes and requester.id != student_id:
-            raise PermissionDenied("学生只能查看自己的成长档案")
         if not any(role in requester.role_codes for role in ["student", "teacher", "admin"]):
             raise PermissionDenied("无权查看成长档案")
+        await AccessControlService.ensure_can_access_student(db, requester, student_id)
 
         user_result = await db.execute(select(User).options(selectinload(User.student_profile)).where(User.id == student_id))
         student = user_result.scalars().first()
@@ -539,8 +567,9 @@ class LearningPathService:
         study_minutes = sum((review.study_stats or {}).get("study_time_minutes", 0) for review in reviews)
         weak_cards = [memory.content for memory in memories if memory.category == "weakness"][:3]
 
+        display_name = user_display_name(student.nickname)
         parent_summary = (
-            f"{student.nickname or student.username} 近期共有 {len(path_summaries)} 个学习路径任务，"
+            f"{display_name} 近期共有 {len(path_summaries)} 个学习路径任务，"
             f"平均完成度 {avg_progress}%。近 7 次复盘累计学习约 {study_minutes} 分钟。"
         )
         if weak_cards:
@@ -551,6 +580,7 @@ class LearningPathService:
             "profile": {
                 "username": student.username,
                 "nickname": student.nickname,
+                "display_name": display_name,
                 "email": student.email,
                 "student_profile": {
                     "student_id": student.student_profile.student_id if student.student_profile else None,
@@ -822,6 +852,7 @@ class LearningPathService:
                 "user_id": str(item.user_id),
                 "username": item.user.username,
                 "nickname": item.user.nickname,
+                "display_name": user_display_name(item.user.nickname),
                 "status": item.status,
                 "progress_percent": item.progress_percent,
                 "assigned_at": item.assigned_at.isoformat() if item.assigned_at else None,
@@ -847,6 +878,7 @@ class LearningPathService:
                 "user_id": str(item.user_id),
                 "username": item.user.username,
                 "nickname": item.user.nickname,
+                "display_name": user_display_name(item.user.nickname),
                 "content": item.content,
                 "attachment_ids": item.attachment_ids or [],
                 "review_status": item.review_status,
@@ -883,6 +915,7 @@ class LearningPathService:
                 "user_id": member.user_id,
                 "username": member.user.username if member.user else None,
                 "nickname": member.user.nickname if member.user else None,
+                "display_name": user_display_name(member.user.nickname) if member.user else "未设置姓名",
                 "status": member.status,
                 "joined_at": member.joined_at,
             }
@@ -945,16 +978,45 @@ class LearningPathService:
     async def _attention_students(db: AsyncSession, student_ids: List[UUID], members: List[ClassMember]) -> List[Dict[str, Any]]:
         if not student_ids:
             return []
+        progress_result = await db.execute(
+            select(LearningPathAssignee.user_id, func.coalesce(func.avg(LearningPathAssignee.progress_percent), 0))
+            .where(LearningPathAssignee.user_id.in_(student_ids))
+            .group_by(LearningPathAssignee.user_id)
+        )
+        progress_map = {row[0]: float(row[1] or 0) for row in progress_result.all()}
+
+        weakness_result = await db.execute(
+            select(StudentMemory.user_id, func.count(StudentMemory.id))
+            .where(
+                and_(
+                    StudentMemory.user_id.in_(student_ids),
+                    StudentMemory.status == "active",
+                    StudentMemory.category == "weakness",
+                )
+            )
+            .group_by(StudentMemory.user_id)
+        )
+        weakness_map = {row[0]: int(row[1] or 0) for row in weakness_result.all()}
+
         items = []
         for member in members:
-            assignee_progress = 0.0
+            assignee_progress = round(progress_map.get(member.user_id, 0.0), 1)
+            weakness_count = weakness_map.get(member.user_id, 0)
+            if weakness_count > 0 and assignee_progress < 60:
+                reason = f"路径进度 {assignee_progress}%，且有 {weakness_count} 条薄弱项 Memory"
+            elif assignee_progress < 60:
+                reason = f"路径平均进度 {assignee_progress}%，建议跟进节点提交"
+            elif weakness_count > 0:
+                reason = f"有 {weakness_count} 条薄弱项 Memory，建议安排针对性反馈"
+            else:
+                continue
             items.append({
                 "user_id": str(member.user_id),
-                "name": member.user.nickname or member.user.username if member.user else str(member.user_id),
-                "reason": "需要继续观察路径进度与近期 Memory 变化",
+                "name": user_display_name(member.user.nickname) if member.user else "未设置姓名",
+                "reason": reason,
                 "progress_percent": assignee_progress,
             })
-        return items[:5]
+        return sorted(items, key=lambda item: (item["progress_percent"], item["name"]))[:5]
 
     @staticmethod
     async def _recent_class_paths(db: AsyncSession, class_id: UUID) -> List[Dict[str, Any]]:
@@ -968,15 +1030,43 @@ class LearningPathService:
         return [await LearningPathService._task_summary(db, task) for task in tasks]
 
     @staticmethod
-    def _mock_trend(metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
+    async def _class_trend(db: AsyncSession, class_id: UUID, student_ids: List[UUID], metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
         today = datetime.now(timezone.utc).date()
-        base_progress = float(metrics.get("avg_progress", 0))
+        days = [today - timedelta(days=6 - index) for index in range(7)]
+        if not student_ids:
+            return [
+                {"date": day.isoformat(), "avg_progress": 0, "active_students": 0, "memory_count": 0}
+                for day in days
+            ]
+
+        review_result = await db.execute(
+            select(DailyReview)
+            .where(and_(DailyReview.user_id.in_(student_ids), DailyReview.review_date >= days[0], DailyReview.review_date <= days[-1]))
+        )
+        reviews_by_day: Dict[Any, List[DailyReview]] = {}
+        for review in review_result.scalars().all():
+            reviews_by_day.setdefault(review.review_date, []).append(review)
+
+        memory_result = await db.execute(
+            select(func.date(StudentMemory.created_at), func.count(StudentMemory.id))
+            .where(
+                and_(
+                    StudentMemory.user_id.in_(student_ids),
+                    StudentMemory.status == "active",
+                    StudentMemory.created_at >= datetime(days[0].year, days[0].month, days[0].day, tzinfo=timezone.utc),
+                )
+            )
+            .group_by(func.date(StudentMemory.created_at))
+        )
+        memory_by_day = {row[0]: int(row[1] or 0) for row in memory_result.all()}
+        current_progress = round(float(metrics.get("avg_progress", 0)), 1)
+
         return [
             {
-                "date": (today - timedelta(days=6 - index)).isoformat(),
-                "avg_progress": max(0, round(base_progress - (6 - index) * 2.5, 1)),
-                "active_students": max(0, int(metrics.get("student_count", 0)) - (index % 2)),
-                "memory_count": max(0, int(metrics.get("memory_count", 0)) - (6 - index)),
+                "date": day.isoformat(),
+                "avg_progress": current_progress,
+                "active_students": len({review.user_id for review in reviews_by_day.get(day, [])}),
+                "memory_count": memory_by_day.get(day, 0),
             }
-            for index in range(7)
+            for day in days
         ]

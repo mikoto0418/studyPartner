@@ -34,7 +34,7 @@ async def test_pipeline():
         await db.execute(delete(DailyReview).where(DailyReview.user_id == student.id))
         await db.commit()
         
-        # 2. Trigger Daily Review generation (uses MockProvider under the hood since API key is blank)
+        # 2. Trigger Daily Review generation through the configured LLM provider.
         review_date = date.today()
         print(f"[RUN] Generating daily review for date: {review_date}...")
         review = await MemoryService.generate_daily_review(db, student.id, review_date)

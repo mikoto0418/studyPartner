@@ -80,13 +80,15 @@ async def health_check():
 
 @app.on_event("startup")
 async def startup_event():
-    from app.core.scheduler import start_scheduler
-    start_scheduler()
+    if settings.ENABLE_INLINE_SCHEDULER:
+        from app.core.scheduler import start_scheduler
+        start_scheduler()
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    from app.core.scheduler import stop_scheduler
-    stop_scheduler()
+    if settings.ENABLE_INLINE_SCHEDULER:
+        from app.core.scheduler import stop_scheduler
+        stop_scheduler()
 
 # Include the API router
 app.include_router(api_router, prefix="/api/v1")

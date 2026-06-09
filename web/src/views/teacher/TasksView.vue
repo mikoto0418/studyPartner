@@ -43,6 +43,12 @@ const reviewForm = ref({
   feedback: ''
 })
 
+const displayNameOf = (item: { display_name?: string; nickname?: string; username?: string }) => item.display_name || item.nickname?.trim() || '未设置姓名'
+const optionLabelOf = (item: { display_name?: string; nickname?: string; username?: string }) => {
+  const displayName = displayNameOf(item)
+  return item.username ? `${displayName}（账号：${item.username}）` : displayName
+}
+
 // Fetch initial data
 const loadTasks = async () => {
   loading.value = true
@@ -50,34 +56,8 @@ const loadTasks = async () => {
     const res = await taskApi.listTeacherTasks()
     tasks.value = res.data || []
   } catch (error) {
-    console.warn("Failed to fetch teacher tasks. Loading mock data.")
-    // Mock created tasks
-    tasks.value = [
-      {
-        id: '1',
-        title: '文献阅读与研究方法梳理',
-        description: '请深入阅读《Attention is All You Need》并梳理其核心架构。',
-        priority: 'high',
-        status: 'in_progress',
-        start_date: new Date().toISOString(),
-        due_date: new Date(Date.now() + 86400000 * 3).toISOString(),
-        creator_id: 'teacher-uuid',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      },
-      {
-        id: '2',
-        title: '毕业论文大纲草拟',
-        description: '拟定毕业设计技术路线并说明主要系统组件功能。',
-        priority: 'medium',
-        status: 'in_progress',
-        start_date: new Date().toISOString(),
-        due_date: new Date(Date.now() + 86400000 * 7).toISOString(),
-        creator_id: 'teacher-uuid',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }
-    ]
+    console.warn('Failed to fetch teacher tasks', error)
+    tasks.value = []
   } finally {
     loading.value = false
   }
@@ -88,29 +68,8 @@ const loadStudents = async () => {
     const res = await userApi.listUsers({ role_code: 'student', page_size: 100 })
     students.value = res.data?.items || []
   } catch (error) {
-    console.warn("Failed to fetch students. Loading mock students.")
-    students.value = [
-      {
-        id: 'student-1',
-        username: 'student1',
-        nickname: '张同学',
-        email: 's1@example.com',
-        status: 'active',
-        created_at: '',
-        updated_at: '',
-        roles: []
-      },
-      {
-        id: 'student-2',
-        username: 'student2',
-        nickname: '李同学',
-        email: 's2@example.com',
-        status: 'active',
-        created_at: '',
-        updated_at: '',
-        roles: []
-      }
-    ]
+    console.warn('Failed to fetch students', error)
+    students.value = []
   }
 }
 
@@ -147,22 +106,8 @@ const handleCreateTask = async () => {
       assignee_ids: []
     }
   } catch (error) {
-    // Fallback for mock environment
-    const mockTask: TaskOut = {
-      id: Date.now().toString(),
-      title: taskForm.value.title,
-      description: taskForm.value.description,
-      priority: taskForm.value.priority,
-      status: 'in_progress',
-      start_date: new Date().toISOString(),
-      due_date: taskForm.value.due_date ? new Date(taskForm.value.due_date).toISOString() : undefined,
-      creator_id: 'teacher',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    }
-    tasks.value.unshift(mockTask)
-    createDialogVisible.value = false
-    ElMessage.success('任务已发布 (本地缓存)')
+    console.warn('Failed to create task', error)
+    ElMessage.error('任务发布失败')
   }
 }
 
@@ -172,39 +117,9 @@ const handleViewTaskDetails = async (task: TaskOut) => {
     const res = await taskApi.getTaskDetails(task.id)
     selectedTaskDetails.value = res.data
   } catch (error) {
-    console.warn("Failed to get task details. Generating mock details.")
-    // Mock details
-    selectedTaskDetails.value = {
-      task: task,
-      assignees: [
-        {
-          id: 'assignee-1',
-          user_id: 'student-1',
-          username: 'student1',
-          nickname: '张同学',
-          status: 'submitted',
-          assigned_at: new Date().toISOString()
-        },
-        {
-          id: 'assignee-2',
-          user_id: 'student-2',
-          username: 'student2',
-          nickname: '李同学',
-          status: 'in_progress',
-          assigned_at: new Date().toISOString()
-        }
-      ],
-      submissions: [
-        {
-          id: 'sub-1',
-          task_id: task.id,
-          assignee_id: 'assignee-1',
-          user_id: 'student-1',
-          content: '老师，我已阅读完文献。附上核心架构的思维导图草案：\n1. Encoder-Decoder 多头注意力机制\n2. 前馈神经网络残差连接与层归一化。',
-          created_at: new Date().toISOString()
-        }
-      ]
-    }
+    console.warn('Failed to get task details', error)
+    ElMessage.error('加载任务详情失败')
+    return
   }
   detailDrawerVisible.value = true
 }
@@ -243,18 +158,8 @@ const handleSaveReview = async () => {
     reviewDialogVisible.value = false
     ElMessage.success('审核评阅成功')
   } catch (error) {
-    // Local mock update
-    const assignee = selectedTaskDetails.value.assignees.find(
-      a => a.user_id === selectedSubmission.value?.user_id
-    )
-    if (assignee) {
-      assignee.status = reviewForm.value.status
-      if (reviewForm.value.status === 'completed') {
-        assignee.completed_at = new Date().toISOString()
-      }
-    }
-    reviewDialogVisible.value = false
-    ElMessage.success('审核已保存 (本地缓存)')
+    console.warn('Failed to save review', error)
+    ElMessage.error('审核保存失败')
   }
 }
 
@@ -409,7 +314,7 @@ onMounted(() => {
             <el-option
               v-for="s in students"
               :key="s.id"
-              :label="s.nickname || s.username"
+              :label="optionLabelOf(s)"
               :value="s.id"
             />
           </el-select>
@@ -463,9 +368,8 @@ onMounted(() => {
             >
               <div class="flex items-center space-x-2">
                 <User class="w-4 h-4 text-gray-400" />
-                <span class="text-xs font-medium text-gray-700 dark:text-zinc-300">
-                  {{ item.nickname || item.username }}
-                </span>
+                <span class="text-xs font-medium text-gray-700 dark:text-zinc-300">{{ displayNameOf(item) }}</span>
+                <span class="text-[9px] text-gray-400 font-mono">账号：{{ item.username }}</span>
               </div>
               
               <div class="flex items-center space-x-2">
@@ -502,7 +406,7 @@ onMounted(() => {
             >
               <div class="flex justify-between items-center text-[10px] text-gray-400">
                 <span class="font-medium text-gray-700 dark:text-zinc-300">
-                  提交人: {{ sub.nickname || sub.username }}
+                  提交人: {{ displayNameOf(sub) }} · 账号：{{ sub.username }}
                 </span>
                 <span>{{ formatDate(sub.created_at) }}</span>
               </div>

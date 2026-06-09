@@ -6,7 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.models.task import Task, TaskAssignee, TaskSubmission
 from app.schemas.task import TaskCreate, TaskSubmissionCreate, TaskSubmissionReview
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import NotFoundError, PermissionDenied, ValidationError
+from app.services.notification_service import NotificationService
+from app.utils.display_name import user_display_name
 
 class TaskService:
     @staticmethod
@@ -43,6 +45,16 @@ class TaskService:
 
         await db.commit()
         await db.refresh(db_task)
+
+        for student_id in task_in.assignee_ids:
+            await NotificationService.create_notification(
+                db,
+                user_id=student_id,
+                title="导师任务已发布",
+                content=f"老师给你布置了任务「{db_task.title}」。",
+                notification_type="task",
+                link_url="/student/dashboard",
+            )
         return db_task
 
     @staticmethod
@@ -64,6 +76,7 @@ class TaskService:
                 "title": task.title,
                 "description": task.description,
                 "priority": task.priority,
+                "start_date": task.start_date,
                 "due_date": task.due_date,
                 "status": status,  # Use assignee status
                 "completed_at": completed_at,
@@ -102,11 +115,26 @@ class TaskService:
 
         await db.commit()
         await db.refresh(submission)
+
+        task = await TaskService.get_task(db, task_id)
+        if task:
+            await NotificationService.create_notification(
+                db,
+                user_id=task.creator_id,
+                title="学生提交了任务",
+                content=f"任务「{task.title}」收到新的学生提交。",
+                notification_type="task",
+                link_url="/teacher/tasks",
+            )
         return submission
 
     @staticmethod
     async def review_submission(
-        db: AsyncSession, submission_id: UUID, reviewer_id: UUID, review_in: TaskSubmissionReview
+        db: AsyncSession,
+        submission_id: UUID,
+        reviewer_id: UUID,
+        review_in: TaskSubmissionReview,
+        allow_admin: bool = False,
     ) -> TaskSubmission:
         result = await db.execute(
             select(TaskSubmission)
@@ -116,6 +144,8 @@ class TaskService:
         submission = result.scalars().first()
         if not submission:
             raise NotFoundError("任务提交记录不存在")
+        if not allow_admin and submission.task.creator_id != reviewer_id:
+            raise PermissionDenied("无权批改该任务提交")
 
         # Get assignee link
         assignee_result = await db.execute(
@@ -136,6 +166,15 @@ class TaskService:
 
         await db.commit()
         await db.refresh(submission)
+
+        await NotificationService.create_notification(
+            db,
+            user_id=submission.user_id,
+            title="导师已批改任务",
+            content=f"任务「{submission.task.title}」已批改，结果：{review_in.status}。",
+            notification_type="task",
+            link_url="/student/dashboard",
+        )
         return submission
 
     @staticmethod
@@ -148,10 +187,12 @@ class TaskService:
         return list(result.scalars().all())
 
     @staticmethod
-    async def get_task_details(db: AsyncSession, task_id: UUID) -> Optional[dict]:
+    async def get_task_details(db: AsyncSession, task_id: UUID, requester_id: UUID, allow_admin: bool = False) -> Optional[dict]:
         task = await TaskService.get_task(db, task_id)
         if not task:
             return None
+        if not allow_admin and task.creator_id != requester_id:
+            raise PermissionDenied("无权查看该任务详情")
         
         # Load assignees with users
         assignees_query = (
@@ -189,6 +230,7 @@ class TaskService:
                     "user_id": str(a.user_id),
                     "username": a.user.username,
                     "nickname": a.user.nickname,
+                    "display_name": user_display_name(a.user.nickname),
                     "status": a.status,
                     "assigned_at": a.assigned_at.isoformat() if a.assigned_at else None,
                     "completed_at": a.completed_at.isoformat() if a.completed_at else None,
@@ -198,10 +240,12 @@ class TaskService:
             "submissions": [
                 {
                     "id": str(s.id),
+                    "task_id": str(s.task_id),
                     "assignee_id": str(s.assignee_id),
                     "user_id": str(s.user_id),
                     "username": s.user.username,
                     "nickname": s.user.nickname,
+                    "display_name": user_display_name(s.user.nickname),
                     "content": s.content,
                     "attachment_ids": [str(x) for x in s.attachment_ids] if s.attachment_ids else [],
                     "feedback": s.feedback,
@@ -212,4 +256,3 @@ class TaskService:
                 for s in submissions
             ]
         }
-

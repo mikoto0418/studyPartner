@@ -23,7 +23,7 @@ async def list_events(
         db, user_id=current_user.id, start_time=start_time, end_time=end_time
     )
     return BaseResponse.success(
-        data=[CalendarEventOut.from_attributes(e) for e in events],
+        data=[CalendarEventOut.model_validate(e) for e in events],
         message="获取成功"
     )
 
@@ -33,9 +33,9 @@ async def create_event(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    event = await CalendarService.create_event(db, creator_id=current_user.id, event_in=event_in)
+    event = await CalendarService.create_event(db, creator=current_user, event_in=event_in)
     return BaseResponse.success(
-        data=CalendarEventOut.from_attributes(event),
+        data=CalendarEventOut.model_validate(event),
         message="创建成功"
     )
 
@@ -50,7 +50,7 @@ async def update_event(
         db, event_id=event_id, user_id=current_user.id, event_in=event_in
     )
     return BaseResponse.success(
-        data=CalendarEventOut.from_attributes(event),
+        data=CalendarEventOut.model_validate(event),
         message="更新成功"
     )
 

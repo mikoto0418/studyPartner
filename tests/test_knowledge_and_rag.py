@@ -81,7 +81,7 @@ async def test_rag_pipeline():
         print(f"[OK] Document created. ID: {doc.id}, Status: {doc.process_status}")
         
         # 4. Trigger Parsing/Chunking/Embedding Pipeline
-        print("[RUN] Processing document chunks and generating embeddings (Mock mode)...")
+        print("[RUN] Processing document chunks and generating embeddings with configured provider...")
         processed_doc = await KnowledgeService.process_document(db, doc.id)
         print(f"[OK] Document processing finished. Status: {processed_doc.process_status}")
         print(f"[OK] Chunks generated: {processed_doc.chunk_count}")

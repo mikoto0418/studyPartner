@@ -21,7 +21,7 @@ async def list_announcements(
         db, user_id=current_user.id, role_codes=role_codes
     )
     return BaseResponse.success(
-        data=[AnnouncementOut.from_attributes(a) for a in announcements],
+        data=[AnnouncementOut.model_validate(a) for a in announcements],
         message="获取成功"
     )
 
@@ -35,7 +35,7 @@ async def create_announcement(
         db, creator_id=current_user.id, announcement_in=announcement_in
     )
     return BaseResponse.success(
-        data=AnnouncementOut.from_attributes(announcement),
+        data=AnnouncementOut.model_validate(announcement),
         message="发布成功"
     )
 

@@ -25,12 +25,14 @@ async def upload_file(
         file=file,
         source=source
     )
-    return BaseResponse.success(data=FileOut.from_attributes(db_file), message="上传成功")
+    return BaseResponse.success(data=FileOut.model_validate(db_file), message="上传成功")
 
 @router.get("/download", summary="获取文件下载直链或跳转地址")
 async def get_download_url(
     path: str = Query(..., description="文件在 MinIO 中的存储路径"),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
+    await KnowledgeService.ensure_file_download_allowed(db, path, current_user)
     url = MinioService.get_download_url(path)
     return BaseResponse.success(data={"url": url}, message="获取成功")

@@ -3,19 +3,29 @@ import asyncio
 from email.mime.text import MIMEText
 from email.header import Header
 from app.config import settings
+from app.core.exceptions import ValidationError
 import logging
 
 logger = logging.getLogger(__name__)
 
 class EmailService:
     @staticmethod
+    def _is_configured() -> bool:
+        required_values = [
+            settings.SMTP_HOST,
+            settings.SMTP_USER,
+            settings.SMTP_PASSWORD,
+            settings.SMTP_FROM_EMAIL,
+        ]
+        return all(value and "example.com" not in value and "password_here" not in value for value in required_values)
+
+    @staticmethod
     def _send_email_sync(to_email: str, subject: str, content: str):
-        if not settings.SMTP_HOST or not settings.SMTP_USER or not settings.SMTP_PASSWORD:
-            logger.warning("SMTP parameters not configured. Skip sending email. Content: %s", content)
-            return
+        if not EmailService._is_configured():
+            raise ValidationError("SMTP 邮件服务未配置完整，验证码无法发送", code="SMTP_NOT_CONFIGURED")
 
         message = MIMEText(content, 'html', 'utf-8')
-        message['From'] = Header(f"{settings.APP_NAME} <{settings.SMTP_FROM_EMAIL or settings.SMTP_USER}>", 'utf-8')
+        message['From'] = Header(f"{settings.APP_NAME} <{settings.SMTP_FROM_EMAIL}>", 'utf-8')
         message['To'] = Header(to_email, 'utf-8')
         message['Subject'] = Header(subject, 'utf-8')
 
@@ -29,7 +39,7 @@ class EmailService:
                 server.starttls()
             
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.sendmail(settings.SMTP_USER, [to_email], message.as_string())
+            server.sendmail(settings.SMTP_FROM_EMAIL, [to_email], message.as_string())
             server.quit()
             logger.info(f"Email successfully sent to {to_email}")
         except Exception as e:

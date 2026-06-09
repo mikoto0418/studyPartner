@@ -11,15 +11,14 @@ from app.services.memory_service import MemoryService
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.core.exceptions import PermissionDenied
+from app.services.access_control import AccessControlService
 
 router = APIRouter()
 
-def verify_student_or_staff(current_user: User, student_id: UUID):
-    user_roles = [role.code for role in current_user.roles]
-    if "student" in user_roles and current_user.id != student_id:
-        raise PermissionDenied("权限不足，学生只能查看或操作自己的 Memory")
-    if not any(r in user_roles for r in ["student", "teacher", "admin"]):
+async def verify_student_access(db: AsyncSession, current_user: User, student_id: UUID):
+    if not any(r in current_user.role_codes for r in ["student", "teacher", "admin"]):
         raise PermissionDenied("无权查看该学生 Memory 信息")
+    await AccessControlService.ensure_can_access_student(db, current_user, student_id)
 
 @router.get("/{student_id}", response_model=BaseResponse[StudentMemoryGroupedOut], summary="获取学生 Memory")
 async def get_student_memory(
@@ -28,11 +27,11 @@ async def get_student_memory(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    verify_student_or_staff(current_user, student_id)
+    await verify_student_access(db, current_user, student_id)
     memories, last_updated = await MemoryService.get_student_memories(db, student_id, layer)
     
-    short_term_outs = [StudentMemoryOut.from_attributes(m) for m in memories if m.memory_type == "short_term"]
-    long_term_outs = [StudentMemoryOut.from_attributes(m) for m in memories if m.memory_type == "long_term"]
+    short_term_outs = [StudentMemoryOut.model_validate(m) for m in memories if m.memory_type == "short_term"]
+    long_term_outs = [StudentMemoryOut.model_validate(m) for m in memories if m.memory_type == "long_term"]
     
     data = StudentMemoryGroupedOut(
         student_id=student_id,
@@ -50,11 +49,10 @@ async def delete_student_memory(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    user_roles = [role.code for role in current_user.roles]
-    if "student" in user_roles and current_user.id != student_id:
-        raise PermissionDenied("权限不足，学生只能删除自己的 Memory")
+    user_roles = current_user.role_codes
     if not any(r in user_roles for r in ["student", "admin"]):
         raise PermissionDenied("无权删除该 Memory 条目")
+    await AccessControlService.ensure_can_access_student(db, current_user, student_id)
         
     await MemoryService.delete_student_memory(db, student_id, memory_id)
     return BaseResponse.success(data=None, message="Memory 条目已删除")
@@ -69,11 +67,10 @@ async def get_memory_update_logs(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    user_roles = [role.code for role in current_user.roles]
-    if "student" in user_roles and current_user.id != student_id:
-        raise PermissionDenied("权限不足，学生只能查看自己的 Memory 更新日志")
-    if not any(r in user_roles for r in ["student", "admin"]):
+    user_roles = current_user.role_codes
+    if not any(r in user_roles for r in ["student", "teacher", "admin"]):
         raise PermissionDenied("无权查看该更新日志")
+    await AccessControlService.ensure_can_access_student(db, current_user, student_id)
         
     logs, total = await MemoryService.get_memory_update_logs(
         db, student_id, page, page_size, start_date, end_date

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { CheckCircle2, Circle, Clock3, FileText, GraduationCap, Lock, PlaySquare, Send, UploadCloud } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { learningPathApi } from '../../api/modules/learning_path'
+import { knowledgeApi, type FileOut } from '../../api/modules/knowledge'
 import type { LearningPathDetailOut, LearningPathNode, LearningPathTaskOut } from '../../api/modules/learning_path'
 
 const paths = ref<LearningPathTaskOut[]>([])
@@ -13,8 +14,10 @@ const submitDialogVisible = ref(false)
 const selectedNode = ref<LearningPathNode | null>(null)
 const submitForm = ref({
   content: '',
-  attachment_ids: ''
+  attachment_ids: [] as string[]
 })
+const uploadedFiles = ref<FileOut[]>([])
+const uploadingAttachment = ref(false)
 
 const completedCount = computed(() => detail.value?.nodes.filter(node => node.progress?.status === 'completed').length || 0)
 const totalCount = computed(() => detail.value?.nodes.length || 0)
@@ -51,20 +54,40 @@ const openSubmit = (node: LearningPathNode) => {
     return
   }
   selectedNode.value = node
-  submitForm.value = { content: '', attachment_ids: '' }
+  submitForm.value = { content: '', attachment_ids: [] }
+  uploadedFiles.value = []
   submitDialogVisible.value = true
+}
+
+const handleAttachmentUpload = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  if (files.length === 0) return
+
+  uploadingAttachment.value = true
+  try {
+    for (const file of files) {
+      const res = await knowledgeApi.uploadFile(file, 'learning_path_submission')
+      const uploaded = res.data as FileOut
+      uploadedFiles.value.push(uploaded)
+      submitForm.value.attachment_ids.push(uploaded.id)
+    }
+    ElMessage.success('附件已上传')
+  } catch (error) {
+    console.warn('Failed to upload learning path attachment', error)
+    ElMessage.error('附件上传失败')
+  } finally {
+    uploadingAttachment.value = false
+    input.value = ''
+  }
 }
 
 const submitNode = async () => {
   if (!selectedPath.value || !selectedNode.value?.id) return
   try {
-    const attachmentIds = submitForm.value.attachment_ids
-      .split(',')
-      .map(item => item.trim())
-      .filter(Boolean)
     await learningPathApi.submitNode(selectedPath.value.id, selectedNode.value.id, {
       content: submitForm.value.content,
-      attachment_ids: attachmentIds,
+      attachment_ids: submitForm.value.attachment_ids,
       mark_complete: true
     })
     submitDialogVisible.value = false
@@ -267,14 +290,28 @@ onMounted(loadPaths)
           <span class="text-xs text-gray-500">学习说明 / 作业内容</span>
           <textarea v-model="submitForm.content" rows="5" class="w-full px-3 py-2 rounded border border-gray-200 dark:border-zinc-800 bg-transparent text-xs resize-none" placeholder="写下你完成的内容、遇到的问题或总结。"></textarea>
         </label>
-        <label class="space-y-1 block">
-          <span class="text-xs text-gray-500">附件 ID（可选，多个用英文逗号分隔）</span>
-          <input v-model="submitForm.attachment_ids" class="w-full px-3 py-2 rounded border border-gray-200 dark:border-zinc-800 bg-transparent text-xs" placeholder="上传文件后填入文件 ID" />
-        </label>
+        <div class="space-y-2">
+          <span class="text-xs text-gray-500">附件（可选）</span>
+          <label class="flex cursor-pointer items-center justify-center gap-2 rounded border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-500 transition hover:border-blue-400 hover:text-blue-600 dark:border-zinc-800">
+            <UploadCloud class="w-4 h-4" />
+            <span>{{ uploadingAttachment ? '上传中...' : '选择文件上传' }}</span>
+            <input type="file" multiple class="hidden" :disabled="uploadingAttachment" @change="handleAttachmentUpload" />
+          </label>
+          <div v-if="uploadedFiles.length" class="space-y-1">
+            <div
+              v-for="file in uploadedFiles"
+              :key="file.id"
+              class="flex items-center justify-between rounded bg-gray-50 px-2 py-1.5 text-[10px] text-gray-500 dark:bg-zinc-950"
+            >
+              <span class="truncate">{{ file.original_name }}</span>
+              <span class="font-mono text-gray-400">{{ file.id.slice(0, 8) }}</span>
+            </div>
+          </div>
+        </div>
       </div>
       <template #footer>
         <button @click="submitDialogVisible = false" class="px-4 py-1.5 rounded border border-gray-200 dark:border-zinc-800 text-xs mr-2">取消</button>
-        <button @click="submitNode" class="px-4 py-1.5 rounded bg-gray-900 text-white dark:bg-zinc-100 dark:text-zinc-900 text-xs">确认提交</button>
+        <button @click="submitNode" :disabled="uploadingAttachment" class="px-4 py-1.5 rounded bg-gray-900 text-white dark:bg-zinc-100 dark:text-zinc-900 text-xs disabled:opacity-50">确认提交</button>
       </template>
     </el-dialog>
   </div>

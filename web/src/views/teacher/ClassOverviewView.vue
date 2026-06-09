@@ -23,6 +23,8 @@ const classForm = ref({
 })
 
 const maxTrendProgress = computed(() => Math.max(...(overview.value?.trend.map(item => Number(item.avg_progress || 0)) || [1]), 1))
+const displayNameOf = (student: UserOut) => student.display_name || student.nickname?.trim() || '未设置姓名'
+const optionLabelOf = (student: UserOut) => `${displayNameOf(student)}（账号：${student.username}）`
 
 const loadData = async () => {
   loading.value = true
@@ -289,7 +291,7 @@ onMounted(loadData)
         <label class="space-y-1 block">
           <span class="text-xs text-gray-500">班级学生</span>
           <el-select v-model="classForm.student_ids" multiple class="w-full" placeholder="选择学生">
-            <el-option v-for="student in students" :key="student.id" :label="student.nickname || student.username" :value="student.id" />
+            <el-option v-for="student in students" :key="student.id" :label="optionLabelOf(student)" :value="student.id" />
           </el-select>
         </label>
       </div>

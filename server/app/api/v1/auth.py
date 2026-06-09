@@ -50,7 +50,7 @@ async def change_password(
 
 @router.get("/me", response_model=BaseResponse[UserOut], summary="获取当前登录用户信息")
 async def get_me(current_user: User = Depends(get_current_user)):
-    user_out = UserOut.from_attributes(current_user)
+    user_out = UserOut.model_validate(current_user)
     return BaseResponse.success(data=user_out, message="获取成功")
 
 @router.post("/send-code", response_model=BaseResponse[bool], summary="发送邮箱验证码")
@@ -70,9 +70,9 @@ async def send_code(
     
     code = f"{random.randint(100000, 999999)}"
     redis_key = f"auth:code:{req.action_type}:{req.email}"
-    await redis_client.setex(redis_key, 300, code) # 5 minutes
-    
+
     await EmailService.send_verification_code(req.email, code)
+    await redis_client.setex(redis_key, 300, code) # 5 minutes
     
     return BaseResponse.success(data=True, message="验证码已发送，请检查邮箱")
 
@@ -94,13 +94,13 @@ async def register(
         email=req.email,
         password=req.password,
         role_codes=[req.role],
-        nickname=req.username,
+        nickname=None,
         status="active"
     )
     user = await UserService.create_user(db, user_in)
     await redis_client.delete(redis_key)
     
-    return BaseResponse.success(data=UserOut.from_attributes(user), message="注册成功")
+    return BaseResponse.success(data=UserOut.model_validate(user), message="注册成功")
 
 @router.post("/reset-password", response_model=BaseResponse[bool], summary="重置密码")
 async def reset_password(
@@ -126,4 +126,3 @@ async def reset_password(
     await redis_client.delete(redis_key)
     
     return BaseResponse.success(data=True, message="密码重置成功")
-

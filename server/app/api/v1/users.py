@@ -8,6 +8,7 @@ from app.services.user_service import UserService
 from app.api.deps import get_current_user, require_admin, require_staff
 from app.models.user import User
 from app.core.exceptions import PermissionDenied
+from app.services.access_control import AccessControlService
 
 router = APIRouter()
 
@@ -19,9 +20,22 @@ async def list_users(
     current_user: User = Depends(require_staff),
     db: AsyncSession = Depends(get_db)
 ):
-    items, total = await UserService.list_users(db, role_code=role_code, page=page, page_size=page_size)
+    allowed_user_ids = None
+    if "admin" not in current_user.role_codes:
+        if role_code and role_code != "student":
+            raise PermissionDenied("老师只能查看自己关联的学生列表")
+        allowed_user_ids = await AccessControlService.accessible_student_ids(db, current_user)
+        role_code = "student"
+
+    items, total = await UserService.list_users(
+        db,
+        role_code=role_code,
+        page=page,
+        page_size=page_size,
+        user_ids=allowed_user_ids,
+    )
     page_data = PageData.create(
-        items=[UserOut.from_attributes(item) for item in items],
+        items=[UserOut.model_validate(item) for item in items],
         total=total,
         page=page,
         page_size=page_size
@@ -35,7 +49,7 @@ async def create_user(
     db: AsyncSession = Depends(get_db)
 ):
     user = await UserService.create_user(db, user_in)
-    return BaseResponse.success(data=UserOut.from_attributes(user), message="创建成功")
+    return BaseResponse.success(data=UserOut.model_validate(user), message="创建成功")
 
 @router.put("/{user_id}", response_model=BaseResponse[UserOut], summary="更新用户")
 async def update_user(
@@ -59,7 +73,7 @@ async def update_user(
         user_in.status = None # Reset so they can't self-promote or toggle status
 
     updated = await UserService.update_user(db, target_user, user_in)
-    return BaseResponse.success(data=UserOut.from_attributes(updated), message="更新成功")
+    return BaseResponse.success(data=UserOut.model_validate(updated), message="更新成功")
 
 @router.delete("/{user_id}", response_model=BaseResponse[bool], summary="删除用户")
 async def delete_user(
@@ -77,9 +91,8 @@ async def update_student_profile(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Only the student themselves or staff (teacher/admin) can update the profile
-    if "admin" not in current_user.role_codes and "teacher" not in current_user.role_codes and current_user.id != user_id:
-        raise PermissionDenied("无权修改该学生档案")
+    if "admin" not in current_user.role_codes and current_user.id != user_id:
+        await AccessControlService.ensure_can_access_student(db, current_user, user_id)
 
     profile = await UserService.update_student_profile(db, user_id, profile_in)
-    return BaseResponse.success(data=StudentProfileOut.from_attributes(profile), message="更新成功")
+    return BaseResponse.success(data=StudentProfileOut.model_validate(profile), message="更新成功")

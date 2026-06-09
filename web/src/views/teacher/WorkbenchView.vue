@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { Sparkles, Send, Brain, Users, ClipboardCheck, Clock, RefreshCw } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { userApi } from '../../api/modules/user'
 import { aiChatApi } from '../../api/modules/ai_chat'
+import { taskApi, type TaskDetails, type TaskOut } from '../../api/modules/task'
 import type { ConversationOut, MessageOut } from '../../api/modules/ai_chat'
 
 // State
 const studentsCount = ref(0)
-const pendingSubmissions = ref<any[]>([])
+const teacherTasks = ref<TaskOut[]>([])
+const pendingSubmissions = ref<Array<{
+  id: string
+  student_name: string
+  task_title: string
+  submitted_at: string
+}>>([])
 const loadingStats = ref(false)
+const pendingStudentCount = computed(() => new Set(pendingSubmissions.value.map((item) => item.student_name)).size)
+const displayNameOf = (item: { display_name?: string; nickname?: string; username?: string }) => item.display_name || item.nickname?.trim() || '未设置姓名'
 
 // AI Chat Assistant State
 const conversation = ref<ConversationOut | null>(null)
@@ -18,30 +27,76 @@ const inputMessage = ref('')
 const isResponding = ref(false)
 const chatContainer = ref<HTMLElement | null>(null)
 
-// Mock prompt suggestions
 const quickPrompts = [
   "请分析近期学生普遍反馈的Transformer难点，帮我给个讲解思路",
   "帮我草拟一份《AI Agent记忆机制设计》的研究任务，设定P0优先级要求",
   "如何针对学习活跃度偏低的学生，制定有效的日常代办辅导方案？"
 ]
 
+const formatSubmittedAt = (iso?: string) => {
+  if (!iso) return '未知'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+const loadPendingSubmissions = async (tasks: TaskOut[]) => {
+  const details = await Promise.all(
+    tasks.slice(0, 20).map(async (task) => {
+      try {
+        const res = await taskApi.getTaskDetails(task.id)
+        return res.data as TaskDetails
+      } catch (error) {
+        console.warn('Failed to load task detail', task.id, error)
+        return null
+      }
+    })
+  )
+
+  pendingSubmissions.value = details
+    .filter((item): item is TaskDetails => Boolean(item))
+    .flatMap((detail) => {
+      const submittedAssigneeIds = new Set(
+        detail.assignees
+          .filter((assignee) => assignee.status === 'submitted')
+          .map((assignee) => assignee.id)
+      )
+      return detail.submissions
+        .filter((submission) => !submission.reviewed_at && submittedAssigneeIds.has(submission.assignee_id))
+        .map((submission) => ({
+          id: submission.id,
+          student_name: displayNameOf(submission),
+          task_title: detail.task.title,
+          submitted_at: formatSubmittedAt(submission.created_at)
+        }))
+    })
+    .sort((a, b) => b.submitted_at.localeCompare(a.submitted_at))
+}
+
 // Initialize stats
 const loadStats = async () => {
   loadingStats.value = true
   try {
-    const res = await userApi.listUsers({ role_code: 'student', page_size: 1 })
-    studentsCount.value = res.data?.total || 0
+    const [studentsRes, tasksRes] = await Promise.all([
+      userApi.listUsers({ role_code: 'student', page_size: 1 }),
+      taskApi.listTeacherTasks()
+    ])
+    studentsCount.value = studentsRes.data?.total || 0
+    teacherTasks.value = tasksRes.data || []
+    await loadPendingSubmissions(teacherTasks.value)
   } catch (error) {
-    studentsCount.value = 8 // Fallback
+    console.warn('Failed to load teacher workbench stats', error)
+    studentsCount.value = 0
+    teacherTasks.value = []
+    pendingSubmissions.value = []
   } finally {
     loadingStats.value = false
   }
-
-  // Populate mock pending task submissions for the teacher to review
-  pendingSubmissions.value = [
-    { id: 'sub-1', student_name: '李自学', task_title: '文献阅读与研究方法梳理', submitted_at: '今天 10:24' },
-    { id: 'sub-2', student_name: '王科研', task_title: '毕业论文大纲草拟', submitted_at: '昨天 17:15' }
-  ]
 }
 
 // Setup AI Teaching Assistant Conversation
@@ -184,8 +239,8 @@ onMounted(() => {
         <!-- 本周活跃 -->
         <div class="minimal-card p-5 flex items-center justify-between">
           <div class="space-y-1">
-            <span class="text-[10px] text-gray-400 dark:text-zinc-500 font-medium block">今日活跃学生</span>
-            <span class="text-2xl font-bold text-emerald-600 dark:text-emerald-500 font-mono">4</span>
+            <span class="text-[10px] text-gray-400 dark:text-zinc-500 font-medium block">待处理提交学生</span>
+            <span class="text-2xl font-bold text-emerald-600 dark:text-emerald-500 font-mono">{{ pendingStudentCount }}</span>
           </div>
           <div class="w-10 h-10 rounded bg-emerald-50 dark:bg-emerald-950/20 flex items-center justify-center text-emerald-600 dark:text-emerald-500 border border-emerald-100/30">
             <Sparkles class="w-4 h-4" />
@@ -195,8 +250,8 @@ onMounted(() => {
         <!-- 课程大纲 -->
         <div class="minimal-card p-5 flex items-center justify-between">
           <div class="space-y-1">
-            <span class="text-[10px] text-gray-400 dark:text-zinc-500 font-medium block">人均本周学时</span>
-            <span class="text-2xl font-bold text-indigo-600 dark:text-indigo-500 font-mono">14.8</span>
+            <span class="text-[10px] text-gray-400 dark:text-zinc-500 font-medium block">已发布任务数</span>
+            <span class="text-2xl font-bold text-indigo-600 dark:text-indigo-500 font-mono">{{ teacherTasks.length }}</span>
           </div>
           <div class="w-10 h-10 rounded bg-indigo-50 dark:bg-indigo-950/20 flex items-center justify-center text-indigo-600 dark:text-indigo-500 border border-indigo-100/30">
             <Clock class="w-4 h-4" />

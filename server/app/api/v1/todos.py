@@ -26,7 +26,7 @@ async def list_todos(
         priority=priority, 
         category=category
     )
-    return BaseResponse.success(data=[TodoOut.from_attributes(t) for t in todos], message="获取成功")
+    return BaseResponse.success(data=[TodoOut.model_validate(t) for t in todos], message="获取成功")
 
 @router.post("/", response_model=BaseResponse[TodoOut], summary="创建待办事项")
 async def create_todo(
@@ -35,7 +35,7 @@ async def create_todo(
     db: AsyncSession = Depends(get_db)
 ):
     todo = await TodoService.create_todo(db, user_id=current_user.id, todo_in=todo_in)
-    return BaseResponse.success(data=TodoOut.from_attributes(todo), message="创建成功")
+    return BaseResponse.success(data=TodoOut.model_validate(todo), message="创建成功")
 
 @router.put("/{todo_id}", response_model=BaseResponse[TodoOut], summary="更新待办事项")
 async def update_todo(
@@ -50,7 +50,7 @@ async def update_todo(
         user_id=current_user.id, 
         todo_in=todo_in
     )
-    return BaseResponse.success(data=TodoOut.from_attributes(todo), message="更新成功")
+    return BaseResponse.success(data=TodoOut.model_validate(todo), message="更新成功")
 
 @router.delete("/{todo_id}", response_model=BaseResponse[bool], summary="删除待办事项")
 async def delete_todo(

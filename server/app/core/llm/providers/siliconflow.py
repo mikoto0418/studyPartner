@@ -30,13 +30,18 @@ class SiliconFlowProvider(LLMProvider):
         stream: bool = False,
         **kwargs
     ) -> Union[ChatResponse, AsyncIterator[str]]:
+        # Keep router-only metadata out of the provider payload. SiliconFlow uses
+        # the OpenAI-compatible schema and may reject unknown fields such as task_type.
+        provider_options = dict(kwargs)
+        provider_options.pop("task_type", None)
+
         payload = {
             "model": model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": stream,
-            **kwargs
+            **provider_options
         }
 
         start_time = time.monotonic()

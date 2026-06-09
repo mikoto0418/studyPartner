@@ -22,7 +22,7 @@ async def list_notes(
         user_id=current_user.id, 
         category=category
     )
-    return BaseResponse.success(data=[NoteOut.from_attributes(n) for n in notes], message="获取成功")
+    return BaseResponse.success(data=[NoteOut.model_validate(n) for n in notes], message="获取成功")
 
 @router.post("/", response_model=BaseResponse[NoteOut], summary="创建便签")
 async def create_note(
@@ -31,7 +31,7 @@ async def create_note(
     db: AsyncSession = Depends(get_db)
 ):
     note = await NoteService.create_note(db, user_id=current_user.id, note_in=note_in)
-    return BaseResponse.success(data=NoteOut.from_attributes(note), message="创建成功")
+    return BaseResponse.success(data=NoteOut.model_validate(note), message="创建成功")
 
 @router.put("/{note_id}", response_model=BaseResponse[NoteOut], summary="更新便签")
 async def update_note(
@@ -46,7 +46,7 @@ async def update_note(
         user_id=current_user.id, 
         note_in=note_in
     )
-    return BaseResponse.success(data=NoteOut.from_attributes(note), message="更新成功")
+    return BaseResponse.success(data=NoteOut.model_validate(note), message="更新成功")
 
 @router.delete("/{note_id}", response_model=BaseResponse[bool], summary="删除便签")
 async def delete_note(

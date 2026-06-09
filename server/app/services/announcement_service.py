@@ -4,10 +4,27 @@ from uuid import UUID
 from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.announcement import Announcement, AnnouncementReceiver, AnnouncementRead
+from app.models.user import User, Role
 from app.schemas.announcement import AnnouncementCreate, AnnouncementUpdate
 from app.core.exceptions import NotFoundError
+from app.services.notification_service import NotificationService
 
 class AnnouncementService:
+    @staticmethod
+    async def _target_user_ids(db: AsyncSession, announcement: Announcement) -> List[UUID]:
+        if announcement.target_type == "specific_users":
+            rows = (await db.execute(
+                select(AnnouncementReceiver.user_id).where(AnnouncementReceiver.announcement_id == announcement.id)
+            )).scalars().all()
+            return list(rows)
+
+        stmt = select(User.id).where(User.deleted_at.is_(None), User.status == "active")
+        if announcement.target_type == "all_students":
+            stmt = stmt.join(User.roles).where(Role.code == "student")
+        elif announcement.target_type == "all_teachers":
+            stmt = stmt.join(User.roles).where(Role.code == "teacher")
+        return list((await db.execute(stmt)).scalars().all())
+
     @staticmethod
     async def get_announcement(db: AsyncSession, announcement_id: UUID) -> Optional[Announcement]:
         result = await db.execute(
@@ -45,6 +62,19 @@ class AnnouncementService:
 
         await db.commit()
         await db.refresh(db_announcement)
+
+        if db_announcement.status == "published":
+            for user_id in await AnnouncementService._target_user_ids(db, db_announcement):
+                if user_id == creator_id:
+                    continue
+                await NotificationService.create_notification(
+                    db,
+                    user_id=user_id,
+                    title=f"公告：{db_announcement.title}",
+                    content=db_announcement.content[:180],
+                    notification_type="announcement",
+                    link_url=None,
+                )
         return db_announcement
 
     @staticmethod

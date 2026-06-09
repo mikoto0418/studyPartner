@@ -11,39 +11,116 @@ from sqlalchemy import select, and_, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.database import SessionLocal
+from app.core.security import decrypt_secret
 from app.models.knowledge import FileModel, KnowledgeDocument, KnowledgeChunk
+from app.models.llm import LLMProviderConfig
+from app.models.task import Task, TaskAssignee
 from app.models.user import User
 from app.services.minio_service import MinioService
 from app.services.vector_service import VectorService
 from app.utils.parser import parse_document, chunk_text
 from app.core.llm import llm_router, ChatMessage
 from app.core.llm.providers.siliconflow import SiliconFlowProvider
-from app.core.llm.providers.mock import MockProvider
 from app.config import settings
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import NotFoundError, PermissionDenied, ValidationError
 
 logger = logging.getLogger(__name__)
 
 async def get_embedding(text: str) -> List[float]:
-    """Generates vector embedding for text chunk using SiliconFlow or Mock fallback"""
-    if settings.SILICONFLOW_API_KEY:
-        provider = SiliconFlowProvider({
-            "api_key": settings.SILICONFLOW_API_KEY,
-            "base_url": settings.SILICONFLOW_BASE_URL
-        })
-        res = await provider.embedding(text, settings.SILICONFLOW_EMBEDDING_MODEL)
-        # Handle if returns list
-        if isinstance(res, list):
-            return res[0].embedding
-        return res.embedding
-    else:
-        provider = MockProvider()
-        res = await provider.embedding(text, "mock-model")
-        if isinstance(res, list):
-            return res[0].embedding
-        return res.embedding
+    """Generate a real vector embedding for text chunks."""
+    api_key = settings.SILICONFLOW_API_KEY
+    base_url = settings.SILICONFLOW_BASE_URL
+    model = settings.SILICONFLOW_EMBEDDING_MODEL
+
+    async with SessionLocal() as route_db:
+        config = (await route_db.execute(
+            select(LLMProviderConfig)
+            .where(and_(LLMProviderConfig.task_type == "knowledge_embedding", LLMProviderConfig.enabled == True))
+            .order_by(desc(LLMProviderConfig.priority))
+            .limit(1)
+        )).scalars().first()
+        if config:
+            api_key = decrypt_secret(config.api_key_enc)
+            base_url = config.base_url
+            model = config.model_name
+
+    if not api_key:
+        raise ValidationError("Embedding 服务未配置有效 API Key，无法生成知识库向量", code="EMBEDDING_PROVIDER_NOT_CONFIGURED")
+
+    provider = SiliconFlowProvider({
+        "api_key": api_key,
+        "base_url": base_url
+    })
+    res = await provider.embedding(text, model)
+    if isinstance(res, list):
+        return res[0].embedding
+    return res.embedding
 
 class KnowledgeService:
+    @staticmethod
+    def can_read_document(user: User, doc: KnowledgeDocument) -> bool:
+        role_codes = user.role_codes
+        if "admin" in role_codes or doc.uploader_id == user.id:
+            return True
+        if doc.visibility == "public":
+            return True
+        if doc.visibility == "teachers_only" and "teacher" in role_codes:
+            return True
+        return False
+
+    @staticmethod
+    async def _ensure_file_can_be_used(db: AsyncSession, user_id: UUID, db_file: FileModel) -> None:
+        if db_file.uploader_id == user_id:
+            return
+
+        file_id = str(db_file.id)
+        task_rows = (await db.execute(
+            select(Task.attachment_ids)
+            .join(TaskAssignee, Task.id == TaskAssignee.task_id)
+            .where(and_(TaskAssignee.user_id == user_id, Task.deleted_at.is_(None), Task.attachment_ids.is_not(None)))
+        )).scalars().all()
+        for attachment_ids in task_rows:
+            if any(str(item) == file_id for item in (attachment_ids or [])):
+                return
+
+        raise PermissionDenied("无权将该文件加入知识库")
+
+    @staticmethod
+    async def get_document_for_user(db: AsyncSession, document_id: UUID, user: User) -> KnowledgeDocument:
+        stmt = (
+            select(KnowledgeDocument)
+            .options(selectinload(KnowledgeDocument.file))
+            .where(and_(KnowledgeDocument.id == document_id, KnowledgeDocument.deleted_at.is_(None)))
+        )
+        doc = (await db.execute(stmt)).scalars().first()
+        if not doc:
+            raise NotFoundError("文档不存在或已删除")
+        if not KnowledgeService.can_read_document(user, doc):
+            raise PermissionDenied("无权查看该知识库文档")
+        return doc
+
+    @staticmethod
+    async def ensure_file_download_allowed(db: AsyncSession, storage_path: str, user: User) -> FileModel:
+        db_file = (await db.execute(select(FileModel).where(FileModel.storage_path == storage_path))).scalars().first()
+        if not db_file:
+            raise NotFoundError("文件不存在")
+        if "admin" in user.role_codes or db_file.uploader_id == user.id:
+            return db_file
+
+        doc_rows = (await db.execute(
+            select(KnowledgeDocument).where(
+                and_(
+                    KnowledgeDocument.file_id == db_file.id,
+                    KnowledgeDocument.deleted_at.is_(None),
+                )
+            )
+        )).scalars().all()
+        if any(KnowledgeService.can_read_document(user, doc) for doc in doc_rows):
+            return db_file
+
+        await KnowledgeService._ensure_file_can_be_used(db, user.id, db_file)
+        return db_file
 
     @staticmethod
     async def upload_file(
@@ -108,6 +185,7 @@ class KnowledgeService:
         db_file = res.scalars().first()
         if not db_file:
             raise NotFoundError("关联文件不存在")
+        await KnowledgeService._ensure_file_can_be_used(db, uploader_id, db_file)
             
         doc = KnowledgeDocument(
             id=uuid.uuid4(),
@@ -120,6 +198,56 @@ class KnowledgeService:
             visibility=visibility,
             process_status="pending"
         )
+        db.add(doc)
+        await db.commit()
+        await db.refresh(doc)
+        return doc
+
+    @staticmethod
+    async def update_document(
+        db: AsyncSession,
+        document_id: UUID,
+        user_id: UUID,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        visibility: Optional[str] = None,
+    ) -> KnowledgeDocument:
+        """Updates document metadata without reprocessing the physical file."""
+        stmt = select(KnowledgeDocument).where(
+            and_(KnowledgeDocument.id == document_id, KnowledgeDocument.deleted_at.is_(None))
+        )
+        res = await db.execute(stmt)
+        doc = res.scalars().first()
+        if not doc:
+            raise NotFoundError("Document not found")
+
+        if doc.uploader_id != user_id:
+            user_res = await db.execute(
+                select(User).options(selectinload(User.roles)).where(User.id == user_id)
+            )
+            current_user = user_res.scalars().first()
+            is_admin = current_user and any(r.code == "admin" for r in current_user.roles)
+            if not is_admin:
+                raise ValidationError("Only the uploader or admin can update this document")
+
+        if title is not None:
+            cleaned_title = title.strip()
+            if not cleaned_title:
+                raise ValidationError("Document title cannot be empty")
+            doc.title = cleaned_title
+        if description is not None:
+            doc.description = description
+        if category is not None:
+            doc.category = category.strip() or "other"
+        if tags is not None:
+            doc.tags = [tag.strip() for tag in tags if tag and tag.strip()]
+        if visibility is not None:
+            if visibility not in {"public", "teachers_only", "private"}:
+                raise ValidationError("Invalid visibility")
+            doc.visibility = visibility
+
         db.add(doc)
         await db.commit()
         await db.refresh(doc)
@@ -167,7 +295,7 @@ class KnowledgeService:
             db.add(doc)
             await db.commit()
             
-            embedding_model = settings.SILICONFLOW_EMBEDDING_MODEL or "mock-model"
+            embedding_model = settings.SILICONFLOW_EMBEDDING_MODEL
             indexed_chunks_count = 0
             
             for idx, text_content in enumerate(chunks):
@@ -322,11 +450,23 @@ class KnowledgeService:
         # 2. Delete points from Qdrant vector database
         await VectorService.delete_chunks_by_document(str(document_id))
         
-        # 3. Remove physical file from MinIO
-        await asyncio.to_thread(
-            MinioService.delete_file,
-            doc.file.storage_path
+        # 3. Remove physical file only when the current user owns the file and no
+        # other active knowledge document still references it.
+        other_refs_res = await db.execute(
+            select(func.count(KnowledgeDocument.id)).where(
+                and_(
+                    KnowledgeDocument.file_id == doc.file_id,
+                    KnowledgeDocument.id != doc.id,
+                    KnowledgeDocument.deleted_at.is_(None),
+                )
+            )
         )
+        other_refs = other_refs_res.scalar() or 0
+        if doc.file.uploader_id == user_id and other_refs == 0:
+            await asyncio.to_thread(
+                MinioService.delete_file,
+                doc.file.storage_path
+            )
         
         await db.commit()
         return True
@@ -342,22 +482,7 @@ class KnowledgeService:
         chunks = await KnowledgeService.search_knowledge(db, query_text, user_id, limit=3)
         
         if not chunks:
-            # Fallback to standard chat response if knowledge base is empty
-            fallback_prompt = (
-                "你是一个人工智能伴学助手。目前知识库中没有查找到与学生问题相关的参考资料。"
-                "请根据你的通用知识回答学生的问题，并礼貌地提示他们如果需要针对特定文献的精准解答，可以先上传文档到知识库。"
-            )
-            messages = [
-                ChatMessage(role="system", content=fallback_prompt),
-                ChatMessage(role="user", content=query_text)
-            ]
-            llm_res = await llm_router.route(
-                task_type="knowledge_qa",
-                messages=messages,
-                user_id=user_id,
-                stream=False
-            )
-            return llm_res.content, []
+            return "知识库中没有检索到可引用资料，请先上传并完成解析后再提问。", []
             
         # 2. Assemble context
         context_str = ""

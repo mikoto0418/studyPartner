@@ -23,6 +23,9 @@ const loadingReviews = ref(false)
 const selectedReview = ref<DailyReviewOut | null>(null)
 const loadingReviewDetail = ref(false)
 
+const displayNameOf = (student?: UserOut | null) => student?.display_name || student?.nickname?.trim() || '未设置姓名'
+const avatarTextOf = (student?: UserOut | null) => (student?.display_name || student?.nickname?.trim() || '未').charAt(0).toUpperCase()
+
 // Load student roster (role_code = student)
 const loadStudents = async () => {
   loadingStudents.value = true
@@ -186,11 +189,11 @@ onMounted(() => {
         >
           <div class="flex items-center space-x-3 truncate">
             <div class="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-950/30 flex items-center justify-center text-blue-600 font-bold uppercase text-xs">
-              {{ st.nickname ? st.nickname[0] : st.username[0] }}
+              {{ avatarTextOf(st) }}
             </div>
             <div class="truncate">
-              <span class="font-medium text-gray-800 dark:text-zinc-100 block">{{ st.nickname || st.username }}</span>
-              <span class="text-[9px] text-gray-400 font-mono block">学号: {{ st.student_profile?.student_id || '暂无学号' }}</span>
+              <span class="font-medium text-gray-800 dark:text-zinc-100 block">{{ displayNameOf(st) }}</span>
+              <span class="text-[9px] text-gray-400 font-mono block">账号: {{ st.username }} · 学号: {{ st.student_profile?.student_id || '暂无学号' }}</span>
             </div>
           </div>
           <ChevronRight class="w-4 h-4 text-gray-400" />
@@ -209,12 +212,12 @@ onMounted(() => {
         <div class="minimal-card p-6 bg-white dark:bg-zinc-900 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 flex-shrink-0">
           <div class="flex items-center space-x-4">
             <div class="w-12 h-12 rounded-full bg-blue-100 dark:bg-blue-950/40 flex items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-lg">
-              {{ selectedStudent.nickname ? selectedStudent.nickname[0] : selectedStudent.username[0] }}
+              {{ avatarTextOf(selectedStudent) }}
             </div>
             <div>
-              <h3 class="text-sm font-bold text-gray-900 dark:text-zinc-50">{{ selectedStudent.nickname || selectedStudent.username }}</h3>
+              <h3 class="text-sm font-bold text-gray-900 dark:text-zinc-50">{{ displayNameOf(selectedStudent) }}</h3>
               <p class="text-xs text-gray-400 dark:text-zinc-500">
-                邮箱: {{ selectedStudent.email }} &bull; 
+                账号: {{ selectedStudent.username }} &bull; 邮箱: {{ selectedStudent.email }} &bull;
                 研究方向: {{ selectedStudent.student_profile?.research_direction || '未设定' }}
               </p>
             </div>

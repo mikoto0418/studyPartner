@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "AI伴学与智能体协同平台"
     APP_ENV: str = "development"
     APP_DEBUG: bool = True
+    ENABLE_INLINE_SCHEDULER: bool = False
 
     # ========== CORS ==========
     CORS_ORIGINS: Annotated[
@@ -85,4 +86,3 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
 
 settings = Settings()
-

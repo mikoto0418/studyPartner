@@ -1,192 +1,353 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
-import { BookOpen, Upload, Search, MessageSquare, Trash2, HelpCircle, FileText, CheckCircle2, AlertCircle, RefreshCw, Layers } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import {
+  AlertCircle,
+  BookOpen,
+  CheckCircle2,
+  FileText,
+  FolderPlus,
+  Layers,
+  MessageSquare,
+  RefreshCw,
+  Search,
+  Tag,
+  Trash2,
+  Upload,
+} from 'lucide-vue-next'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { knowledgeApi } from '../../api/modules/knowledge'
-import type { KnowledgeDocumentOut, RAGAnswerOut } from '../../api/modules/knowledge'
+import type { KnowledgeDocumentOut, RAGAnswerOut, TeacherAssignedFileOut } from '../../api/modules/knowledge'
 
-// States
 const documents = ref<KnowledgeDocumentOut[]>([])
+const teacherFiles = ref<TeacherAssignedFileOut[]>([])
 const loadingDocs = ref(false)
 const uploadingFile = ref(false)
-const pollTimer = ref<any>(null)
+const importingTeacherFileId = ref('')
+const pollTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
-// Search & QA States
-const activeTab = ref('search')
-const searchQuery = ref('')
-const searchResults = ref<any[]>([])
-const searching = ref(false)
+const selectedFolder = ref('all')
+const selectedTag = ref('all')
+const customFolders = ref<string[]>([])
+const newFolderName = ref('')
 
-const qaQuery = ref('')
-const qaAnswer = ref<RAGAnswerOut | null>(null)
-const askingQA = ref(false)
-
-// Form configuration for Upload Dialog
 const uploadDialogVisible = ref(false)
+const editDialogVisible = ref(false)
+const editingDoc = ref<KnowledgeDocumentOut | null>(null)
+const selectedFile = ref<File | null>(null)
+
 const uploadForm = ref({
   title: '',
   description: '',
-  category: '学术论文',
-  visibility: 'public'
+  category: '课程资料',
+  tagsText: '',
+  visibility: 'private',
 })
-const selectedFile = ref<File | null>(null)
 
-// Load documents list
-const loadDocuments = async (silent = false) => {
+const editForm = ref({
+  title: '',
+  description: '',
+  category: '',
+  tagsText: '',
+  visibility: 'private',
+})
+
+const assistantQuery = ref('')
+const assistantAnswer = ref<RAGAnswerOut | null>(null)
+const askingAssistant = ref(false)
+
+const folderStorageKey = 'study_partner:knowledge_folders'
+
+const folderOptions = computed(() => {
+  const names = new Set<string>()
+  documents.value.forEach((doc) => {
+    if (doc.category) names.add(doc.category)
+  })
+  customFolders.value.forEach((folder) => names.add(folder))
+  return ['all', ...Array.from(names).sort()]
+})
+
+const allTags = computed(() => {
+  const names = new Set<string>()
+  documents.value.forEach((doc) => {
+    ;(doc.tags || []).forEach((tag) => {
+      if (tag) names.add(tag)
+    })
+  })
+  return ['all', ...Array.from(names).sort()]
+})
+
+const visibleDocuments = computed(() => {
+  return documents.value.filter((doc) => {
+    const folderMatched = selectedFolder.value === 'all' || doc.category === selectedFolder.value
+    const tagMatched = selectedTag.value === 'all' || (doc.tags || []).includes(selectedTag.value)
+    return folderMatched && tagMatched
+  })
+})
+
+const unimportedTeacherFiles = computed(() => {
+  const usedFileIds = new Set(documents.value.map((doc) => doc.file_id))
+  return teacherFiles.value.filter((item) => !usedFileIds.has(item.file.id))
+})
+
+function parseTags(text: string) {
+  return text
+    .split(/[,，\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function tagsToText(tags?: string[]) {
+  return (tags || []).join('，')
+}
+
+function saveCustomFolders() {
+  localStorage.setItem(folderStorageKey, JSON.stringify(customFolders.value))
+}
+
+function loadCustomFolders() {
+  try {
+    const raw = localStorage.getItem(folderStorageKey)
+    customFolders.value = raw ? JSON.parse(raw) : []
+  } catch (error) {
+    customFolders.value = []
+  }
+}
+
+function createFolder() {
+  const folder = newFolderName.value.trim()
+  if (!folder) return
+  if (!customFolders.value.includes(folder)) {
+    customFolders.value.push(folder)
+    saveCustomFolders()
+  }
+  selectedFolder.value = folder
+  uploadForm.value.category = folder
+  newFolderName.value = ''
+  ElMessage.success('文件夹已创建')
+}
+
+function normalizeDocumentResponse(data: any): KnowledgeDocumentOut[] {
+  if (Array.isArray(data)) return data
+  return data?.items || []
+}
+
+async function loadDocuments(silent = false) {
   if (!silent) loadingDocs.value = true
   try {
-    const res = await knowledgeApi.listDocuments()
-    documents.value = res.data || []
-    
-    // Auto start polling if any document is not processed yet
-    const hasUnfinished = documents.value.some(d => 
-      ['pending', 'parsing', 'chunking', 'embedding'].includes(d.process_status)
+    const res = await knowledgeApi.listDocuments({ page_size: 100 })
+    documents.value = normalizeDocumentResponse(res.data)
+
+    const hasUnfinished = documents.value.some((doc) =>
+      ['pending', 'parsing', 'chunking', 'embedding'].includes(doc.process_status),
     )
-    
     if (hasUnfinished && !pollTimer.value) {
       startPolling()
-    } else if (!hasUnfinished && pollTimer.value) {
+    } else if (!hasUnfinished) {
       stopPolling()
     }
-  } catch (err) {
-    console.error("Failed to load documents", err)
+  } catch (error) {
+    documents.value = []
   } finally {
     if (!silent) loadingDocs.value = false
   }
 }
 
-// Polling parser helper
-const startPolling = () => {
+async function loadTeacherFiles() {
+  try {
+    const res = await knowledgeApi.listTeacherFiles()
+    teacherFiles.value = res.data || []
+  } catch (error) {
+    teacherFiles.value = []
+  }
+}
+
+function startPolling() {
   pollTimer.value = setInterval(() => {
     loadDocuments(true)
   }, 5000)
 }
-const stopPolling = () => {
+
+function stopPolling() {
   if (pollTimer.value) {
     clearInterval(pollTimer.value)
     pollTimer.value = null
   }
 }
 
-// File Select trigger
-const handleFileChange = (event: Event) => {
+function handleFileChange(event: Event) {
   const target = event.target as HTMLInputElement
-  if (target.files && target.files.length > 0) {
-    const file = target.files[0]
-    // Check type
-    const ext = file.name.split('.').pop()?.toLowerCase()
-    if (!['pdf', 'docx', 'txt', 'md', 'markdown'].includes(ext || '')) {
-      ElMessage.warning('仅支持 PDF, DOCX, TXT, MD 格式的学术文档')
-      return
-    }
-    selectedFile.value = file
-    // Pre-populate title
-    if (!uploadForm.value.title) {
-      uploadForm.value.title = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
-    }
+  const file = target.files?.[0]
+  if (!file) return
+
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  if (!['pdf', 'docx', 'txt', 'md', 'markdown'].includes(ext || '')) {
+    ElMessage.warning('仅支持 PDF、DOCX、TXT、MD 文件')
+    return
+  }
+
+  selectedFile.value = file
+  if (!uploadForm.value.title) {
+    uploadForm.value.title = file.name.replace(/\.[^.]+$/, '')
   }
 }
 
-// Submit Upload Flow
-const handleUploadSubmit = async () => {
+function openUploadDialog() {
+  uploadForm.value.category = selectedFolder.value === 'all' ? '课程资料' : selectedFolder.value
+  uploadDialogVisible.value = true
+}
+
+async function handleUploadSubmit() {
   if (!selectedFile.value) {
-    ElMessage.warning('请选择需要上传的文件')
+    ElMessage.warning('请选择文件')
     return
   }
   if (!uploadForm.value.title.trim()) {
-    ElMessage.warning('请填写文档标题')
+    ElMessage.warning('请填写资料标题')
     return
   }
 
   uploadingFile.value = true
   try {
-    // 1. Upload to MinIO physical server
     const uploadRes = await knowledgeApi.uploadFile(selectedFile.value)
-    const fileId = uploadRes.data.id
-
-    // 2. Create Knowledge Document DB record & trigger background parser
     await knowledgeApi.createDocument({
-      file_id: fileId,
+      file_id: uploadRes.data.id,
       title: uploadForm.value.title.trim(),
       description: uploadForm.value.description.trim() || undefined,
-      category: uploadForm.value.category,
-      visibility: uploadForm.value.visibility
+      category: uploadForm.value.category.trim() || '课程资料',
+      tags: parseTags(uploadForm.value.tagsText),
+      visibility: uploadForm.value.visibility,
     })
-
-    ElMessage.success('文档上传并提交解析成功，请耐心等待切片索引')
+    ElMessage.success('文件已提交解析')
     uploadDialogVisible.value = false
     selectedFile.value = null
-    uploadForm.value = { title: '', description: '', category: '学术论文', visibility: 'public' }
-    
-    // Reload lists
+    uploadForm.value = {
+      title: '',
+      description: '',
+      category: selectedFolder.value === 'all' ? '课程资料' : selectedFolder.value,
+      tagsText: '',
+      visibility: 'private',
+    }
     loadDocuments()
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.message || '物理文件上传或记录提交失败')
+    ElMessage.error(error.response?.data?.message || '上传失败')
   } finally {
     uploadingFile.value = false
   }
 }
 
-// Delete document
-const handleDeleteDocument = (doc: KnowledgeDocumentOut) => {
-  ElMessageBox.confirm(
-    `确定删除知识库文档「${doc.title}」吗？此操作会同步清理物理存储与向量数据库中的切片。`,
-    '提示',
-    {
-      confirmButtonText: '确定删除',
+async function importTeacherFile(item: TeacherAssignedFileOut) {
+  importingTeacherFileId.value = item.file.id
+  try {
+    await knowledgeApi.createDocument({
+      file_id: item.file.id,
+      title: item.file.original_name.replace(/\.[^.]+$/, ''),
+      description: item.task_description || `来自导师任务：${item.task_title}`,
+      category: selectedFolder.value === 'all' ? '导师下发' : selectedFolder.value,
+      tags: ['导师下发', item.task_title].filter(Boolean),
+      visibility: 'private',
+    })
+    ElMessage.success('老师下发文件已加入知识库')
+    await Promise.all([loadDocuments(), loadTeacherFiles()])
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || '导入老师文件失败')
+  } finally {
+    importingTeacherFileId.value = ''
+  }
+}
+
+function openEditDialog(doc: KnowledgeDocumentOut) {
+  editingDoc.value = doc
+  editForm.value = {
+    title: doc.title,
+    description: doc.description || '',
+    category: doc.category || '课程资料',
+    tagsText: tagsToText(doc.tags),
+    visibility: doc.visibility || 'private',
+  }
+  editDialogVisible.value = true
+}
+
+async function handleEditSubmit() {
+  if (!editingDoc.value) return
+  if (!editForm.value.title.trim()) {
+    ElMessage.warning('标题不能为空')
+    return
+  }
+
+  try {
+    const res = await knowledgeApi.updateDocument(editingDoc.value.id, {
+      title: editForm.value.title.trim(),
+      description: editForm.value.description.trim() || undefined,
+      category: editForm.value.category.trim() || '课程资料',
+      tags: parseTags(editForm.value.tagsText),
+      visibility: editForm.value.visibility,
+    })
+    const updated = res.data as KnowledgeDocumentOut
+    documents.value = documents.value.map((doc) => (doc.id === updated.id ? updated : doc))
+    editDialogVisible.value = false
+    editingDoc.value = null
+    ElMessage.success('资料信息已更新')
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.message || '更新失败')
+  }
+}
+
+async function handleDeleteDocument(doc: KnowledgeDocumentOut) {
+  try {
+    await ElMessageBox.confirm(`确定删除「${doc.title}」吗？`, '提示', {
+      confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning',
-    }
-  ).then(async () => {
-    try {
-      await knowledgeApi.deleteDocument(doc.id)
-      ElMessage.success('删除成功')
-      loadDocuments()
-    } catch (e) {
-      ElMessage.error('删除文档失败')
-    }
-  }).catch(() => {})
-}
-
-// Semantic Search action
-const handleSearch = async () => {
-  if (!searchQuery.value.trim()) {
-    ElMessage.warning('请先输入要检索的学术课题')
-    return
-  }
-
-  searching.value = true
-  try {
-    const res = await knowledgeApi.searchKnowledge(searchQuery.value.trim(), 4)
-    searchResults.value = res.data || []
-  } catch (err) {
-    ElMessage.error('语义检索失败')
-  } finally {
-    searching.value = false
+    })
+    await knowledgeApi.deleteDocument(doc.id)
+    ElMessage.success('文档已删除')
+    loadDocuments()
+  } catch (error) {
+    // cancelled
   }
 }
 
-// RAG QA Sandbox action
-const handleQA = async () => {
-  if (!qaQuery.value.trim()) {
-    ElMessage.warning('请先提出你的科研疑问')
+async function handleAssistantAsk() {
+  if (!assistantQuery.value.trim()) {
+    ElMessage.warning('请输入要搜索或提问的内容')
     return
   }
 
-  askingQA.value = true
-  qaAnswer.value = null
+  askingAssistant.value = true
+  assistantAnswer.value = null
   try {
-    const res = await knowledgeApi.knowledgeQA(qaQuery.value.trim())
-    qaAnswer.value = res.data
+    const res = await knowledgeApi.knowledgeQA(assistantQuery.value.trim())
+    assistantAnswer.value = res.data
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.message || '知识库QA大模型检索失败')
+    ElMessage.error(error.response?.data?.message || '知识库助手检索失败')
   } finally {
-    askingQA.value = false
+    askingAssistant.value = false
   }
+}
+
+function statusText(status: string) {
+  const labels: Record<string, string> = {
+    pending: '排队中',
+    parsing: '解析中',
+    chunking: '切片中',
+    embedding: '索引中',
+    completed: '可检索',
+    failed: '失败',
+  }
+  return labels[status] || status
+}
+
+function statusClass(status: string) {
+  if (status === 'completed') return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300'
+  if (['pending', 'parsing', 'chunking', 'embedding'].includes(status)) {
+    return 'bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-300'
+  }
+  return 'bg-red-50 text-red-700 dark:bg-red-950/20 dark:text-red-300'
 }
 
 onMounted(() => {
-  loadDocuments()
+  loadCustomFolders()
+  Promise.all([loadDocuments(), loadTeacherFiles()])
 })
 
 onUnmounted(() => {
@@ -195,317 +356,309 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-    <!-- Left: Files Management (7 cols) -->
-    <div class="lg:col-span-7 flex flex-col h-[calc(100vh-10rem)]">
-      <div class="minimal-card p-6 bg-white dark:bg-zinc-900 flex-1 flex flex-col min-h-0">
-        <!-- Roster header -->
-        <div class="pb-4 border-b border-gray-100 dark:border-zinc-800 flex items-center justify-between flex-shrink-0">
+  <div class="grid grid-cols-1 gap-6 xl:grid-cols-12">
+    <aside class="xl:col-span-3 space-y-5">
+      <section class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div class="mb-4 flex items-center justify-between">
+          <h3 class="text-xs font-semibold text-gray-900 dark:text-zinc-50">文件夹</h3>
+          <span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">
+            {{ folderOptions.length - 1 }}
+          </span>
+        </div>
+
+        <div class="space-y-2">
+          <button
+            v-for="folder in folderOptions"
+            :key="folder"
+            @click="selectedFolder = folder"
+            class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition"
+            :class="selectedFolder === folder ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300' : 'text-gray-500 hover:bg-gray-50 dark:text-zinc-400 dark:hover:bg-zinc-800'"
+          >
+            <span>{{ folder === 'all' ? '全部资料' : folder }}</span>
+            <span class="text-[10px] opacity-70">
+              {{ folder === 'all' ? documents.length : documents.filter((doc) => doc.category === folder).length }}
+            </span>
+          </button>
+        </div>
+
+        <div class="mt-4 flex gap-2">
+          <input
+            v-model="newFolderName"
+            @keyup.enter="createFolder"
+            type="text"
+            placeholder="新文件夹"
+            class="min-w-0 flex-1 rounded border border-gray-200 bg-gray-50 px-2 py-1.5 text-xs outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950"
+          />
+          <button
+            @click="createFolder"
+            class="rounded border border-gray-200 px-2 text-gray-500 transition hover:bg-gray-50 dark:border-zinc-800 dark:hover:bg-zinc-800"
+            title="创建文件夹"
+          >
+            <FolderPlus class="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </section>
+
+      <section class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <h3 class="mb-4 text-xs font-semibold text-gray-900 dark:text-zinc-50">标签</h3>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="tagName in allTags"
+            :key="tagName"
+            @click="selectedTag = tagName"
+            class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition"
+            :class="selectedTag === tagName ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/40 dark:bg-blue-950/30 dark:text-blue-300' : 'border-gray-200 text-gray-500 hover:bg-gray-50 dark:border-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800'"
+          >
+            <Tag class="h-3 w-3" />
+            <span>{{ tagName === 'all' ? '全部标签' : tagName }}</span>
+          </button>
+        </div>
+      </section>
+    </aside>
+
+    <main class="xl:col-span-5 flex flex-col gap-5">
+      <section class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div class="mb-4 flex items-center justify-between gap-3">
           <div>
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50 flex items-center space-x-1.5">
-              <BookOpen class="w-4 h-4 text-blue-600" />
-              <span>共享学术文献库</span>
-            </h3>
-            <p class="text-[10px] text-gray-400 mt-0.5">沉淀实验室学术论文、技术笔记，后台支持滑动切片与向量索引。</p>
+            <h2 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">知识库资料</h2>
+            <p class="mt-1 text-[11px] text-gray-400 dark:text-zinc-500">支持 PDF、DOCX、TXT、Markdown，按文件夹和标签管理。</p>
           </div>
-
           <button
-            @click="uploadDialogVisible = true"
-            class="flex items-center space-x-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm focus:outline-none"
+            @click="openUploadDialog"
+            class="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-500"
           >
-            <Upload class="w-3.5 h-3.5" />
-            <span>上传文献</span>
+            <Upload class="h-3.5 w-3.5" />
+            <span>上传资料</span>
           </button>
         </div>
 
-        <!-- Files list -->
-        <div class="flex-1 overflow-y-auto mt-4 space-y-3 pr-1" v-loading="loadingDocs">
-          <div
-            v-for="doc in documents"
+        <div class="max-h-[46vh] space-y-3 overflow-y-auto pr-1" v-loading="loadingDocs">
+          <article
+            v-for="doc in visibleDocuments"
             :key="doc.id"
-            class="p-4 rounded-lg border border-gray-100 dark:border-zinc-800 bg-gray-50/20 dark:bg-zinc-950/10 flex items-center justify-between text-xs hover:border-blue-500/50 transition-all select-none group"
+            class="group rounded-lg border border-gray-100 bg-gray-50/50 p-4 transition hover:border-blue-200 hover:bg-white dark:border-zinc-800 dark:bg-zinc-950/20 dark:hover:bg-zinc-900"
           >
-            <!-- Left Info -->
-            <div class="space-y-1.5 flex-1 min-w-0 pr-4">
-              <div class="flex items-center space-x-2">
-                <FileText class="w-4 h-4 text-blue-500 flex-shrink-0" />
-                <span class="font-bold text-gray-800 dark:text-zinc-200 truncate block">{{ doc.title }}</span>
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0 flex-1 space-y-2">
+                <div class="flex items-center gap-2">
+                  <FileText class="h-4 w-4 shrink-0 text-blue-500" />
+                  <button @click="openEditDialog(doc)" class="truncate text-left text-xs font-semibold text-gray-900 hover:text-blue-600 dark:text-zinc-100">
+                    {{ doc.title }}
+                  </button>
+                </div>
+                <p v-if="doc.description" class="line-clamp-2 text-[11px] leading-relaxed text-gray-400 dark:text-zinc-500">{{ doc.description }}</p>
+                <div class="flex flex-wrap items-center gap-2 text-[10px]">
+                  <span class="rounded bg-gray-100 px-1.5 py-0.5 text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">{{ doc.category || '未分类' }}</span>
+                  <span v-for="tagName in doc.tags || []" :key="tagName" class="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">
+                    #{{ tagName }}
+                  </span>
+                </div>
               </div>
-              <div class="flex items-center space-x-2 text-[10px] text-gray-400">
-                <span class="bg-gray-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded text-[9px]">{{ doc.category }}</span>
-                <span>&bull;</span>
-                <span>切片数: {{ doc.chunk_count }}</span>
-              </div>
-            </div>
 
-            <!-- Right Status and Action -->
-            <div class="flex items-center space-x-3 flex-shrink-0">
-              <!-- Processing status tags -->
-              <span
-                v-if="doc.process_status === 'completed'"
-                class="inline-flex items-center space-x-0.5 px-2 py-0.5 rounded text-[9px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400"
-              >
-                <CheckCircle2 class="w-3 h-3" />
-                <span>已就绪</span>
-              </span>
-
-              <span
-                v-else-if="['pending', 'parsing', 'chunking', 'embedding'].includes(doc.process_status)"
-                class="inline-flex items-center space-x-0.5 px-2 py-0.5 rounded text-[9px] font-bold bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400"
-              >
-                <RefreshCw class="w-3 h-3 animate-spin" />
-                <span>解析中</span>
-              </span>
-
-              <el-tooltip
-                v-else
-                :content="doc.process_error || '文档解析或向量化失败'"
-                placement="top"
-              >
-                <span class="inline-flex items-center space-x-0.5 px-2 py-0.5 rounded text-[9px] font-bold bg-red-50 text-red-700 dark:bg-red-950/20 dark:text-red-400 cursor-help">
-                  <AlertCircle class="w-3 h-3" />
-                  <span>失败</span>
+              <div class="flex shrink-0 items-center gap-2">
+                <span class="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold" :class="statusClass(doc.process_status)">
+                  <RefreshCw v-if="['pending', 'parsing', 'chunking', 'embedding'].includes(doc.process_status)" class="h-3 w-3 animate-spin" />
+                  <CheckCircle2 v-else-if="doc.process_status === 'completed'" class="h-3 w-3" />
+                  <AlertCircle v-else class="h-3 w-3" />
+                  <span>{{ statusText(doc.process_status) }}</span>
                 </span>
-              </el-tooltip>
-
-              <!-- Delete Action -->
-              <button
-                @click="handleDeleteDocument(doc)"
-                class="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-0.5"
-              >
-                <Trash2 class="w-3.5 h-3.5" />
-              </button>
+                <button
+                  @click="handleDeleteDocument(doc)"
+                  class="rounded p-1 text-gray-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 group-hover:opacity-100 dark:hover:bg-red-950/20"
+                  title="删除"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
-          </div>
+          </article>
 
-          <div v-if="documents.length === 0" class="h-full flex flex-col items-center justify-center text-center text-gray-400 space-y-3 py-16">
-            <BookOpen class="w-10 h-10 text-gray-200 dark:text-zinc-800" />
-            <h4 class="text-xs font-semibold">库内文献为空</h4>
-            <p class="text-[10px] text-gray-400 max-w-xs">点击右上角“上传文献”导入实验室 PDF 论文或 Markdown 文档。</p>
+          <div v-if="visibleDocuments.length === 0" class="flex h-48 flex-col items-center justify-center rounded-lg border border-dashed border-gray-200 text-center text-gray-400 dark:border-zinc-800">
+            <BookOpen class="mb-3 h-9 w-9 text-gray-200 dark:text-zinc-800" />
+            <p class="text-xs">当前筛选下暂无资料</p>
           </div>
         </div>
-      </div>
-    </div>
+      </section>
 
-    <!-- Right: QA Sandbox and Semantic Search (5 cols) -->
-    <div class="lg:col-span-5 flex flex-col h-[calc(100vh-10rem)]">
-      <div class="minimal-card p-6 bg-white dark:bg-zinc-900 flex-1 flex flex-col min-h-0">
-        <!-- Tabs -->
-        <div class="flex border-b border-gray-100 dark:border-zinc-800 text-xs font-semibold flex-shrink-0 mb-4">
-          <button
-            @click="activeTab = 'search'"
-            class="pb-2.5 px-4 border-b-2 transition-all focus:outline-none"
-            :class="activeTab === 'search' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400'"
-          >
-            多源语义检索
-          </button>
-          <button
-            @click="activeTab = 'qa'"
-            class="pb-2.5 px-4 border-b-2 transition-all focus:outline-none"
-            :class="activeTab === 'qa' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-400'"
-          >
-            知识库 RAG 问答
-          </button>
+      <section class="rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div class="mb-4 flex items-center justify-between">
+          <h3 class="text-xs font-semibold text-gray-900 dark:text-zinc-50">老师下发文件</h3>
+          <span class="rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300">
+            {{ unimportedTeacherFiles.length }}
+          </span>
         </div>
 
-        <!-- 1. Semantic Search Tab -->
-        <div v-if="activeTab === 'search'" class="flex-1 flex flex-col min-h-0">
-          <div class="flex items-center space-x-2 flex-shrink-0 mb-4">
-            <input
-              v-model="searchQuery"
-              @keyup.enter="handleSearch"
-              type="text"
-              placeholder="输入关键词或自然语言，如: Transformer 自注意力"
-              class="flex-1 px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded-lg text-xs focus:outline-none focus:border-blue-500 text-gray-800 dark:text-zinc-100"
-            />
+        <div class="space-y-2">
+          <div
+            v-for="item in unimportedTeacherFiles"
+            :key="`${item.task_id}-${item.file.id}`"
+            class="flex items-center justify-between gap-3 rounded-lg border border-indigo-100 bg-indigo-50/50 p-3 dark:border-indigo-900/40 dark:bg-indigo-950/20"
+          >
+            <div class="min-w-0">
+              <p class="truncate text-xs font-semibold text-gray-900 dark:text-zinc-50">{{ item.file.original_name }}</p>
+              <p class="mt-1 truncate text-[10px] text-indigo-700 dark:text-indigo-300">来自任务：{{ item.task_title }}</p>
+            </div>
             <button
-              @click="handleSearch"
-              :disabled="searching"
-              class="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg focus:outline-none disabled:opacity-50"
+              @click="importTeacherFile(item)"
+              :disabled="importingTeacherFileId === item.file.id"
+              class="shrink-0 rounded border border-indigo-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-60 dark:border-indigo-900/50 dark:bg-zinc-900 dark:text-indigo-300"
             >
-              <Search class="w-4 h-4" />
+              {{ importingTeacherFileId === item.file.id ? '导入中' : '加入知识库' }}
             </button>
           </div>
 
-          <!-- Search results -->
-          <div class="flex-1 overflow-y-auto space-y-3 pr-1">
-            <div
-              v-for="(chunk, idx) in searchResults"
-              :key="idx"
-              class="p-3.5 rounded-lg border border-gray-100 dark:border-zinc-800 bg-gray-50/20 dark:bg-zinc-950/10 text-xs space-y-2 leading-relaxed"
-            >
-              <!-- Info header -->
-              <div class="flex justify-between items-center text-[9px] text-gray-400 pb-1.5 border-b border-gray-100/50 dark:border-zinc-800/40">
-                <span class="font-bold truncate max-w-[180px]">{{ chunk.document_title || '关联文档' }}</span>
-                <span class="font-mono bg-blue-50 dark:bg-blue-950/20 text-blue-600 px-1.5 py-0.5 rounded">
-                  匹配分 {{ chunk.score.toFixed(3) }}
-                </span>
-              </div>
-              <p class="text-gray-600 dark:text-zinc-300">{{ chunk.content }}</p>
-            </div>
+          <div v-if="unimportedTeacherFiles.length === 0" class="rounded-lg border border-dashed border-gray-200 py-8 text-center text-[11px] text-gray-400 dark:border-zinc-800">
+            暂无未导入的老师下发文件
+          </div>
+        </div>
+      </section>
+    </main>
 
-            <!-- Empty results placeholder -->
-            <div v-if="searchResults.length === 0 && !searching" class="h-full flex flex-col items-center justify-center text-center text-gray-400 space-y-2 py-16">
-              <Search class="w-8 h-8 text-gray-200 dark:text-zinc-800" />
-              <p class="text-[10px]">在上方输入搜索内容，AI 会自动寻找最相似的知识切片。</p>
-            </div>
-
-            <div v-if="searching" class="py-12 flex items-center justify-center space-x-2 text-gray-400 text-xs">
-              <RefreshCw class="w-4 h-4 animate-spin" />
-              <span>向量数据库检索中...</span>
-            </div>
+    <aside class="xl:col-span-4">
+      <section class="sticky top-6 rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div class="mb-4 flex items-center gap-2">
+          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-300">
+            <MessageSquare class="h-4 w-4" />
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">知识库搜索助手</h3>
+            <p class="text-[10px] text-gray-400">统一检索和问答入口</p>
           </div>
         </div>
 
-        <!-- 2. RAG QA Tab -->
-        <div v-else class="flex-1 flex flex-col min-h-0">
-          <div class="flex items-center space-x-2 flex-shrink-0 mb-4">
-            <input
-              v-model="qaQuery"
-              @keyup.enter="handleQA"
-              type="text"
-              placeholder="向大模型提问共享知识库内容..."
-              class="flex-1 px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded-lg text-xs focus:outline-none focus:border-blue-500 text-gray-800 dark:text-zinc-100"
-            />
-            <button
-              @click="handleQA"
-              :disabled="askingQA"
-              class="p-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg focus:outline-none disabled:opacity-50"
-            >
-              <MessageSquare class="w-4 h-4" />
-            </button>
-          </div>
+        <div class="flex gap-2">
+          <input
+            v-model="assistantQuery"
+            @keyup.enter="handleAssistantAsk"
+            type="text"
+            placeholder="输入问题或关键词"
+            class="min-w-0 flex-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950"
+          />
+          <button
+            @click="handleAssistantAsk"
+            :disabled="askingAssistant"
+            class="rounded-lg bg-blue-600 p-2.5 text-white transition hover:bg-blue-500 disabled:opacity-60"
+          >
+            <RefreshCw v-if="askingAssistant" class="h-4 w-4 animate-spin" />
+            <Search v-else class="h-4 w-4" />
+          </button>
+        </div>
 
-          <!-- QA response sandbox -->
-          <div class="flex-1 overflow-y-auto pr-1">
-            <div v-if="qaAnswer" class="space-y-4 text-xs">
-              <div class="p-4 bg-gray-50 dark:bg-zinc-950 rounded-lg border border-gray-100 dark:border-zinc-800/50 leading-relaxed text-gray-700 dark:text-zinc-300 whitespace-pre-wrap">
-                {{ qaAnswer.answer }}
+        <div class="mt-4 max-h-[58vh] overflow-y-auto pr-1">
+          <div v-if="assistantAnswer" class="space-y-4 text-xs">
+            <div class="whitespace-pre-wrap rounded-lg border border-gray-100 bg-gray-50 p-4 leading-relaxed text-gray-700 dark:border-zinc-800 dark:bg-zinc-950/30 dark:text-zinc-300">
+              {{ assistantAnswer.answer }}
+            </div>
+
+            <div v-if="assistantAnswer.citations?.length" class="rounded-lg border border-blue-100 bg-blue-50/40 p-3 dark:border-blue-900/40 dark:bg-blue-950/20">
+              <div class="mb-2 flex items-center gap-1 text-[11px] font-semibold text-blue-700 dark:text-blue-300">
+                <Layers class="h-3.5 w-3.5" />
+                <span>参考来源</span>
               </div>
-
-              <!-- Citations -->
-              <div v-if="qaAnswer.citations && qaAnswer.citations.length > 0" class="space-y-2 p-3 bg-blue-50/20 dark:bg-blue-950/10 rounded-lg border border-blue-100/30 dark:border-blue-900/20">
-                <span class="text-[10px] text-blue-600 dark:text-blue-400 font-bold block flex items-center space-x-1">
-                  <Layers class="w-3.5 h-3.5" />
-                  <span>参考引文与学术来源 (Citations)</span>
-                </span>
-                <div class="space-y-1.5 text-[10px] text-gray-500 dark:text-zinc-400 font-mono">
-                  <div v-for="(cit, idx) in qaAnswer.citations" :key="idx" class="flex items-start space-x-1.5">
-                    <span class="bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-400 font-bold px-1.5 rounded flex-shrink-0">
-                      [{{ cit.source_index }}]
-                    </span>
-                    <span class="leading-normal">{{ cit.document_title }} (相似度: {{ cit.score.toFixed(3) }})</span>
-                  </div>
+              <div class="space-y-2">
+                <div v-for="(citation, idx) in assistantAnswer.citations" :key="idx" class="text-[10px] leading-relaxed text-gray-500 dark:text-zinc-400">
+                  [{{ citation.source_index }}] {{ citation.document_title }} · {{ citation.score.toFixed(3) }}
                 </div>
               </div>
             </div>
+          </div>
 
-            <!-- Empty QA Sandbox placeholder -->
-            <div v-if="!qaAnswer && !askingQA" class="h-full flex flex-col items-center justify-center text-center text-gray-400 space-y-2 py-16">
-              <HelpCircle class="w-8 h-8 text-gray-200 dark:text-zinc-800" />
-              <p class="text-[10px]">提出问题，大模型会自动检索上传的文献库作为先验知识进行解答并罗列文献引用。</p>
-            </div>
-
-            <div v-if="askingQA" class="py-12 flex flex-col items-center justify-center space-y-3 text-gray-400 text-xs h-full">
-              <RefreshCw class="w-5 h-5 animate-spin" />
-              <span>知识定位中 & 大模型深度阅读中...</span>
-            </div>
+          <div v-else class="flex h-56 flex-col items-center justify-center text-center text-gray-400 dark:text-zinc-500">
+            <MessageSquare class="mb-3 h-9 w-9 text-gray-200 dark:text-zinc-800" />
+            <p class="text-xs">上传或导入资料后，可在这里直接提问。</p>
           </div>
         </div>
-      </div>
-    </div>
+      </section>
+    </aside>
 
-    <!-- Upload Document Dialog -->
-    <el-dialog
-      v-model="uploadDialogVisible"
-      title="上传文献资料"
-      width="420px"
-      class="minimalist-dialog"
-    >
+    <el-dialog v-model="uploadDialogVisible" title="上传资料" width="460px" class="minimalist-dialog">
       <div class="space-y-4 text-xs" v-loading="uploadingFile">
-        <!-- File Picker -->
         <div class="space-y-1.5">
-          <label class="text-gray-500 font-medium">选择本地文献文件 <span class="text-red-500">*</span></label>
-          <div class="flex items-center justify-center w-full">
-            <label
-              class="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-200 dark:border-zinc-800 rounded-lg cursor-pointer hover:bg-gray-50/50 dark:hover:bg-zinc-950/20 transition-all"
-            >
-              <div class="flex flex-col items-center justify-center pt-5 pb-6">
-                <Upload class="w-6 h-6 text-gray-400 mb-2" />
-                <p class="text-[10px] text-gray-500 text-center px-4 leading-normal">
-                  <span class="font-bold">点击选择</span> 或是拖拽文献到此区域
-                </p>
-                <p class="text-[9px] text-gray-400 mt-1">仅支持 PDF, DOCX, TXT, MD (最大 10MB)</p>
-              </div>
-              <input
-                type="file"
-                class="hidden"
-                accept=".pdf,.docx,.txt,.md,.markdown"
-                @change="handleFileChange"
-              />
-            </label>
-          </div>
-          <!-- Selected filename display -->
-          <div v-if="selectedFile" class="p-2.5 rounded bg-blue-50/30 border border-blue-100/30 text-[10px] text-blue-700 flex items-center justify-between">
-            <span class="truncate max-w-[280px] font-mono font-medium">{{ selectedFile.name }}</span>
-            <span class="text-[9px] text-gray-400 font-mono">({{(selectedFile.size / 1024).toFixed(1)}} KB)</span>
-          </div>
+          <label class="font-medium text-gray-500">文件 <span class="text-red-500">*</span></label>
+          <label class="flex h-32 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-200 transition hover:bg-gray-50 dark:border-zinc-800 dark:hover:bg-zinc-950/30">
+            <Upload class="mb-2 h-6 w-6 text-gray-400" />
+            <span class="text-[11px] text-gray-500">点击选择 PDF、DOCX、TXT、MD</span>
+            <input type="file" class="hidden" accept=".pdf,.docx,.txt,.md,.markdown" @change="handleFileChange" />
+          </label>
+          <p v-if="selectedFile" class="truncate rounded bg-blue-50 px-2 py-1.5 text-[10px] text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">{{ selectedFile.name }}</p>
         </div>
 
-        <!-- Document Title -->
-        <div class="space-y-1">
-          <label class="text-gray-500 font-medium">文献大纲标题 <span class="text-red-500">*</span></label>
-          <input
-            v-model="uploadForm.title"
-            type="text"
-            placeholder="文献命名"
-            class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded focus:outline-none focus:border-blue-500"
-          />
+        <div class="space-y-1.5">
+          <label class="font-medium text-gray-500">标题 <span class="text-red-500">*</span></label>
+          <input v-model="uploadForm.title" class="w-full rounded border border-gray-200 bg-gray-50 px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950" />
         </div>
 
-        <!-- Category & Visibility -->
-        <div class="grid grid-cols-2 gap-4">
-          <div class="space-y-1">
-            <label class="text-gray-500 font-medium">资料分类</label>
-            <select
-              v-model="uploadForm.category"
-              class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded focus:outline-none focus:border-blue-500 bg-white"
-            >
-              <option value="学术论文">学术论文</option>
-              <option value="技术笔记">技术笔记</option>
-              <option value="开发文档">开发文档</option>
-              <option value="其他">其他</option>
-            </select>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="space-y-1.5">
+            <label class="font-medium text-gray-500">文件夹</label>
+            <input v-model="uploadForm.category" class="w-full rounded border border-gray-200 bg-gray-50 px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950" />
           </div>
-          <div class="space-y-1">
-            <label class="text-gray-500 font-medium">共享可见范围</label>
-            <select
-              v-model="uploadForm.visibility"
-              class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded focus:outline-none focus:border-blue-500 bg-white"
-            >
-              <option value="public">共享全实验室 (Public)</option>
-              <option value="teachers_only">仅对导师可见 (Teachers only)</option>
-              <option value="private">仅限自己可见 (Private)</option>
+          <div class="space-y-1.5">
+            <label class="font-medium text-gray-500">可见性</label>
+            <select v-model="uploadForm.visibility" class="w-full rounded border border-gray-200 bg-white px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950">
+              <option value="private">仅自己可见</option>
+              <option value="public">公共可见</option>
+              <option value="teachers_only">仅导师可见</option>
             </select>
           </div>
         </div>
 
-        <!-- Description -->
-        <div class="space-y-1">
-          <label class="text-gray-500 font-medium">内容概要与描述（选填）</label>
-          <textarea
-            v-model="uploadForm.description"
-            rows="3"
-            placeholder="简要填写研究大纲背景..."
-            class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded focus:outline-none focus:border-blue-500"
-          ></textarea>
+        <div class="space-y-1.5">
+          <label class="font-medium text-gray-500">标签</label>
+          <input v-model="uploadForm.tagsText" placeholder="用逗号分隔，例如：论文，算法，复习" class="w-full rounded border border-gray-200 bg-gray-50 px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950" />
+        </div>
+
+        <div class="space-y-1.5">
+          <label class="font-medium text-gray-500">说明</label>
+          <textarea v-model="uploadForm.description" rows="3" class="w-full resize-none rounded border border-gray-200 bg-gray-50 px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950"></textarea>
         </div>
       </div>
 
       <template #footer>
-        <div class="flex justify-end space-x-2 pt-2">
-          <button @click="uploadDialogVisible = false" :disabled="uploadingFile" class="px-3 py-1.5 border border-gray-200 rounded text-xs text-gray-500 hover:bg-gray-50">取消</button>
-          <button @click="handleUploadSubmit" :disabled="uploadingFile" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-medium">开始解析上传</button>
+        <div class="flex justify-end gap-2">
+          <button @click="uploadDialogVisible = false" class="rounded border border-gray-200 px-3 py-1.5 text-xs text-gray-500 transition hover:bg-gray-50 dark:border-zinc-800 dark:hover:bg-zinc-800">取消</button>
+          <button @click="handleUploadSubmit" class="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-500">上传解析</button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="editDialogVisible" title="管理资料" width="460px" class="minimalist-dialog">
+      <div class="space-y-4 text-xs">
+        <div class="space-y-1.5">
+          <label class="font-medium text-gray-500">标题</label>
+          <input v-model="editForm.title" class="w-full rounded border border-gray-200 bg-gray-50 px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950" />
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div class="space-y-1.5">
+            <label class="font-medium text-gray-500">文件夹</label>
+            <input v-model="editForm.category" class="w-full rounded border border-gray-200 bg-gray-50 px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950" />
+          </div>
+          <div class="space-y-1.5">
+            <label class="font-medium text-gray-500">可见性</label>
+            <select v-model="editForm.visibility" class="w-full rounded border border-gray-200 bg-white px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950">
+              <option value="private">仅自己可见</option>
+              <option value="public">公共可见</option>
+              <option value="teachers_only">仅导师可见</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="space-y-1.5">
+          <label class="font-medium text-gray-500">标签</label>
+          <input v-model="editForm.tagsText" class="w-full rounded border border-gray-200 bg-gray-50 px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950" />
+        </div>
+
+        <div class="space-y-1.5">
+          <label class="font-medium text-gray-500">说明</label>
+          <textarea v-model="editForm.description" rows="3" class="w-full resize-none rounded border border-gray-200 bg-gray-50 px-3 py-2 outline-none focus:border-blue-500 dark:border-zinc-800 dark:bg-zinc-950"></textarea>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <button @click="editDialogVisible = false" class="rounded border border-gray-200 px-3 py-1.5 text-xs text-gray-500 transition hover:bg-gray-50 dark:border-zinc-800 dark:hover:bg-zinc-800">取消</button>
+          <button @click="handleEditSubmit" class="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-blue-500">保存</button>
         </div>
       </template>
     </el-dialog>
@@ -518,7 +671,7 @@ onUnmounted(() => {
 }
 .overflow-y-auto::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.08);
-  border-radius: 4px;
+  border-radius: 999px;
 }
 .dark .overflow-y-auto::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.08);

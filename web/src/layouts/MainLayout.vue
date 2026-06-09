@@ -5,6 +5,7 @@ import { Bell, Sun, Moon } from 'lucide-vue-next'
 import AppSidebar from '../components/common/AppSidebar.vue'
 import { notificationApi } from '../api/modules/notification'
 import type { NotificationOut } from '../api/modules/notification'
+import { authApi } from '../api/modules/auth'
 
 import { onUnmounted } from 'vue'
 import { studyTimeApi } from '../api/modules/study_time'
@@ -35,17 +36,29 @@ const fetchNotifications = async () => {
     const res = await notificationApi.listNotifications()
     notifications.value = res.data || []
   } catch (error) {
-    console.warn("Failed to fetch notifications. Using mock data.")
-    // Safe fallback mock notifications
-    notifications.value = [
-      { id: '1', title: '新任务下达', content: '老师给你下发了「期末研究报告大纲提交」任务。', created_at: new Date().toISOString(), user_id: 'user-1', notification_type: 'task' },
-      { id: '2', title: 'AI 建议就绪', content: '根据你昨天的学习数据，伴学助手已为你生成今日规划。', created_at: new Date().toISOString(), user_id: 'user-1', notification_type: 'ai' },
-      { id: '3', title: '公告提醒', content: '系统计划于今晚 23:00 进行例行维护。', created_at: new Date(Date.now() - 86400000).toISOString(), read_at: new Date().toISOString(), user_id: 'user-1', notification_type: 'system' }
-    ]
+    console.warn('Failed to fetch notifications', error)
+    notifications.value = []
   }
 }
 
 const unreadCount = computed(() => notifications.value.filter(n => !n.read_at).length)
+
+const syncCurrentIdentity = async () => {
+  try {
+    const res = await authApi.getMe()
+    const user = res.data
+    if (!user) return
+    localStorage.setItem('sp_username', user.username)
+    if (user.display_name && user.display_name !== '未设置姓名') {
+      localStorage.setItem('sp_display_name', user.display_name)
+    } else {
+      localStorage.removeItem('sp_display_name')
+    }
+    window.dispatchEvent(new Event('profile-updated'))
+  } catch (error) {
+    console.warn('Failed to sync current identity', error)
+  }
+}
 
 const markAllAsRead = async () => {
   try {
@@ -54,9 +67,7 @@ const markAllAsRead = async () => {
       if (!n.read_at) n.read_at = new Date().toISOString()
     })
   } catch (error) {
-    notifications.value.forEach(n => {
-      if (!n.read_at) n.read_at = new Date().toISOString()
-    })
+    console.warn('Failed to mark all notifications as read', error)
   }
 }
 
@@ -66,7 +77,7 @@ const markSingleAsRead = async (item: NotificationOut) => {
     await notificationApi.markAsRead(item.id)
     item.read_at = new Date().toISOString()
   } catch (error) {
-    item.read_at = new Date().toISOString()
+    console.warn('Failed to mark notification as read', error)
   }
 }
 
@@ -83,15 +94,24 @@ const formatNotificationTime = (isoStr: string) => {
 let notificationTimer: any = null
 let heartbeatTimer: any = null
 
+const handleNewNotification = (event: Event) => {
+  const item = (event as CustomEvent<NotificationOut>).detail
+  if (!item?.id) return
+  if (notifications.value.some(n => n.id === item.id)) return
+  notifications.value.unshift(item)
+}
+
 onMounted(() => {
+  syncCurrentIdentity()
   fetchNotifications()
+  window.addEventListener('new-notification', handleNewNotification)
   // Poll notifications every 60 seconds
   notificationTimer = setInterval(fetchNotifications, 60000)
 
   // Start study time heartbeat if student
   const userRole = localStorage.getItem('sp_role')
   if (userRole === 'student') {
-    const sessionId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
+    const sessionId = crypto.randomUUID()
     const sendHeartbeat = async () => {
       try {
         await studyTimeApi.reportHeartbeat({
@@ -111,6 +131,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (notificationTimer) clearInterval(notificationTimer)
   if (heartbeatTimer) clearInterval(heartbeatTimer)
+  window.removeEventListener('new-notification', handleNewNotification)
 })
 </script>
 

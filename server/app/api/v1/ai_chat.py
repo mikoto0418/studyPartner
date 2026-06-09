@@ -28,7 +28,7 @@ async def create_conversation(
         db, user_id=current_user.id, title=conv_in.title, conversation_type=conv_in.conversation_type
     )
     return BaseResponse.success(
-        data=AIConversationOut.from_attributes(conv),
+        data=AIConversationOut.model_validate(conv),
         message="对话创建成功"
     )
 
@@ -46,7 +46,7 @@ async def list_conversations(
         conversation_type=conversation_type, keyword=keyword
     )
     page_data = PageData.create(
-        items=[AIConversationOut.from_attributes(item) for item in items],
+        items=[AIConversationOut.model_validate(item) for item in items],
         total=total,
         page=page,
         page_size=page_size
@@ -63,7 +63,7 @@ async def update_conversation_title(
     conv = await AIChatService.update_conversation_title(
         db, conversation_id=conversation_id, user_id=current_user.id, title=conv_in.title
     )
-    return BaseResponse.success(data=AIConversationOut.from_attributes(conv), message="标题已更新")
+    return BaseResponse.success(data=AIConversationOut.model_validate(conv), message="标题已更新")
 
 @router.delete("/conversations/{conversation_id}", response_model=BaseResponse[bool], summary="删除对话")
 async def delete_conversation(
@@ -86,7 +86,7 @@ async def list_messages(
         db, conversation_id=conversation_id, user_id=current_user.id, page=page, page_size=page_size
     )
     page_data = PageData.create(
-        items=[AIMessageOut.from_attributes(item) for item in items],
+        items=[AIMessageOut.model_validate(item) for item in items],
         total=total,
         page=page,
         page_size=page_size

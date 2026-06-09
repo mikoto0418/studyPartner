@@ -25,6 +25,7 @@ export interface StudentTask {
   title: string
   description?: string
   priority: string
+  start_date?: string
   due_date?: string
   status: 'in_progress' | 'submitted' | 'completed' | 'rejected'
   completed_at?: string
@@ -58,6 +59,7 @@ export interface TaskSubmissionOut {
   created_at: string
   username?: string
   nickname?: string
+  display_name?: string
 }
 
 export interface TaskDetails {
@@ -67,6 +69,7 @@ export interface TaskDetails {
     user_id: string
     username: string
     nickname?: string
+    display_name?: string
     status: string
     assigned_at?: string
     completed_at?: string

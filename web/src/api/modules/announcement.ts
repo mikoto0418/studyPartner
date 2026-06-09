@@ -3,19 +3,26 @@ import request from '../request'
 export interface AnnouncementData {
   title: string
   content: string
-  announcement_type: string
-  target_roles?: string[]
+  status?: 'draft' | 'published' | 'expired' | 'withdrawn'
+  target_type: 'all' | 'all_students' | 'all_teachers' | 'specific_users'
+  is_pinned?: boolean
+  publish_at?: string
+  expire_at?: string
+  receiver_ids?: string[]
 }
 
 export interface Announcement {
   id: string
   title: string
   content: string
-  announcement_type: string
-  target_roles: string[]
+  status: string
+  target_type: string
+  is_pinned: boolean
+  publish_at?: string
+  expire_at?: string
   creator_id: string
   created_at: string
-  read_at?: string
+  updated_at: string
 }
 
 export const announcementApi = {

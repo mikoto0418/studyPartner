@@ -18,6 +18,27 @@ export interface KnowledgeDocumentOut {
   updated_at: string
 }
 
+export interface FileOut {
+  id: string
+  uploader_id: string
+  original_name: string
+  storage_path: string
+  mime_type: string
+  file_size: number
+  source: string
+  created_at: string
+}
+
+export interface TeacherAssignedFileOut {
+  file: FileOut
+  task_id: string
+  task_title: string
+  task_description?: string
+  due_date?: string
+  priority?: string
+  status?: string
+}
+
 export interface CitationItem {
   source_index: number
   document_id: string
@@ -66,8 +87,22 @@ export const knowledgeApi = {
     return request.get(`/knowledge/documents/${id}`)
   },
 
+  updateDocument(id: string, data: {
+    title?: string
+    description?: string
+    category?: string
+    tags?: string[]
+    visibility?: string
+  }) {
+    return request.patch(`/knowledge/documents/${id}`, data)
+  },
+
   deleteDocument(id: string) {
     return request.delete(`/knowledge/documents/${id}`)
+  },
+
+  listTeacherFiles() {
+    return request.get('/knowledge/teacher-files')
   },
 
   searchKnowledge(query: string, limit = 5) {

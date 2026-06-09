@@ -1,12 +1,211 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
-import { Send, Sparkles, BrainCircuit, Lightbulb, Plus, Trash2, Edit2, X, MessageSquare } from 'lucide-vue-next'
+import { Send, Sparkles, BrainCircuit, Lightbulb, Plus, Trash2, Edit2, X, MessageSquare, RefreshCw } from 'lucide-vue-next'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { aiChatApi } from '../../api/modules/ai_chat'
 import type { ConversationOut, MessageOut } from '../../api/modules/ai_chat'
 import { memoryApi } from '../../api/modules/memory'
 import type { StudentMemoryOut } from '../../api/modules/memory'
 import request from '../../api/request'
+
+const escapeHtml = (value: string) => {
+  const entities: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }
+
+  return value.replace(/[&<>"']/g, (char) => entities[char])
+}
+
+const sanitizeUrl = (value: string) => {
+  const trimmed = value.trim()
+
+  if (/^(https?:|mailto:)/i.test(trimmed) || trimmed.startsWith('/')) {
+    return trimmed
+  }
+
+  return '#'
+}
+
+const renderInlineMarks = (value: string) => value
+  .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+  .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+  .replace(/_([^_\n]+)_/g, '<em>$1</em>')
+
+const renderInlineMarkdown = (value: string) => {
+  const codeParts = value.split(/(`[^`]*`)/g)
+
+  return codeParts.map((part) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length > 1) {
+      return `<code>${escapeHtml(part.slice(1, -1))}</code>`
+    }
+
+    let html = ''
+    let cursor = 0
+    const linkPattern = /\[([^\]]+)\]\(([^)\s]+)\)/g
+    let match: RegExpExecArray | null
+
+    while ((match = linkPattern.exec(part)) !== null) {
+      html += renderInlineMarks(escapeHtml(part.slice(cursor, match.index)))
+      const label = renderInlineMarks(escapeHtml(match[1]))
+      const href = escapeHtml(sanitizeUrl(match[2]))
+      html += `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      cursor = match.index + match[0].length
+    }
+
+    html += renderInlineMarks(escapeHtml(part.slice(cursor)))
+    return html
+  }).join('')
+}
+
+const isTableDivider = (value: string) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(value)
+
+const isBlockStart = (value: string, index: number, lines: string[]) => {
+  const trimmed = value.trim()
+
+  return /^```/.test(trimmed)
+    || /^#{1,4}\s+/.test(trimmed)
+    || /^>\s?/.test(trimmed)
+    || /^[-*+]\s+/.test(trimmed)
+    || /^\d+\.\s+/.test(trimmed)
+    || /^-{3,}$/.test(trimmed)
+    || (index + 1 < lines.length && value.includes('|') && isTableDivider(lines[index + 1]))
+}
+
+const parseTableRow = (value: string) => value
+  .trim()
+  .replace(/^\|/, '')
+  .replace(/\|$/, '')
+  .split('|')
+  .map((cell) => renderInlineMarkdown(cell.trim()))
+
+const renderListItem = (value: string) => {
+  const taskMatch = value.match(/^\[( |x|X)\]\s+(.*)$/)
+
+  if (!taskMatch) {
+    return renderInlineMarkdown(value)
+  }
+
+  const checked = taskMatch[1].toLowerCase() === 'x'
+  return `<span class="md-task ${checked ? 'md-task--checked' : ''}"><span class="md-task-box"></span><span>${renderInlineMarkdown(taskMatch[2])}</span></span>`
+}
+
+const renderMessageContent = (source: string) => {
+  const lines = source.replace(/\r\n/g, '\n').split('\n')
+  const blocks: string[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const line = lines[index]
+    const trimmed = line.trim()
+
+    if (!trimmed) {
+      index += 1
+      continue
+    }
+
+    const fence = trimmed.match(/^```([\w-]+)?/)
+    if (fence) {
+      const codeLines: string[] = []
+      index += 1
+
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        codeLines.push(lines[index])
+        index += 1
+      }
+
+      if (index < lines.length) index += 1
+
+      const language = fence[1] ? `<span>${escapeHtml(fence[1])}</span>` : ''
+      blocks.push(`<pre>${language}<code>${escapeHtml(codeLines.join('\n'))}</code></pre>`)
+      continue
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/)
+    if (heading) {
+      const level = Math.min(heading[1].length + 1, 5)
+      blocks.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`)
+      index += 1
+      continue
+    }
+
+    if (/^-{3,}$/.test(trimmed)) {
+      blocks.push('<hr>')
+      index += 1
+      continue
+    }
+
+    if (trimmed.startsWith('>')) {
+      const quoteLines: string[] = []
+
+      while (index < lines.length && lines[index].trim().startsWith('>')) {
+        quoteLines.push(lines[index].replace(/^\s*>\s?/, ''))
+        index += 1
+      }
+
+      blocks.push(`<blockquote>${quoteLines.map(renderInlineMarkdown).join('<br>')}</blockquote>`)
+      continue
+    }
+
+    if (line.includes('|') && index + 1 < lines.length && isTableDivider(lines[index + 1])) {
+      const headers = parseTableRow(line)
+      const rows: string[][] = []
+      index += 2
+
+      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+        rows.push(parseTableRow(lines[index]))
+        index += 1
+      }
+
+      blocks.push([
+        '<div class="md-table-wrap"><table>',
+        `<thead><tr>${headers.map((cell) => `<th>${cell}</th>`).join('')}</tr></thead>`,
+        `<tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join('')}</tr>`).join('')}</tbody>`,
+        '</table></div>'
+      ].join(''))
+      continue
+    }
+
+    if (/^[-*+]\s+/.test(trimmed)) {
+      const items: string[] = []
+
+      while (index < lines.length && /^[-*+]\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^[-*+]\s+/, ''))
+        index += 1
+      }
+
+      blocks.push(`<ul>${items.map((item) => `<li>${renderListItem(item)}</li>`).join('')}</ul>`)
+      continue
+    }
+
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items: string[] = []
+
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
+        items.push(lines[index].trim().replace(/^\d+\.\s+/, ''))
+        index += 1
+      }
+
+      blocks.push(`<ol>${items.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join('')}</ol>`)
+      continue
+    }
+
+    const paragraph: string[] = []
+
+    while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index], index, lines)) {
+      paragraph.push(lines[index])
+      index += 1
+    }
+
+    blocks.push(`<p>${paragraph.map(renderInlineMarkdown).join('<br>')}</p>`)
+  }
+
+  return blocks.join('')
+}
 
 // Active states
 const conversations = ref<ConversationOut[]>([])
@@ -49,15 +248,10 @@ const fetchConversations = async (selectFirst = true) => {
       handleSelectConversation(conversations.value[0])
     }
   } catch (err) {
-    console.warn("Failed to fetch conversations. Loading fallback.")
-    // Mock conversations
-    conversations.value = [
-      { id: '1', title: '关于 Transformer 的讨论', type: 'student_chat', message_count: 3, created_at: '', updated_at: '' },
-      { id: '2', title: '文献阅读与大纲梳理', type: 'student_chat', message_count: 2, created_at: '', updated_at: '' }
-    ]
-    if (selectFirst) {
-      handleSelectConversation(conversations.value[0])
-    }
+    console.warn('Failed to fetch conversations', err)
+    conversations.value = []
+    activeConv.value = null
+    messages.value = []
   } finally {
     listLoading.value = false
   }
@@ -74,19 +268,9 @@ const handleSelectConversation = async (conv: ConversationOut) => {
     messages.value = res.data?.items || []
     scrollToBottom()
   } catch (err) {
-    // Mock messages fallback
-    if (conv.id === '1') {
-      messages.value = [
-        { id: 'm1', conversation_id: conv.id, role: 'assistant', content: '你好！我是你的专属 AI 伴学助手。今天需要我帮你拆解任务、整理学习待办，还是围绕知识库进行深度问答？', created_at: '' },
-        { id: 'm2', conversation_id: conv.id, role: 'user', content: '我这周需要写好研究报告的框架，感觉无从下手。', created_at: '' },
-        { id: 'm3', conversation_id: conv.id, role: 'assistant', content: '没问题，我们来一步步拆解。写好一份研究报告框架，我们可以分为以下四个阶段：\n\n1. **确定核心论点与背景**：明确研究要解决的核心问题是什么。\n2. **设计逻辑架构**：一般包含：引言、背景与相关工作、方法论设计、核心实验/分析、结论与未来展望。\n3. **拆解模块细节**：为每一章细化三级提纲（如 1.1, 1.2 等）。\n4. **时间规划**：根据你 4 天后需要提交大纲的倒数日，我建议你今天下午先写好第 1-2 章，明天上午完成最难的方法论部分。\n\n需要我现在为你生成一个基于 Markdown 的标准大纲模板吗？', created_at: '' }
-      ]
-    } else {
-      messages.value = [
-        { id: 'm4', conversation_id: conv.id, role: 'assistant', content: '关于你的文献任务，有什么进展吗？我们可以整理出一个核心重点列表。', created_at: '' }
-      ]
-    }
-    scrollToBottom()
+    console.warn('Failed to load conversation messages', err)
+    messages.value = []
+    ElMessage.error('加载会话消息失败')
   }
 }
 
@@ -99,17 +283,8 @@ const handleCreateConversation = async () => {
     handleSelectConversation(newConv)
     ElMessage.success('新建会话成功')
   } catch (err) {
-    const mockId = Date.now().toString()
-    const mockConv: ConversationOut = {
-      id: mockId,
-      title: `新对话 (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
-      type: 'student_chat',
-      message_count: 0,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    }
-    conversations.value.unshift(mockConv)
-    handleSelectConversation(mockConv)
+    console.warn('Failed to create conversation', err)
+    ElMessage.error('新建会话失败')
   }
 }
 
@@ -127,8 +302,8 @@ const saveRename = async (conv: ConversationOut) => {
     editingId.value = null
     ElMessage.success('重命名成功')
   } catch (err) {
-    conv.title = editingTitle.value.trim()
-    editingId.value = null
+    console.warn('Failed to rename conversation', err)
+    ElMessage.error('重命名失败')
   }
 }
 
@@ -141,12 +316,7 @@ const handleDeleteConversation = async (conv: ConversationOut) => {
       type: 'warning'
     })
     
-    try {
-      await aiChatApi.deleteConversation(conv.id)
-    } catch (e) {
-      // Allow mock delete
-    }
-
+    await aiChatApi.deleteConversation(conv.id)
     conversations.value = conversations.value.filter(c => c.id !== conv.id)
     if (activeConv.value?.id === conv.id) {
       activeConv.value = conversations.value.length > 0 ? conversations.value[0] : null
@@ -223,13 +393,9 @@ const handleSend = async () => {
         loading.value = false
         console.error(err)
         ElMessage.error('模型呼叫发生故障，请检查 API Key 配置或网络。')
-        
-        // Mock stream fallback for demo preview
-        if (!hasReceivedChunk) {
-          messages.value.push(assistantMsg.value)
+        if (activeConv.value) {
+          handleSelectConversation(activeConv.value)
         }
-        assistantMsg.value.content = `[伴学演示回复] 收到你的问题：“${userText}”。系统在本地检测到网络配置限制，暂时切换为离线模拟响应。我们提取到你短期内正在聚焦「准备毕业论文大纲」和「动态规划算法」。在进行本项工作时，我建议你把任务进行颗粒化拆解，并在日历中添加 2 个番茄钟日程。`
-        scrollToBottom()
       }
     )
   } catch (err) {
@@ -242,6 +408,7 @@ const studentId = ref<string>('')
 const shortTermMemories = ref<StudentMemoryOut[]>([])
 const longTermMemories = ref<StudentMemoryOut[]>([])
 const memoriesLoading = ref(false)
+const summarizingMemory = ref(false)
 
 const loadStudentProfileAndMemories = async () => {
   try {
@@ -255,16 +422,9 @@ const loadStudentProfileAndMemories = async () => {
       longTermMemories.value = memoryRes.data?.long_term || []
     }
   } catch (err) {
-    console.warn("Failed to load user profile or memories. Using fallback.")
-    shortTermMemories.value = [
-      { id: 'm-s1', memory_type: 'short_term', category: 'focus', content: '聚焦: 动态规划算法与神经网络推导', confidence: 0.8, created_at: '', updated_at: '', status: 'active' },
-      { id: 'm-s2', memory_type: 'short_term', category: 'focus', content: '准备: 毕业设计开题大纲', confidence: 0.9, created_at: '', updated_at: '', status: 'active' }
-    ]
-    longTermMemories.value = [
-      { id: 'm-l1', memory_type: 'long_term', category: 'learning_preference', content: '偏好系统视频学习', confidence: 0.85, created_at: '', updated_at: '', status: 'active' },
-      { id: 'm-l2', memory_type: 'long_term', category: 'study_habit', content: '任务估时容易偏低', confidence: 0.70, created_at: '', updated_at: '', status: 'active' },
-      { id: 'm-l3', memory_type: 'long_term', category: 'interest_area', content: '擅长项目驱动模式', confidence: 0.65, created_at: '', updated_at: '', status: 'active' }
-    ]
+    console.warn('Failed to load user profile or memories', err)
+    shortTermMemories.value = []
+    longTermMemories.value = []
   } finally {
     memoriesLoading.value = false
   }
@@ -278,7 +438,7 @@ const handleDeleteMemory = async (memoryId: string) => {
       type: 'warning'
     })
     
-    if (studentId.value && !memoryId.startsWith('m-')) {
+    if (studentId.value) {
       await memoryApi.deleteStudentMemory(studentId.value, memoryId)
     }
     
@@ -289,6 +449,22 @@ const handleDeleteMemory = async (memoryId: string) => {
     if (err !== 'cancel') {
       ElMessage.error('删除记忆条目失败')
     }
+  }
+}
+
+const todayString = () => new Date().toISOString().slice(0, 10)
+
+const handleSummarizeMemory = async () => {
+  if (!studentId.value || summarizingMemory.value) return
+  summarizingMemory.value = true
+  try {
+    await memoryApi.generateDailyReview({ date: todayString() })
+    await loadStudentProfileAndMemories()
+    ElMessage.success('今日复盘与 Memory 已同步生成')
+  } catch (err) {
+    console.warn('Failed to summarize memory', err)
+  } finally {
+    summarizingMemory.value = false
   }
 }
 
@@ -400,7 +576,11 @@ onMounted(() => {
               <span>AI 伴学助手</span>
             </div>
             
-            <div class="whitespace-pre-wrap font-normal leading-normal select-text">{{ msg.content }}</div>
+            <div
+              class="student-chat-markdown select-text"
+              :class="msg.role === 'user' ? 'student-chat-markdown--user' : 'student-chat-markdown--assistant'"
+              v-html="renderMessageContent(msg.content)"
+            ></div>
           </div>
         </div>
 
@@ -484,9 +664,19 @@ onMounted(() => {
 
     <!-- Right Column: Memory Drawer -->
     <div class="w-64 h-full bg-gray-50/30 dark:bg-zinc-900/10 p-5 flex flex-col overflow-y-auto border-l border-gray-200 dark:border-zinc-800 flex-shrink-0">
-      <div class="flex items-center space-x-2 mb-4 pb-2 border-b border-gray-150 dark:border-zinc-800">
-        <BrainCircuit class="w-4 h-4 text-gray-600 dark:text-zinc-400" />
-        <h3 class="text-xs font-semibold text-gray-900 dark:text-zinc-50">AI 学情记忆画像</h3>
+      <div class="flex items-center justify-between gap-2 mb-4 pb-2 border-b border-gray-150 dark:border-zinc-800">
+        <div class="flex items-center space-x-2 min-w-0">
+          <BrainCircuit class="w-4 h-4 text-gray-600 dark:text-zinc-400" />
+          <h3 class="text-xs font-semibold text-gray-900 dark:text-zinc-50 truncate">AI 学情记忆画像</h3>
+        </div>
+        <button
+          @click="handleSummarizeMemory"
+          :disabled="summarizingMemory || !studentId"
+          class="inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded border border-gray-200 bg-white text-gray-500 transition hover:bg-gray-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+          title="手动总结今日 Memory"
+        >
+          <RefreshCw class="w-3.5 h-3.5" :class="summarizingMemory ? 'animate-spin' : ''" />
+        </button>
       </div>
 
       <!-- Content blocks -->
@@ -550,3 +740,308 @@ onMounted(() => {
 
   </div>
 </template>
+
+<style scoped>
+.student-chat-markdown {
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.student-chat-markdown :deep(*) {
+  letter-spacing: 0;
+}
+
+.student-chat-markdown :deep(> * + *) {
+  margin-top: 0.72rem;
+}
+
+.student-chat-markdown :deep(p) {
+  margin: 0;
+}
+
+.student-chat-markdown :deep(h2),
+.student-chat-markdown :deep(h3),
+.student-chat-markdown :deep(h4),
+.student-chat-markdown :deep(h5) {
+  position: relative;
+  margin: 0.85rem 0 0.42rem;
+  padding-left: 0.65rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.student-chat-markdown :deep(h2) {
+  font-size: 0.92rem;
+}
+
+.student-chat-markdown :deep(h3) {
+  font-size: 0.84rem;
+}
+
+.student-chat-markdown :deep(h4),
+.student-chat-markdown :deep(h5) {
+  font-size: 0.76rem;
+}
+
+.student-chat-markdown :deep(h2::before),
+.student-chat-markdown :deep(h3::before),
+.student-chat-markdown :deep(h4::before),
+.student-chat-markdown :deep(h5::before) {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.22em;
+  width: 3px;
+  height: 1em;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.student-chat-markdown :deep(strong) {
+  font-weight: 700;
+}
+
+.student-chat-markdown :deep(em) {
+  color: #64748b;
+  font-style: normal;
+}
+
+.dark .student-chat-markdown :deep(em) {
+  color: #a1a1aa;
+}
+
+.student-chat-markdown :deep(a) {
+  color: #2563eb;
+  font-weight: 650;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(37, 99, 235, 0.28);
+}
+
+.student-chat-markdown :deep(a:hover) {
+  border-bottom-color: rgba(37, 99, 235, 0.72);
+}
+
+.student-chat-markdown :deep(ul),
+.student-chat-markdown :deep(ol) {
+  margin: 0.48rem 0 0;
+  padding-left: 1.05rem;
+}
+
+.student-chat-markdown :deep(li) {
+  padding-left: 0.12rem;
+  margin-top: 0.34rem;
+}
+
+.student-chat-markdown :deep(li::marker) {
+  color: #2563eb;
+  font-weight: 700;
+}
+
+.student-chat-markdown :deep(blockquote) {
+  margin: 0.7rem 0 0;
+  padding: 0.62rem 0.78rem;
+  border-left: 3px solid rgba(37, 99, 235, 0.75);
+  border-radius: 0 6px 6px 0;
+  background: rgba(37, 99, 235, 0.055);
+  color: #475569;
+}
+
+.dark .student-chat-markdown :deep(blockquote) {
+  background: rgba(37, 99, 235, 0.12);
+  color: #d4d4d8;
+}
+
+.student-chat-markdown :deep(code) {
+  padding: 0.1rem 0.3rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.05);
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.dark .student-chat-markdown :deep(code) {
+  border-color: rgba(82, 82, 91, 0.9);
+  background: rgba(9, 9, 11, 0.72);
+  color: #e4e4e7;
+}
+
+.student-chat-markdown :deep(pre) {
+  position: relative;
+  margin: 0.78rem 0 0;
+  padding: 0.95rem;
+  overflow-x: auto;
+  border: 1px solid rgba(203, 213, 225, 0.75);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.dark .student-chat-markdown :deep(pre) {
+  border-color: rgba(63, 63, 70, 0.9);
+  background: #09090b;
+}
+
+.student-chat-markdown :deep(pre > span) {
+  display: inline-block;
+  margin-bottom: 0.55rem;
+  padding: 0.12rem 0.42rem;
+  border-radius: 4px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.dark .student-chat-markdown :deep(pre > span) {
+  background: rgba(37, 99, 235, 0.16);
+  color: #60a5fa;
+}
+
+.student-chat-markdown :deep(pre code) {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #334155;
+  line-height: 1.7;
+  white-space: pre;
+}
+
+.dark .student-chat-markdown :deep(pre code) {
+  color: #d4d4d8;
+}
+
+.student-chat-markdown :deep(.md-table-wrap) {
+  margin-top: 0.78rem;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.dark .student-chat-markdown :deep(.md-table-wrap) {
+  border-color: #27272a;
+  background: #09090b;
+}
+
+.student-chat-markdown :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 360px;
+}
+
+.student-chat-markdown :deep(th),
+.student-chat-markdown :deep(td) {
+  padding: 0.52rem 0.7rem;
+  border-bottom: 1px solid #f1f5f9;
+  text-align: left;
+  vertical-align: top;
+}
+
+.dark .student-chat-markdown :deep(th),
+.dark .student-chat-markdown :deep(td) {
+  border-bottom-color: #27272a;
+}
+
+.student-chat-markdown :deep(th) {
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.dark .student-chat-markdown :deep(th) {
+  background: #18181b;
+  color: #e4e4e7;
+}
+
+.student-chat-markdown :deep(tr:last-child td) {
+  border-bottom: 0;
+}
+
+.student-chat-markdown :deep(hr) {
+  margin: 0.9rem 0;
+  border: 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.dark .student-chat-markdown :deep(hr) {
+  border-top-color: #27272a;
+}
+
+.student-chat-markdown :deep(.md-task) {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
+.student-chat-markdown :deep(.md-task-box) {
+  position: relative;
+  top: 0.33rem;
+  width: 0.82rem;
+  height: 0.82rem;
+  flex: 0 0 auto;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  background: #fff;
+}
+
+.student-chat-markdown :deep(.md-task--checked .md-task-box) {
+  border-color: #2563eb;
+  background: #2563eb;
+}
+
+.student-chat-markdown :deep(.md-task--checked .md-task-box::after) {
+  content: "";
+  position: absolute;
+  left: 0.22rem;
+  top: 0.09rem;
+  width: 0.26rem;
+  height: 0.48rem;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.student-chat-markdown--user {
+  color: inherit;
+}
+
+.student-chat-markdown--user :deep(h2::before),
+.student-chat-markdown--user :deep(h3::before),
+.student-chat-markdown--user :deep(h4::before),
+.student-chat-markdown--user :deep(h5::before) {
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.student-chat-markdown--user :deep(a),
+.student-chat-markdown--user :deep(li::marker) {
+  color: currentColor;
+}
+
+.student-chat-markdown--user :deep(a) {
+  border-bottom-color: rgba(255, 255, 255, 0.45);
+}
+
+.student-chat-markdown--user :deep(code) {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.12);
+  color: inherit;
+}
+
+.dark .student-chat-markdown--user :deep(a) {
+  border-bottom-color: rgba(9, 9, 11, 0.35);
+}
+
+.dark .student-chat-markdown--user :deep(h2::before),
+.dark .student-chat-markdown--user :deep(h3::before),
+.dark .student-chat-markdown--user :deep(h4::before),
+.dark .student-chat-markdown--user :deep(h5::before) {
+  background: rgba(9, 9, 11, 0.82);
+}
+</style>

@@ -21,7 +21,7 @@ async def list_notifications(
         db, user_id=current_user.id, unread_only=unread_only
     )
     return BaseResponse.success(
-        data=[NotificationOut.from_attributes(n) for n in notifications],
+        data=[NotificationOut.model_validate(n) for n in notifications],
         message="获取成功"
     )
 
@@ -35,7 +35,7 @@ async def mark_notification_read(
         db, notification_id=notification_id, user_id=current_user.id
     )
     return BaseResponse.success(
-        data=NotificationOut.from_attributes(notification),
+        data=NotificationOut.model_validate(notification),
         message="标记成功"
     )
 

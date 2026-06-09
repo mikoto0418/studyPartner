@@ -9,13 +9,13 @@ export interface RoleOut {
 
 export interface StudentProfileOut {
   id: string
-  student_id?: string
-  grade?: string
-  major?: string
-  research_direction?: string
-  enrollment_date?: string
-  bio?: string
-  extra_info?: Record<string, any>
+  student_id?: string | null
+  grade?: string | null
+  major?: string | null
+  research_direction?: string | null
+  enrollment_date?: string | null
+  bio?: string | null
+  extra_info?: Record<string, any> | null
 }
 
 export interface UserOut {
@@ -23,6 +23,7 @@ export interface UserOut {
   username: string
   email: string
   nickname?: string
+  display_name?: string
   phone?: string
   status: string
   avatar_url?: string
@@ -38,6 +39,15 @@ export interface PageData<T> {
   total: number
   page: number
   page_size: number
+}
+
+export const getUserDisplayName = (user?: Partial<Pick<UserOut, 'display_name' | 'nickname' | 'username'>> | null) => {
+  if (!user) return '未设置姓名'
+  return user.display_name || user.nickname?.trim() || '未设置姓名'
+}
+
+export const getUserAvatarText = (user?: Partial<Pick<UserOut, 'display_name' | 'nickname' | 'username'>> | null) => {
+  return (user?.display_name || user?.nickname?.trim() || '未').charAt(0).toUpperCase()
 }
 
 export const userApi = {

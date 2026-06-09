@@ -61,6 +61,8 @@ const reviewForm = ref({
 
 const selectedClass = computed(() => classes.value.find(item => item.id === pathForm.value.class_id))
 const totalMinutes = computed(() => generatedPlan.value?.nodes.reduce((sum, node) => sum + (node.estimated_minutes || 0), 0) || 0)
+const displayNameOf = (item: { display_name?: string; nickname?: string; username?: string }) => item.display_name || item.nickname?.trim() || '未设置姓名'
+const optionLabelOf = (item: { display_name?: string; nickname?: string; username?: string }) => item.username ? `${displayNameOf(item)}（账号：${item.username}）` : displayNameOf(item)
 
 const loadInitialData = async () => {
   loading.value = true
@@ -423,7 +425,8 @@ onMounted(loadInitialData)
                   class="p-3 rounded-lg border border-gray-100 dark:border-zinc-800"
                 >
                   <div class="flex items-center justify-between">
-                    <span class="text-xs font-semibold text-gray-800 dark:text-zinc-200">{{ item.nickname || item.username }}</span>
+                    <span class="text-xs font-semibold text-gray-800 dark:text-zinc-200">{{ displayNameOf(item) }}</span>
+                    <span v-if="item.username" class="text-[9px] text-gray-400 font-mono">账号：{{ item.username }}</span>
                     <span class="text-[10px] text-gray-400">{{ statusText(item.status) }}</span>
                   </div>
                   <div class="mt-2 h-1.5 bg-gray-100 dark:bg-zinc-800 rounded">
@@ -445,7 +448,7 @@ onMounted(loadInitialData)
                   class="p-3 rounded-lg border border-gray-100 dark:border-zinc-800 bg-gray-50/40 dark:bg-zinc-950/30"
                 >
                   <div class="flex items-center justify-between text-[10px] text-gray-400">
-                    <span>{{ submission.nickname || submission.username }} · {{ submission.node_title }}</span>
+                    <span>{{ displayNameOf(submission) }} · {{ submission.node_title }}</span>
                     <span>{{ submission.review_status }}</span>
                   </div>
                   <p class="mt-2 text-xs text-gray-700 dark:text-zinc-300 whitespace-pre-wrap line-clamp-3">{{ submission.content || '无文本说明' }}</p>
@@ -509,7 +512,7 @@ onMounted(loadInitialData)
           <label class="space-y-1">
             <span class="text-xs text-gray-500">单独指派学生</span>
             <el-select v-model="pathForm.assignee_ids" multiple class="w-full" placeholder="可多选">
-              <el-option v-for="student in students" :key="student.id" :label="student.nickname || student.username" :value="student.id" />
+              <el-option v-for="student in students" :key="student.id" :label="optionLabelOf(student)" :value="student.id" />
             </el-select>
           </label>
         </div>

@@ -1,7 +1,7 @@
 from datetime import datetime, date
 from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, computed_field
 
 class RoleBase(BaseModel):
     code: str = Field(..., description="角色编码")
@@ -65,6 +65,11 @@ class UserOut(UserBase):
     updated_at: datetime
     roles: List[RoleOut] = []
     student_profile: Optional[StudentProfileOut] = None
+
+    @computed_field
+    @property
+    def display_name(self) -> str:
+        return self.nickname.strip() if self.nickname and self.nickname.strip() else "未设置姓名"
 
     class Config:
         from_attributes = True

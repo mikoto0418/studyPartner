@@ -48,5 +48,6 @@ server/.env
 
 # System logs & DB
 logs/
+.codex-run/
 *.log
 *.sqlite
