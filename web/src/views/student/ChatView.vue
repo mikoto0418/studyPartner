@@ -334,7 +334,7 @@ const handleDeleteConversation = async (conv: ConversationOut) => {
 
 // Send Message stream handler
 const handleSend = async () => {
-  if (!messageInput.value.trim() || !activeConv.value) return
+  if (loading.value || !messageInput.value.trim() || !activeConv.value) return
   
   const userText = messageInput.value.trim()
   messageInput.value = ''
@@ -486,14 +486,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="flex h-[calc(100vh-8.5rem)] bg-white dark:bg-zinc-950 rounded-lg border border-gray-200 dark:border-zinc-800 overflow-hidden relative shadow-sm">
+  <div class="surface-panel relative flex h-[calc(100vh-6rem)] overflow-hidden md:h-[calc(100vh-8rem)]">
     
     <!-- Sidebar: Conversation list -->
-    <div class="w-56 h-full border-r border-gray-200 dark:border-zinc-800 bg-gray-50/50 dark:bg-zinc-900/10 flex flex-col flex-shrink-0">
-      <div class="p-3">
+    <div class="hidden h-full w-64 flex-shrink-0 flex-col border-r border-gray-200 bg-gray-50/70 dark:border-zinc-800 dark:bg-zinc-950/40 lg:flex">
+      <div class="p-4">
         <button
           @click="handleCreateConversation"
-          class="w-full flex items-center justify-center space-x-1.5 py-1.5 px-3 bg-gray-900 hover:bg-gray-800 dark:bg-zinc-100 dark:hover:bg-zinc-200 text-white dark:text-zinc-900 font-medium text-[11px] rounded transition-colors"
+          class="ui-button-dark w-full py-2"
         >
           <Plus class="w-3.5 h-3.5" />
           <span>新建伴学对话</span>
@@ -501,18 +501,21 @@ onMounted(() => {
       </div>
 
       <!-- Scrollable list -->
-      <div class="flex-1 overflow-y-auto px-2 space-y-0.5" v-loading="listLoading">
+      <div class="flex-1 overflow-y-auto px-3 pb-3 space-y-1" v-loading="listLoading">
         <div
           v-for="conv in conversations"
           :key="conv.id"
           @click="handleSelectConversation(conv)"
-          class="group flex items-center justify-between p-2 rounded text-xs cursor-pointer select-none transition-colors"
+          class="group flex items-center justify-between rounded-md border p-2.5 text-xs cursor-pointer select-none transition-all"
           :class="activeConv?.id === conv.id
-            ? 'bg-gray-100 dark:bg-zinc-900 text-gray-900 dark:text-zinc-50 font-medium'
-            : 'text-gray-600 dark:text-zinc-400 hover:bg-gray-50 dark:hover:bg-zinc-900/40 hover:text-gray-900 dark:hover:text-zinc-200'"
+            ? 'border-blue-200 bg-white text-gray-900 shadow-sm dark:border-blue-900/60 dark:bg-zinc-900 dark:text-zinc-50'
+            : 'border-transparent text-gray-600 hover:border-gray-200 hover:bg-white dark:text-zinc-400 dark:hover:border-zinc-800 dark:hover:bg-zinc-900/70 dark:hover:text-zinc-200'"
         >
           <div class="flex items-center space-x-2 min-w-0 flex-1">
-            <MessageSquare class="w-3.5 h-3.5 text-gray-400 dark:text-zinc-500 flex-shrink-0" />
+            <MessageSquare
+              class="w-3.5 h-3.5 flex-shrink-0"
+              :class="activeConv?.id === conv.id ? 'text-blue-600 dark:text-blue-400' : 'text-gray-400 dark:text-zinc-500'"
+            />
             
             <!-- Title / Input edit mode -->
             <input
@@ -551,12 +554,56 @@ onMounted(() => {
 
     <!-- Center Column: Active Chat Area -->
     <div class="flex-1 flex flex-col h-full bg-white dark:bg-zinc-950 min-w-0">
+      <div class="flex items-center justify-between gap-2 border-b border-gray-100 p-3 dark:border-zinc-800 lg:hidden">
+        <div class="min-w-0">
+          <p class="truncate text-xs font-semibold text-gray-900 dark:text-zinc-50">
+            {{ activeConv?.title || 'AI 伴学助手' }}
+          </p>
+          <p class="mt-0.5 text-[10px] text-gray-400 dark:text-zinc-500">
+            当前会话
+          </p>
+        </div>
+        <div class="flex flex-shrink-0 items-center gap-1.5">
+          <button
+            @click="handleSummarizeMemory"
+            :disabled="summarizingMemory || !studentId"
+            class="ui-icon-button h-8 w-8"
+            title="手动总结 Memory"
+          >
+            <RefreshCw class="h-3.5 w-3.5" :class="summarizingMemory ? 'animate-spin' : ''" />
+          </button>
+          <button
+            @click="handleCreateConversation"
+            class="ui-button-dark h-8 px-2"
+          >
+            <Plus class="h-3.5 w-3.5" />
+            <span>新对话</span>
+          </button>
+        </div>
+      </div>
       
       <!-- Messages List -->
       <div
         ref="messagesContainer"
-        class="flex-1 overflow-y-auto p-6 space-y-6"
+        class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6"
       >
+        <div v-if="activeConv && messages.length === 0" class="mx-auto flex h-full max-w-2xl flex-col items-center justify-center text-center">
+          <div class="mb-5 flex h-12 w-12 items-center justify-center rounded-lg border border-blue-100 bg-blue-50 text-blue-600 dark:border-blue-900/60 dark:bg-blue-950/20 dark:text-blue-300">
+            <Sparkles class="h-5 w-5" />
+          </div>
+          <h3 class="text-lg font-semibold text-gray-900 dark:text-zinc-50">今天想推进哪件事？</h3>
+          <div class="mt-5 flex flex-wrap justify-center gap-2">
+            <button
+              v-for="p in quickPrompts"
+              :key="p"
+              @click="useQuickPrompt(p)"
+              class="ui-button-secondary"
+            >
+              {{ p }}
+            </button>
+          </div>
+        </div>
+
         <div
           v-for="msg in messages"
           :key="msg.id"
@@ -565,9 +612,9 @@ onMounted(() => {
         >
           <!-- Message Card -->
           <div
-            class="max-w-2xl p-4 rounded-lg text-xs leading-relaxed"
+            class="max-w-full sm:max-w-2xl rounded-lg p-4 text-xs leading-relaxed shadow-sm"
             :class="msg.role === 'user'
-              ? 'bg-gray-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-tr-none shadow-sm'
+              ? 'bg-gray-900 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-tr-none'
               : 'bg-gray-50 dark:bg-zinc-900 text-gray-800 dark:text-zinc-200 rounded-tl-none border border-gray-100 dark:border-zinc-800/40'"
           >
             <!-- Header for assistant -->
@@ -586,7 +633,7 @@ onMounted(() => {
 
         <!-- AI Streaming Loader -->
         <div v-if="loading && messages.length > 0 && messages[messages.length - 1].role === 'user'" class="flex justify-start">
-          <div class="max-w-2xl p-4 rounded-lg bg-gray-50 dark:bg-zinc-900 text-gray-400 rounded-tl-none border border-gray-100 dark:border-zinc-800/40 text-[10px] flex items-center space-x-2">
+          <div class="max-w-full sm:max-w-2xl p-4 rounded-lg bg-gray-50 dark:bg-zinc-900 text-gray-400 rounded-tl-none border border-gray-100 dark:border-zinc-800/40 text-[10px] flex items-center space-x-2">
             <span class="w-1.5 h-1.5 bg-blue-600 rounded-full animate-ping"></span>
             <span>伴学助手正在思考并调阅记忆库中...</span>
           </div>
@@ -596,75 +643,103 @@ onMounted(() => {
           <BrainCircuit class="w-8 h-8 text-gray-300 dark:text-zinc-700" />
           <div class="space-y-1">
             <h3 class="text-xs font-semibold text-gray-900 dark:text-zinc-50">开启你的第一条伴学对话</h3>
-            <p class="text-[10px] text-gray-400">选择侧边栏会话或点击新建会话按钮与伴学助手沟通。</p>
+            <p class="text-[10px] text-gray-400">任务、问题和下一步计划都在这里整理。</p>
           </div>
         </div>
       </div>
 
       <!-- Bottom controls & input form -->
-      <div v-if="activeConv" class="p-6 bg-white dark:bg-zinc-950 border-t border-gray-100 dark:border-zinc-800/80 space-y-4">
-        
-        <!-- Context integration toggles -->
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] text-gray-400 select-none pb-1 border-b border-gray-50 dark:border-zinc-900/50">
-          <span class="font-medium text-gray-500">上下文关联:</span>
-          
-          <label class="flex items-center space-x-1.5 cursor-pointer hover:text-gray-600 dark:hover:text-zinc-300">
-            <input type="checkbox" v-model="contextOptions.include_memory" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-3 h-3" />
-            <span>智能学情记忆 (Memory)</span>
-          </label>
-
-          <label class="flex items-center space-x-1.5 cursor-pointer hover:text-gray-600 dark:hover:text-zinc-300">
-            <input type="checkbox" v-model="contextOptions.include_todos" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-3 h-3" />
-            <span>今日待办 (TODO)</span>
-          </label>
-
-          <label class="flex items-center space-x-1.5 cursor-pointer hover:text-gray-600 dark:hover:text-zinc-300">
-            <input type="checkbox" v-model="contextOptions.include_tasks" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-3 h-3" />
-            <span>导师下发任务</span>
-          </label>
-
-          <label class="flex items-center space-x-1.5 cursor-pointer hover:text-gray-600 dark:hover:text-zinc-300">
-            <input type="checkbox" v-model="contextOptions.include_calendar" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-3 h-3" />
-            <span>日历计划日程</span>
-          </label>
-        </div>
-
-        <!-- Quick prompts list -->
-        <div class="flex flex-wrap gap-2">
-          <button
-            v-for="p in quickPrompts"
-            :key="p"
-            @click="useQuickPrompt(p)"
-            class="px-2.5 py-0.5 bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded text-[10px] text-gray-500 dark:text-zinc-400 hover:border-gray-900 dark:hover:border-zinc-100 hover:text-gray-900 dark:hover:text-zinc-100 transition-colors"
-          >
-            {{ p }}
-          </button>
-        </div>
-
-        <!-- Input Box -->
-        <form @submit.prevent="handleSend" class="flex items-center space-x-3 w-full border border-gray-200 dark:border-zinc-800 rounded bg-gray-50 dark:bg-zinc-900 focus-within:border-gray-900 dark:focus-within:border-zinc-300 transition-all p-1.5 shadow-sm">
-          <input
+      <div v-if="activeConv" class="border-t border-gray-100 bg-white p-3 dark:border-zinc-800/80 dark:bg-zinc-950 md:p-5">
+        <form @submit.prevent="handleSend" class="rounded-lg border border-gray-200 bg-gray-50 p-3 shadow-sm transition focus-within:border-blue-400 focus-within:bg-white dark:border-zinc-800 dark:bg-zinc-900 dark:focus-within:border-blue-700 dark:focus-within:bg-zinc-900">
+          <textarea
             v-model="messageInput"
-            type="text"
+            rows="3"
             placeholder="向伴学助手提问，关联个人学情背景..."
-            class="flex-1 bg-transparent border-0 outline-none text-xs text-gray-900 dark:text-zinc-50 placeholder-gray-400 pl-2 focus:ring-0"
+            class="block max-h-36 min-h-[76px] w-full resize-none border-0 bg-transparent px-1 text-xs leading-relaxed text-gray-900 outline-none placeholder:text-gray-400 focus:ring-0 dark:text-zinc-50"
             :disabled="loading"
-          />
-          <button
-            type="submit"
-            class="w-7 h-7 rounded bg-gray-900 hover:bg-gray-800 dark:bg-zinc-100 dark:hover:bg-zinc-200 text-white dark:text-zinc-900 flex items-center justify-center transition-all transform active:scale-95 flex-shrink-0"
-            :disabled="loading || !messageInput.trim()"
-          >
-            <Send class="w-3 h-3" />
-          </button>
+            @keydown.enter.exact.prevent="handleSend"
+            @keydown.shift.enter.stop
+          ></textarea>
+
+          <div class="mt-3 flex flex-col gap-3 border-t border-gray-200 pt-3 dark:border-zinc-800 md:flex-row md:items-center md:justify-between">
+            <div class="flex flex-wrap gap-2">
+              <button
+                type="button"
+                class="chat-context-chip"
+                :class="contextOptions.include_memory ? 'chat-context-chip--on' : 'chat-context-chip--off'"
+                :aria-pressed="contextOptions.include_memory"
+                @click="contextOptions.include_memory = !contextOptions.include_memory"
+              >
+                Memory
+              </button>
+              <button
+                type="button"
+                class="chat-context-chip"
+                :class="contextOptions.include_todos ? 'chat-context-chip--on' : 'chat-context-chip--off'"
+                :aria-pressed="contextOptions.include_todos"
+                @click="contextOptions.include_todos = !contextOptions.include_todos"
+              >
+                待办
+              </button>
+              <button
+                type="button"
+                class="chat-context-chip"
+                :class="contextOptions.include_tasks ? 'chat-context-chip--on' : 'chat-context-chip--off'"
+                :aria-pressed="contextOptions.include_tasks"
+                @click="contextOptions.include_tasks = !contextOptions.include_tasks"
+              >
+                导师任务
+              </button>
+              <button
+                type="button"
+                class="chat-context-chip"
+                :class="contextOptions.include_calendar ? 'chat-context-chip--on' : 'chat-context-chip--off'"
+                :aria-pressed="contextOptions.include_calendar"
+                @click="contextOptions.include_calendar = !contextOptions.include_calendar"
+              >
+                日历
+              </button>
+              <button
+                type="button"
+                class="chat-context-chip"
+                :class="contextOptions.include_knowledge ? 'chat-context-chip--on' : 'chat-context-chip--off'"
+                :aria-pressed="contextOptions.include_knowledge"
+                @click="contextOptions.include_knowledge = !contextOptions.include_knowledge"
+              >
+                知识库
+              </button>
+            </div>
+
+            <div class="flex items-center justify-between gap-2 md:justify-end">
+              <div class="hidden flex-wrap gap-1.5 lg:flex">
+                <button
+                  v-for="p in quickPrompts"
+                  :key="p"
+                  type="button"
+                  @click="useQuickPrompt(p)"
+                  class="rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] font-semibold text-gray-500 transition hover:border-blue-200 hover:text-blue-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-500 dark:hover:border-blue-900 dark:hover:text-blue-300"
+                >
+                  {{ p }}
+                </button>
+              </div>
+              <button
+                type="submit"
+                class="ui-button-dark h-8 px-3"
+                :disabled="loading || !messageInput.trim()"
+              >
+                <Send class="w-3.5 h-3.5" />
+                <span>发送</span>
+              </button>
+            </div>
+          </div>
         </form>
       </div>
 
     </div>
 
     <!-- Right Column: Memory Drawer -->
-    <div class="w-64 h-full bg-gray-50/30 dark:bg-zinc-900/10 p-5 flex flex-col overflow-y-auto border-l border-gray-200 dark:border-zinc-800 flex-shrink-0">
-      <div class="flex items-center justify-between gap-2 mb-4 pb-2 border-b border-gray-150 dark:border-zinc-800">
+    <div class="hidden h-full w-72 flex-shrink-0 flex-col overflow-y-auto border-l border-gray-200 bg-gray-50/50 p-5 dark:border-zinc-800 dark:bg-zinc-950/40 xl:flex">
+      <div class="flex items-center justify-between gap-2 mb-4 pb-3 border-b border-gray-200 dark:border-zinc-800">
         <div class="flex items-center space-x-2 min-w-0">
           <BrainCircuit class="w-4 h-4 text-gray-600 dark:text-zinc-400" />
           <h3 class="text-xs font-semibold text-gray-900 dark:text-zinc-50 truncate">AI 学情记忆画像</h3>
@@ -672,10 +747,11 @@ onMounted(() => {
         <button
           @click="handleSummarizeMemory"
           :disabled="summarizingMemory || !studentId"
-          class="inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded border border-gray-200 bg-white text-gray-500 transition hover:bg-gray-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+          class="ui-button-secondary flex-shrink-0 px-2 py-1"
           title="手动总结今日 Memory"
         >
           <RefreshCw class="w-3.5 h-3.5" :class="summarizingMemory ? 'animate-spin' : ''" />
+          <span>手动总结</span>
         </button>
       </div>
 
@@ -696,7 +772,7 @@ onMounted(() => {
               </button>
             </span>
           </div>
-          <div v-else class="text-[10px] text-gray-450 dark:text-zinc-500 italic">暂无近期关注焦点</div>
+          <div v-else class="text-[10px] text-gray-400 dark:text-zinc-500 italic">暂无近期关注焦点</div>
         </div>
 
         <!-- Long term habits -->
@@ -707,11 +783,11 @@ onMounted(() => {
             <div 
               v-for="m in longTermMemories" 
               :key="m.id"
-              class="p-2.5 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-850 rounded space-y-1 relative group/item"
+              class="p-2.5 bg-white dark:bg-zinc-900 border border-gray-100 dark:border-zinc-800 rounded space-y-1 relative group/item"
             >
               <button 
                 @click.stop="handleDeleteMemory(m.id)" 
-                class="absolute top-1.5 right-1.5 opacity-0 group-hover/item:opacity-100 transition-opacity p-0.5 hover:bg-gray-150 dark:hover:bg-zinc-800 rounded text-gray-400 hover:text-red-500"
+                class="absolute top-1.5 right-1.5 opacity-0 group-hover/item:opacity-100 transition-opacity p-0.5 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded text-gray-400 hover:text-red-500"
               >
                 <X class="w-3 h-3" />
               </button>
@@ -725,7 +801,7 @@ onMounted(() => {
               </div>
             </div>
           </div>
-          <div v-else class="text-[10px] text-gray-450 dark:text-zinc-500 italic">暂无长期习惯画像</div>
+          <div v-else class="text-[10px] text-gray-400 dark:text-zinc-500 italic">暂无长期习惯画像</div>
         </div>
 
         <!-- AI Tips -->

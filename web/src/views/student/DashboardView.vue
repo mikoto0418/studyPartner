@@ -402,24 +402,24 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-5">
-    <div class="flex items-center justify-between">
+    <div class="surface-panel flex flex-col gap-3 p-5 md:flex-row md:items-center md:justify-between">
       <div>
         <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">我的仪表盘</h3>
         <p class="text-xs text-gray-400 dark:text-zinc-500 mt-1">个人待办、导师任务与学习活跃度集中管理。</p>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2 self-start md:self-auto">
         <button
           v-if="sortMode"
           @click="saveWidgetLayout"
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-gray-900 text-white dark:bg-zinc-100 dark:text-zinc-900 text-xs font-medium"
+          class="ui-button-dark"
         >
           <Save class="w-3.5 h-3.5" />
           <span>保存排序</span>
         </button>
         <button
           @click="sortMode = !sortMode"
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs font-medium text-gray-600 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-zinc-800"
+          class="ui-button-secondary"
         >
           <SlidersHorizontal class="w-3.5 h-3.5" />
           <span>{{ sortMode ? '退出排序' : '排序模式' }}</span>
@@ -438,7 +438,7 @@ onUnmounted(() => {
       <section
         v-for="widget in widgets"
         :key="widget.id"
-        class="relative minimal-card"
+        class="dashboard-widget-card"
         :class="[widgetGridClass(widget.id), sortMode ? 'ring-1 ring-blue-500/30' : '']"
       >
         <button
@@ -470,7 +470,7 @@ onUnmounted(() => {
             <span class="text-3xl font-bold text-gray-900 dark:text-zinc-50">{{ todayScore }}<span class="ml-1 text-xs text-gray-500">分</span></span>
             <p class="text-[10px] text-gray-500 dark:text-zinc-400 font-medium">每 5 分钟 +1，待办/任务完成 +2/+5</p>
           </div>
-          <div class="w-12 h-12 rounded bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/50 flex items-center justify-center text-amber-600 dark:text-amber-500">
+          <div class="dashboard-stat-icon border-amber-100 text-amber-600 dark:border-amber-900/50 dark:text-amber-500">
             <Calendar class="w-5 h-5" />
           </div>
         </div>
@@ -481,7 +481,7 @@ onUnmounted(() => {
             <span class="text-3xl font-bold text-gray-900 dark:text-zinc-50">{{ streakDays }}<span class="ml-1 text-xs text-gray-500">天</span></span>
             <span class="text-[10px] text-blue-600 dark:text-blue-500 font-medium block">保持专注，继续努力！</span>
           </div>
-          <div class="w-12 h-12 rounded bg-blue-50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/50 flex items-center justify-center text-blue-600 dark:text-blue-500">
+          <div class="dashboard-stat-icon border-blue-100 text-blue-600 dark:border-blue-900/50 dark:text-blue-500">
             <Flame class="w-5 h-5" />
           </div>
         </div>
@@ -494,7 +494,7 @@ onUnmounted(() => {
             </div>
             <button
               @click="todoDialogVisible = true"
-              class="p-1 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+              class="ui-icon-button h-7 w-7 border-transparent"
               title="新增个人待办"
             >
               <Plus class="w-4 h-4" />
@@ -574,7 +574,7 @@ onUnmounted(() => {
             </div>
 
             <div v-if="activeTeacherTasks.length === 0 && activeTodos.length === 0" class="h-full flex items-center justify-center text-xs text-gray-400 py-12">
-              暂无任务，点击右上角创建个人待办。
+              暂无任务
             </div>
           </div>
         </div>
@@ -584,7 +584,8 @@ onUnmounted(() => {
             <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">学术便签</h3>
             <button
               @click="noteDialogVisible = true"
-              class="p-1 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+              class="ui-icon-button h-7 w-7 border-transparent"
+              title="新增学术便签"
             >
               <Plus class="w-4 h-4" />
             </button>
@@ -607,7 +608,7 @@ onUnmounted(() => {
               </button>
             </div>
             <div v-if="notes.length === 0" class="h-full flex items-center justify-center text-xs text-gray-400 py-12">
-              点击 + 创建你的第一张学术便签。
+              暂无学术便签
             </div>
           </div>
         </div>
@@ -660,7 +661,7 @@ onUnmounted(() => {
             v-model="taskSubmitForm.content"
             rows="4"
             placeholder="说明完成内容、关键结论或需要导师查看的问题"
-            class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded text-xs focus:outline-none focus:border-blue-500"
+            class="ui-field resize-none"
           ></textarea>
         </div>
         <div class="space-y-1">
@@ -669,14 +670,14 @@ onUnmounted(() => {
             v-model="taskSubmitForm.attachment_ids"
             rows="2"
             placeholder="多个文件 ID 可用逗号或换行分隔"
-            class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded text-xs focus:outline-none focus:border-blue-500"
+            class="ui-field resize-none"
           ></textarea>
         </div>
       </div>
       <template #footer>
         <div class="flex justify-end space-x-2 pt-2">
-          <button @click="taskSubmitDialogVisible = false" class="px-3 py-1.5 border border-gray-200 rounded text-xs text-gray-500 hover:bg-gray-50">取消</button>
-          <button @click="handleSubmitTeacherTask" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-medium">提交</button>
+          <button @click="taskSubmitDialogVisible = false" class="ui-button-secondary">取消</button>
+          <button @click="handleSubmitTeacherTask" class="ui-button-primary">提交</button>
         </div>
       </template>
     </el-dialog>
@@ -685,15 +686,15 @@ onUnmounted(() => {
       <div class="space-y-4">
         <div class="space-y-1">
           <label class="text-xs text-gray-500 block font-medium">任务名称</label>
-          <input v-model="todoForm.title" type="text" placeholder="做什么？" class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded text-xs focus:outline-none focus:border-blue-500" />
+          <input v-model="todoForm.title" type="text" placeholder="做什么？" class="ui-field" />
         </div>
         <div class="space-y-1">
           <label class="text-xs text-gray-500 block font-medium">任务详情</label>
-          <textarea v-model="todoForm.description" rows="3" placeholder="补充描述..." class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded text-xs focus:outline-none focus:border-blue-500"></textarea>
+          <textarea v-model="todoForm.description" rows="3" placeholder="补充描述..." class="ui-field resize-none"></textarea>
         </div>
         <div class="space-y-1">
           <label class="text-xs text-gray-500 block font-medium">优先级</label>
-          <select v-model="todoForm.priority" class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded text-xs focus:outline-none focus:border-blue-500 text-gray-700 dark:text-zinc-300">
+          <select v-model="todoForm.priority" class="ui-field text-gray-700 dark:text-zinc-300">
             <option value="low">低优先级</option>
             <option value="medium">中优先级</option>
             <option value="high">高优先级</option>
@@ -702,8 +703,8 @@ onUnmounted(() => {
       </div>
       <template #footer>
         <div class="flex justify-end space-x-2 pt-2">
-          <button @click="todoDialogVisible = false" class="px-3 py-1.5 border border-gray-200 rounded text-xs text-gray-500 hover:bg-gray-50">取消</button>
-          <button @click="handleAddTodo" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-medium">创建</button>
+          <button @click="todoDialogVisible = false" class="ui-button-secondary">取消</button>
+          <button @click="handleAddTodo" class="ui-button-primary">创建</button>
         </div>
       </template>
     </el-dialog>
@@ -712,11 +713,11 @@ onUnmounted(() => {
       <div class="space-y-4">
         <div class="space-y-1">
           <label class="text-xs text-gray-500 block font-medium">便签主题</label>
-          <input v-model="noteForm.title" type="text" placeholder="主题，可留空" class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded text-xs focus:outline-none focus:border-blue-500" />
+          <input v-model="noteForm.title" type="text" placeholder="主题，可留空" class="ui-field" />
         </div>
         <div class="space-y-1">
           <label class="text-xs text-gray-500 block font-medium">便签正文</label>
-          <textarea v-model="noteForm.content" rows="4" placeholder="记录灵感或总结..." class="w-full px-3 py-2 border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-950 rounded text-xs focus:outline-none focus:border-blue-500"></textarea>
+          <textarea v-model="noteForm.content" rows="4" placeholder="记录灵感或总结..." class="ui-field resize-none"></textarea>
         </div>
         <div class="space-y-1">
           <label class="text-xs text-gray-500 block font-medium">颜色</label>
@@ -735,8 +736,8 @@ onUnmounted(() => {
       </div>
       <template #footer>
         <div class="flex justify-end space-x-2 pt-2">
-          <button @click="noteDialogVisible = false" class="px-3 py-1.5 border border-gray-200 rounded text-xs text-gray-500 hover:bg-gray-50">取消</button>
-          <button @click="handleAddNote" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-medium">添加</button>
+          <button @click="noteDialogVisible = false" class="ui-button-secondary">取消</button>
+          <button @click="handleAddNote" class="ui-button-primary">添加</button>
         </div>
       </template>
     </el-dialog>

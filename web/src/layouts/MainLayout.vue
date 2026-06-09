@@ -144,7 +144,7 @@ onUnmounted(() => {
     <div class="flex-1 flex flex-col min-w-0 overflow-hidden relative">
       
       <!-- Topbar Header -->
-      <header class="h-16 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between px-8 bg-white dark:bg-zinc-900 flex-shrink-0 z-10">
+      <header class="h-16 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between px-4 md:px-8 bg-white dark:bg-zinc-900 flex-shrink-0 z-10">
         <!-- Title -->
         <div>
           <h2 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">
@@ -158,7 +158,8 @@ onUnmounted(() => {
           <!-- Theme Toggle -->
           <button
             @click="toggleTheme"
-            class="p-1.5 rounded text-gray-400 hover:text-gray-600 dark:hover:text-zinc-300 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors focus:outline-none"
+            class="ui-icon-button border-transparent"
+            title="切换主题"
           >
             <Sun v-if="isDark" class="w-4 h-4" />
             <Moon v-else class="w-4 h-4" />
@@ -168,7 +169,8 @@ onUnmounted(() => {
           <div class="relative">
             <button
               @click="showNotifications = !showNotifications"
-              class="p-1.5 rounded text-gray-400 hover:text-gray-600 dark:hover:text-zinc-300 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors focus:outline-none relative"
+              class="ui-icon-button relative border-transparent"
+              title="通知"
             >
               <Bell class="w-4 h-4" />
               <span
@@ -238,7 +240,7 @@ onUnmounted(() => {
       ></div>
 
       <!-- Main Content Area -->
-      <main class="flex-1 overflow-y-auto bg-gray-50 dark:bg-zinc-950 p-8 relative">
+      <main class="flex-1 overflow-y-auto bg-gray-50 dark:bg-zinc-950 p-4 md:p-8 relative">
         <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
             <component :is="Component" />

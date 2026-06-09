@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Save, ShieldCheck, UserRound } from 'lucide-vue-next'
 import { authApi } from '../../api/modules/auth'
 import { userApi, type UserOut } from '../../api/modules/user'
 
@@ -29,6 +30,7 @@ const activeTab = ref('profile')
 const displayName = computed(() => profileForm.value.nickname.trim() || '未设置姓名')
 const avatarText = computed(() => (profileForm.value.nickname.trim() || '未').charAt(0).toUpperCase())
 const isStudent = computed(() => currentUser.value?.roles.some((role) => role.code === 'student') || false)
+const roleText = computed(() => currentUser.value?.roles.map((role) => role.name).join(' / ') || '未同步角色')
 
 const loadProfile = async () => {
   loading.value = true
@@ -140,126 +142,132 @@ onMounted(loadProfile)
 </script>
 
 <template>
-  <div class="max-w-4xl mx-auto py-6 space-y-6" v-loading="loading">
-    <div class="flex gap-8">
-      <div class="w-48 space-y-1">
+  <div class="mx-auto max-w-6xl space-y-5" v-loading="loading">
+    <section class="surface-panel p-5">
+      <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div class="flex items-center gap-4">
+          <div class="flex h-16 w-16 items-center justify-center rounded-lg bg-blue-50 text-2xl font-bold text-blue-600 ring-1 ring-blue-100 dark:bg-blue-950/20 dark:text-blue-300 dark:ring-blue-900/60">
+            {{ avatarText }}
+          </div>
+          <div>
+            <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">{{ displayName }}</p>
+            <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">登录账号：{{ currentUser?.username || '-' }}</p>
+          </div>
+        </div>
+        <div class="inline-flex w-fit items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-semibold text-gray-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
+          <UserRound class="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+          {{ roleText }}
+        </div>
+      </div>
+    </section>
+
+    <div class="grid gap-5 lg:grid-cols-[220px_1fr]">
+      <aside class="surface-panel h-fit p-2">
         <button
           @click="activeTab = 'profile'"
-          class="w-full text-left px-3 py-2 text-xs rounded transition-colors"
-          :class="activeTab === 'profile' ? 'bg-gray-200 dark:bg-zinc-800 text-gray-900 dark:text-zinc-50 font-semibold' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-zinc-800/50'"
+          class="segmented-button w-full"
+          :class="activeTab === 'profile' ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-300' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-zinc-400 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-100'"
         >
-          个人信息
+          <UserRound class="h-4 w-4" />
+          <span>个人信息</span>
         </button>
         <button
           @click="activeTab = 'security'"
-          class="w-full text-left px-3 py-2 text-xs rounded transition-colors"
-          :class="activeTab === 'security' ? 'bg-gray-200 dark:bg-zinc-800 text-gray-900 dark:text-zinc-50 font-semibold' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-zinc-800/50'"
+          class="segmented-button mt-1 w-full"
+          :class="activeTab === 'security' ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-300' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-zinc-400 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-100'"
         >
-          安全设置
+          <ShieldCheck class="h-4 w-4" />
+          <span>安全设置</span>
         </button>
-      </div>
+      </aside>
 
-      <div class="flex-1 minimal-card p-8">
-        <div v-if="activeTab === 'profile'" class="space-y-6">
-          <div class="border-b border-gray-100 dark:border-zinc-800 pb-3">
-            <h3 class="text-sm font-semibold">基本信息</h3>
-            <p class="mt-1 text-[10px] text-gray-400">姓名用于侧边栏、教师端学生列表和 AI 伴学称呼；登录用户名不会被当作姓名。</p>
-          </div>
-
-          <div class="flex items-center space-x-6">
-            <div class="w-16 h-16 rounded-full bg-blue-100 dark:bg-zinc-800 flex items-center justify-center text-xl font-bold text-blue-600 dark:text-zinc-300">
-              {{ avatarText }}
+      <section class="surface-panel p-6">
+        <form v-if="activeTab === 'profile'" class="space-y-8" @submit.prevent="handleSaveProfile">
+          <div class="grid gap-6 md:grid-cols-[220px_1fr]">
+            <div class="section-side-label">
+              <h3>基本信息</h3>
             </div>
-            <div>
-              <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">{{ displayName }}</p>
-              <p class="text-[10px] text-gray-400 mt-1">登录账号：{{ currentUser?.username || '-' }}</p>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="space-y-1">
+                <span class="ui-field-label">姓名 / 显示名称</span>
+                <input v-model="profileForm.nickname" type="text" class="ui-field" />
+              </label>
+              <label class="space-y-1">
+                <span class="ui-field-label">邮箱</span>
+                <input v-model="profileForm.email" type="email" class="ui-field" />
+              </label>
+              <label class="space-y-1">
+                <span class="ui-field-label">电话（选填）</span>
+                <input v-model="profileForm.phone" type="text" class="ui-field" />
+              </label>
             </div>
           </div>
 
-          <div class="grid grid-cols-2 gap-4 pt-2">
-            <label class="space-y-1">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">姓名 / 显示名称</span>
-              <input v-model="profileForm.nickname" type="text" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label class="space-y-1">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">邮箱</span>
-              <input v-model="profileForm.email" type="email" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label class="space-y-1">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">电话（选填）</span>
-              <input v-model="profileForm.phone" type="text" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label v-if="isStudent" class="space-y-1">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">学号（选填）</span>
-              <input v-model="profileForm.student_id" type="text" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label v-if="isStudent" class="space-y-1">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">年级（选填）</span>
-              <input v-model="profileForm.grade" type="text" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label v-if="isStudent" class="space-y-1">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">专业（选填）</span>
-              <input v-model="profileForm.major" type="text" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label v-if="isStudent" class="space-y-1 col-span-2">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">研究方向（选填）</span>
-              <input v-model="profileForm.research_direction" type="text" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label v-if="isStudent" class="space-y-1 col-span-2">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">个人简介（选填）</span>
-              <textarea v-model="profileForm.bio" rows="3" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500 resize-none"></textarea>
-            </label>
+          <div v-if="isStudent" class="grid gap-6 border-t border-gray-100 pt-8 md:grid-cols-[220px_1fr] dark:border-zinc-800">
+            <div class="section-side-label">
+              <h3>学生档案</h3>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <label class="space-y-1">
+                <span class="ui-field-label">学号（选填）</span>
+                <input v-model="profileForm.student_id" type="text" class="ui-field" />
+              </label>
+              <label class="space-y-1">
+                <span class="ui-field-label">年级（选填）</span>
+                <input v-model="profileForm.grade" type="text" class="ui-field" />
+              </label>
+              <label class="space-y-1">
+                <span class="ui-field-label">专业（选填）</span>
+                <input v-model="profileForm.major" type="text" class="ui-field" />
+              </label>
+              <label class="space-y-1">
+                <span class="ui-field-label">研究方向（选填）</span>
+                <input v-model="profileForm.research_direction" type="text" class="ui-field" />
+              </label>
+              <label class="space-y-1 sm:col-span-2">
+                <span class="ui-field-label">个人简介（选填）</span>
+                <textarea v-model="profileForm.bio" rows="4" class="ui-field resize-none"></textarea>
+              </label>
+            </div>
           </div>
 
-          <div class="pt-4 border-t border-gray-100 dark:border-zinc-800 flex justify-end">
-            <button
-              @click="handleSaveProfile"
-              :disabled="savingProfile"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded text-xs shadow-sm transition-all disabled:opacity-50"
-            >
-              {{ savingProfile ? '保存中' : '保存更改' }}
+          <div class="flex justify-end border-t border-gray-100 pt-5 dark:border-zinc-800">
+            <button type="submit" :disabled="savingProfile" class="ui-button-primary">
+              <Save class="h-3.5 w-3.5" />
+              <span>{{ savingProfile ? '保存中' : '保存更改' }}</span>
             </button>
           </div>
-        </div>
+        </form>
 
-        <div v-if="activeTab === 'security'" class="space-y-6">
-          <h3 class="text-sm font-semibold border-b border-gray-100 dark:border-zinc-800 pb-3">修改密码</h3>
-
-          <div class="space-y-4 max-w-md">
-            <label class="space-y-1 block">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">旧密码</span>
-              <input v-model="oldPassword" type="password" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label class="space-y-1 block">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">新密码</span>
-              <input v-model="newPassword" type="password" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
-
-            <label class="space-y-1 block">
-              <span class="text-xs text-gray-500 dark:text-zinc-400 block font-medium">确认新密码</span>
-              <input v-model="confirmPassword" type="password" class="w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-xs text-gray-900 dark:text-zinc-50 focus:outline-none focus:border-blue-500" />
-            </label>
+        <form v-if="activeTab === 'security'" class="space-y-8" @submit.prevent="handleChangePassword">
+          <div class="grid gap-6 md:grid-cols-[220px_1fr]">
+            <div class="section-side-label">
+              <h3>修改密码</h3>
+            </div>
+            <div class="grid max-w-lg gap-4">
+              <label class="space-y-1">
+                <span class="ui-field-label">旧密码</span>
+                <input v-model="oldPassword" type="password" class="ui-field" />
+              </label>
+              <label class="space-y-1">
+                <span class="ui-field-label">新密码</span>
+                <input v-model="newPassword" type="password" class="ui-field" />
+              </label>
+              <label class="space-y-1">
+                <span class="ui-field-label">确认新密码</span>
+                <input v-model="confirmPassword" type="password" class="ui-field" />
+              </label>
+            </div>
           </div>
 
-          <div class="pt-4 border-t border-gray-100 dark:border-zinc-800 flex justify-end">
-            <button
-              @click="handleChangePassword"
-              :disabled="savingPassword"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded text-xs shadow-sm transition-all disabled:opacity-50"
-            >
-              {{ savingPassword ? '更新中' : '更新密码' }}
+          <div class="flex justify-end border-t border-gray-100 pt-5 dark:border-zinc-800">
+            <button type="submit" :disabled="savingPassword" class="ui-button-primary">
+              <ShieldCheck class="h-3.5 w-3.5" />
+              <span>{{ savingPassword ? '更新中' : '更新密码' }}</span>
             </button>
           </div>
-        </div>
-      </div>
+        </form>
+      </section>
     </div>
   </div>
 </template>
