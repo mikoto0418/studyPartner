@@ -1,129 +1,273 @@
 # AI 伴学与智能体协同平台
 
-面向多场景（自学、学校、培训、企业）的通用型 **AI 伴学与智能体协同平台**。系统核心采用“学习行为记录 + 自适应 Memory 机制 + 实验室共享知识库”，通过长周期陪伴与智能复盘，辅助学习者高效成长。
+<p align="center">
+  <strong>面向学生、教师与平台管理员的 AI 学习协同系统</strong>
+</p>
 
-## 🎨 视觉与 UI 风格
-本平台遵循**极简美学（Minimalist Chinese UI）**设计规范：
-- 原生级淡色与暗色模式支持
-- 采用 1px 精细发丝边框及漫反射微阴影，无刺眼赛博霓虹渐变
-- 统一侧边栏自适应布局（仅在主仪表盘详尽展现，其余子页面隐藏侧边栏，保障视觉高度专注）
-- 界面融入了 Indigo/Violet 渐变暗色磨砂玻璃背景，配合精心设计的微动效，带来极其 premium 的用户体验
+<p align="center">
+  <a href="https://github.com/mikoto0418/studyPartner"><img alt="Repository" src="https://img.shields.io/badge/GitHub-studyPartner-111827?style=for-the-badge&logo=github"></a>
+  <img alt="Vue" src="https://img.shields.io/badge/Vue_3-35495E?style=for-the-badge&logo=vuedotjs&logoColor=4FC08D">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker_Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white">
+</p>
 
----
+<p align="center">
+  <a href="#核心能力">核心能力</a> ·
+  <a href="#系统架构">系统架构</a> ·
+  <a href="#快速启动">快速启动</a> ·
+  <a href="#默认账号">默认账号</a> ·
+  <a href="#项目文档">项目文档</a>
+</p>
 
-## 🏗️ 项目技术栈
-- **前端 (web)**: Vue 3 + TypeScript + Vite + Pinia + Vue Router + Element Plus + Tailwind CSS
-- **后端 (server)**: FastAPI (Python 3.11) + SQLAlchemy (Async) + PostgreSQL + Redis + Celery
-- **AI 引擎**: 硅基流动 (SiliconFlow) 统一大模型 API (兼容 OpenAI SDK)
-- **实时网络**: WebSocket 长连接 + ConnectionManager
-- **邮件服务**: SMTP / SMTPS 验证码邮件派发
+## 项目定位
 
----
+AI 伴学与智能体协同平台是一套围绕“学习行为记录、学情记忆、知识库检索、教师智能体协作”构建的全栈系统。它不只是一个聊天应用，而是尝试把 AI Agent 融入学生学习、教师教学和平台运维的日常工作流中。
 
-## ✨ 核心模块与工业级升级特性
+系统面向三类用户：
 
-### 1. ⚡ Celery 异步任务调度 (Module A)
-- **任务分离**：为避免耗时的 AI 文本生成、每日复盘报告（0 点触发）和知识库切片 Embedding 任务阻塞 FastAPI 主线程，系统通过 Celery 将其分发至分布式 Worker 中异步处理。
-- **定时调度 (Beat)**：每天午夜 0:00，Celery Beat 会自动触发所有活跃学生的“每日复盘与 Memory 提取”任务，并在处理完成后通过 Redis 进行持久化。
-- **手动触发**：管理员可以通过 `/reviews/generate` 接口发送任务 ID，手动让 Celery 重新生成特定学生在指定日期的复盘报告。
+| 角色 | 核心价值 | 关键入口 |
+|---|---|---|
+| 学生 | 获得长期陪伴式学习支持，沉淀个人学情记忆 | 仪表盘、AI 伴学、月历计划、知识库、学习路径、成长全览 |
+| 教师 | 观察班级态势，发现需要介入的学生，生成教学动作 | 工作台、学生列表、任务管理、路径任务、班级学情记忆看板 |
+| 管理员 | 管理用户、模型配置、系统运行状态 | 管理概览、用户管理、模型配置、系统设置 |
 
-### 2. 🔌 WebSocket 实时通知网关 (Module B)
-- **双向连接**：提供客户端到服务端的长连接通道 `/api/v1/ws`，建立连接时采用 JWT Token 对用户身份进行严格的安全校验。
-- **单播与推送**：后端提供全局 of `ConnectionManager` 连接管理器。当 `NotificationService` 生成新的系统通知时，会自动通过长连接将 payload 单播推送给特定的在线用户。
-- **前端 Alert**：前端 Composable `useWebSocket.ts` 监听连接与心跳（每 30 秒进行 Ping-Pong 交互）。当接收到推送通知时，触发 Element Plus 的 `ElNotification` 实时通知浮窗，并分发 `new-notification` 全局事件。
+## 核心能力
 
-### 3. ✉️ 邮箱自主注册与密码找回 (Module C)
-- **验证码防刷机制**：系统生成 6 位随机数字验证码并存入 Redis 中，有效期 5 分钟，验证码一旦使用立即销毁（Delete-on-verify）。前端获取验证码时引入 60 秒倒计时防刷控制。
-- **SMTP 异步派发**：通过内置 `smtplib` 配合 `asyncio.to_thread` 线程池包装，在不影响主线程运行的前提下异步投递 HTML 邮件。
-- **接口集成**：新增注册接口 `/auth/register`、发码接口 `/auth/send-code` 以及重置密码接口 `/auth/reset-password`，极大提升了用户自主服务能力。
+### 学生端
 
-### 4. 📊 学习行为记录与热力图 (Phase 6 基础)
-- **活跃度热力图**：在学生仪表盘动态展示。根据完成代办 (+2)、提交任务 (+5)、AI对话 (+1)、专注心跳 (每5分钟+1) 自动计分，支持日历小方格 `el-tooltip` 详情浮窗及连续活跃天数统计。
-- **B站视频学习房**：导入 B站视频资源，沙箱限制（屏蔽广告和劫持），实现切集 (分P) 监听与专注会话心跳自动记录 (每30秒)，支持手动完成任务，自动增量上报时长。
-- **全局时长心跳**：学生登录状态下，系统自动在后台每 30 秒执行一次活跃心跳上报，计入学生今日学习累积。
+- **AI 伴学助手**：支持对话、上下文开关、学情记忆引用、待办/任务/日历/知识库上下文关联。
+- **学习行为记录**：专注心跳、任务完成、B 站学习、AI 对话均可计入活跃度。
+- **个人仪表盘**：待办、导师任务、学术便签、学习热力图、模块排序。
+- **学习路径**：教师发布路径任务，学生按阶段推进并提交成果。
+- **成长全览**：汇总路径进度、学习趋势、学情记忆卡片。
 
----
+### 教师端
 
-## 🚀 快速启动与部署指南
+- **教学工作台**：查看指导学生、待批改、任务发布与 AI 教学辅助。
+- **学生管理**：查看学生概况、复盘日志、学情分析与任务状态。
+- **任务管理**：创建普通任务、查看提交、批改反馈。
+- **路径任务**：用 AI 把教学目标拆成阶段、节点和资源。
+- **班级学情记忆看板**：查看班级级别的学习状态、风险学生和记忆聚合。
 
-### 1. 生产环境一键部署 (推荐)
-在生产环境中，平台通过前端 Nginx 统一代理静态资源与 `/api/` 路由，并关闭了辅助数据库的外网端口暴露以保障安全。生产环境使用 `docker-compose.prod.yml` 以优化资源占用，并配置了 Nginx 以支持流式响应（SSE）及长连接优化。
+### 管理端
 
-直接在项目根目录下运行一键部署脚本：
-```bash
-chmod +x deploy.sh
-./deploy.sh
+- **用户管理**：学生、教师、管理员账号管理。
+- **模型配置**：按任务类型配置大模型能力，例如学生对话、每日复盘、记忆提取、路径生成等。
+- **系统设置**：维护平台级运行配置。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+  subgraph Client["Web Client"]
+    Vue["Vue 3 + TypeScript"]
+    Router["Vue Router"]
+    UI["Element Plus + Tailwind CSS"]
+  end
+
+  subgraph API["FastAPI Backend"]
+    Auth["认证与权限"]
+    Learning["学习路径与班级"]
+    Memory["学情记忆服务"]
+    Knowledge["知识库与向量检索"]
+    Notification["通知与 WebSocket"]
+    LLM["模型网关"]
+  end
+
+  subgraph Infra["Infrastructure"]
+    Postgres["PostgreSQL"]
+    Redis["Redis"]
+    Qdrant["Qdrant"]
+    MinIO["MinIO"]
+    Celery["Celery Worker / Beat"]
+  end
+
+  Vue --> Router
+  Router --> API
+  API --> Postgres
+  API --> Redis
+  API --> Qdrant
+  API --> MinIO
+  API --> Celery
+  LLM --> SiliconFlow["OpenAI Compatible LLM API"]
 ```
-该脚本将自动执行以下操作：
-1. 拷贝 `.env.example` 生成 `.env` 配置文件（请在此填入大模型 `SILICONFLOW_API_KEY` 以及 SMTP 发信邮箱配置）。
-2. 使用 `docker-compose.prod.yml` 构建并拉起生产环境 Docker 容器镜像（包含 postgres, redis, minio, qdrant, backend, frontend, worker, beat 等八个微服务）。
-3. 循环等待 PostgreSQL 数据库端口就绪。
-4. 在后端容器内执行 `python -m app.seed` 自动创建数据表并填充初始化种子账户。
 
-部署完成后：
-- 网页访问入口：`http://localhost` (统一 80 端口网关，零跨域 CORS 问题)
-- MinIO 控制台：`http://localhost:9001`
+## 技术栈
 
-> **初始测试账户：**
-> - **学生**: `student` / `student123`
-> - **教师**: `teacher` / `teacher123`
-> - **管理员**: `admin` / `admin123`
+| 层级 | 技术 |
+|---|---|
+| 前端 | Vue 3, TypeScript, Vite, Vue Router, Pinia, Element Plus, Tailwind CSS, lucide-vue-next |
+| 后端 | FastAPI, SQLAlchemy Async, Alembic, Pydantic, JWT |
+| 数据 | PostgreSQL, Redis, Qdrant, MinIO |
+| 异步任务 | Celery Worker, Celery Beat |
+| AI | OpenAI-compatible LLM Gateway, SiliconFlow, Embedding Model |
+| 部署 | Docker Compose, Nginx, Cloudflare Tunnel |
 
-### 2. 开发环境容器部署 (Docker Compose)
-在项目根目录下，直接执行以下命令拉起数据库、缓存及基础设施服务：
+## 目录结构
+
+```text
+studyPartner/
+├── web/                         # Vue 3 前端
+│   ├── src/api/                 # Axios API 模块
+│   ├── src/views/               # 学生端、教师端、管理端页面
+│   ├── src/components/          # 通用组件
+│   └── src/utils/               # 前端展示工具
+├── server/                      # FastAPI 后端
+│   ├── app/api/                 # API 路由
+│   ├── app/models/              # SQLAlchemy 模型
+│   ├── app/services/            # 业务服务
+│   ├── app/tasks/               # Celery 异步任务
+│   └── alembic/                 # 数据库迁移
+├── docs/                        # 产品、架构、API、数据库和设计文档
+├── docker-compose.yml           # 开发环境编排
+├── docker-compose.prod.yml      # 生产环境编排
+└── .env.example                 # 环境变量模板
+```
+
+## 快速启动
+
+### 环境要求
+
+- Node.js 20+
+- Python 3.11+
+- Docker Desktop 或 Docker Engine
+- PostgreSQL / Redis 可由 Docker Compose 自动拉起
+
+### 1. 准备环境变量
+
+```bash
+cp .env.example .env
+```
+
+至少建议配置：
+
+```ini
+JWT_SECRET_KEY=change_me_generate_with_openssl_rand_hex_32
+SILICONFLOW_API_KEY=
+SMTP_HOST=
+SMTP_USER=
+SMTP_PASSWORD=
+SMTP_FROM_EMAIL=
+```
+
+### 2. Docker Compose 启动全套基础设施
+
 ```bash
 docker compose up -d
 ```
-当容器就绪后，运行数据表初始化：
+
+服务默认端口：
+
+| 服务 | 地址 |
+|---|---|
+| 前端开发服务 | `http://localhost:5173` |
+| 后端 API | `http://localhost:8000` |
+| API 文档 | `http://localhost:8000/api/docs` |
+| PostgreSQL | `localhost:15432` |
+| Redis | `localhost:6379` |
+| Qdrant | `http://localhost:6333` |
+| MinIO Console | `http://localhost:9001` |
+
+### 3. 初始化种子数据
+
 ```bash
 docker compose exec backend python -m app.seed
 ```
 
----
+### 4. 本地前端开发
 
-## 💻 本地开发环境调试
-
-如果你需要在本地不通过 Docker 直接调试前后端：
-
-### 1. 运行前端 (web)
 ```bash
 cd web
 npm install
 npm run dev
 ```
-前端开发服务器将默认运行在：`http://localhost:5173`。
 
-### 2. 运行后端 (server)
-1. 安装 Python 依赖：
-   ```bash
-   cd server
-   pip install -r requirements.txt
-   ```
-2. 复制 `server/.env` 并按需配置本地连接。务必填写如下 SMTP 配置以支持注册功能：
-   ```ini
-   SMTP_HOST=smtp.qq.com
-   SMTP_PORT=465
-   SMTP_USER=your_email@qq.com
-   SMTP_PASSWORD=your_smtp_authorization_code
-   SMTP_FROM_EMAIL=your_email@qq.com
-   ```
-3. 确保本地装有 PostgreSQL 和 Redis，运行本地数据库迁移与种子数据录入：
-   ```bash
-   python -m app.seed
-   ```
-4. 启动 FastAPI 本地开发服务：
-   ```bash
-   uvicorn app.main:app --reload
-   ```
-   API 交互文档地址：`http://localhost:8000/api/docs`。
+### 5. 本地后端开发
 
-### 3. 运行 Celery 异步服务 (本地调试)
-如果你在本地调试异步任务相关的逻辑，可以在 `server` 目录下打开两个新终端，分别启动 worker 和 scheduler：
-* **启动 Worker 节点**：
-  ```bash
-  celery -A app.core.celery_app:celery_app worker --loglevel=info -P threads
-  ```
-* **启动 Beat 定时器**：
-  ```bash
-  celery -A app.core.celery_app:celery_app beat --loglevel=info
-  ```
+```bash
+cd server
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+### 6. 本地异步任务
+
+```bash
+cd server
+celery -A app.core.celery_app:celery_app worker --loglevel=info -P threads
+celery -A app.core.celery_app:celery_app beat --loglevel=info
+```
+
+## 默认账号
+
+种子脚本会创建以下测试账号：
+
+| 角色 | 用户名 | 密码 |
+|---|---|---|
+| 学生 | `student` | `student123` |
+| 教师 | `teacher` | `teacher123` |
+| 管理员 | `admin` | `admin123` |
+
+## 常用命令
+
+```bash
+# 前端构建
+cd web && npm run build
+
+# 开发环境容器
+docker compose up -d
+docker compose ps
+docker compose logs -f backend
+
+# 停止环境
+docker compose down
+
+# 生产部署脚本
+chmod +x deploy.sh
+./deploy.sh
+```
+
+## 产品路线图
+
+### 已完成或已具备基础能力
+
+- 学生端 AI 伴学对话与学情记忆管理。
+- 学习路径生成、发布与提交。
+- 教师端任务、学生、班级看板。
+- 管理端模型配置。
+- WebSocket 通知、Celery 定时复盘、知识库基础能力。
+- 学生个人信息与显示姓名口径统一。
+
+### 下一阶段重点
+
+- **教师工作台重构**：把班级概况和需介入学生提升为首屏核心。
+- **教师 Agent 工作台**：从聊天框升级为可执行教学智能体，支持生成任务、反馈、简报和干预计划。
+- **班级洞察模型**：把学情记忆分类数量升级为带证据链的教学洞察卡片。
+- **大量学生选择器**：替换多选下拉，支持搜索、筛选、分页、批量选择和名单导入。
+- **Agent 审计与工具调用**：所有 AI 建议和动作需要可追溯、可确认、可回滚。
+
+## 项目文档
+
+| 文档 | 说明 |
+|---|---|
+| [教师端与 Agent 平台重构设计方案](docs/teacher-agent-platform-redesign.md) | 教师仪表盘、班级洞察、Agent 工作台和大量学生选择器设计 |
+| [UI 设计与界面交互规范](docs/ui-design.md) | 视觉系统、页面规范、交互状态 |
+| [系统架构设计](docs/architecture.md) | 平台整体架构与模块划分 |
+| [API 设计](docs/api-design.md) | 后端接口设计文档 |
+| [数据库设计](docs/database-design.md) | 数据表、索引、关系说明 |
+| [AI Memory 设计](docs/ai-memory-design.md) | 学情记忆机制与数据流 |
+| [学习路径与班级记忆设计](docs/learning-path-class-memory-design.md) | 路径任务、班级看板、记忆聚合设计 |
+| [部署指南](docs/deployment-guide.md) | 生产部署、容器、运维说明 |
+
+## 设计原则
+
+- **以行动为中心**：老师看到的不是指标堆叠，而是可执行建议。
+- **证据优先**：Agent 结论必须能追溯到对话、复盘、任务提交或学习行为。
+- **人在回路**：发布任务、发送通知、删除记忆、批量改动都需要人工确认。
+- **长期陪伴**：学生端围绕长期学习画像和持续复盘设计，不做一次性问答工具。
+- **大规模可用**：所有班级、学生、任务选择器必须能承载真实班级规模。
+
+## 许可证
+
+当前仓库尚未声明开源许可证。若计划公开发布，请在合并前补充 `LICENSE` 文件并明确授权范围。
