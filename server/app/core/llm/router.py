@@ -72,6 +72,9 @@ class LLMRouter:
         stream: bool = False,
         **kwargs
     ) -> Union[ChatResponse, AsyncIterator[str]]:
+        temperature_override = kwargs.pop("temperature", None)
+        max_tokens_override = kwargs.pop("max_tokens", None)
+
         # 1. Fetch active route configs for task_type from database sorted by priority
         async with SessionLocal() as db:
             from sqlalchemy import select, and_
@@ -147,8 +150,8 @@ class LLMRouter:
                 response = await provider.chat_completion(
                     messages=messages,
                     model=model,
-                    temperature=route_config.get("temperature", 0.7),
-                    max_tokens=route_config.get("max_tokens", 2048),
+                    temperature=temperature_override if temperature_override is not None else route_config.get("temperature", 0.7),
+                    max_tokens=max_tokens_override if max_tokens_override is not None else route_config.get("max_tokens", 2048),
                     stream=stream,
                     task_type=task_type,
                     **kwargs

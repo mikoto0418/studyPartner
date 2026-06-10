@@ -128,6 +128,7 @@ class LearningPathGenerateReq(BaseModel):
     title: Optional[str] = Field(None, max_length=255)
     goal: str = Field(..., min_length=2)
     planning_text: str = Field(..., min_length=2)
+    enable_web_research: bool = True
 
 
 class LearningPathPlanOut(BaseModel):

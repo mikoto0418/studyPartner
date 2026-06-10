@@ -30,6 +30,7 @@ const taskTypes = [
   { value: 'memory_extract', label: '学情记忆提取' },
   { value: 'memory_update', label: '学情记忆更新' },
   { value: 'knowledge_qa', label: '知识库 RAG 问答' },
+  { value: 'learning_path_generate', label: '学习路径生成' },
   { value: 'document_summary', label: '文档摘要' },
   { value: 'knowledge_embedding', label: '知识库 Embedding' }
 ]

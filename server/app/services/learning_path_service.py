@@ -1,3 +1,4 @@
+import json
 import hashlib
 import re
 from datetime import datetime, timezone, timedelta
@@ -37,6 +38,7 @@ from app.schemas.learning_path import (
     LearningPathUpdate,
 )
 from app.services.access_control import AccessControlService
+from app.services.learning_path_ai_planner import LearningPathAIPlanner
 from app.services.learning_path_planner import LearningPathPlanner
 from app.services.notification_service import NotificationService
 from app.utils.display_name import user_display_name
@@ -109,15 +111,46 @@ class LearningPathService:
         return class_group
 
     @staticmethod
-    async def generate_plan(req_goal: str, planning_text: str, title: Optional[str] = None) -> Dict[str, Any]:
-        return LearningPathPlanner.build_plan(req_goal, planning_text, title)
+    async def generate_plan(
+        req_goal: str,
+        planning_text: str,
+        title: Optional[str] = None,
+        user_id: Optional[UUID] = None,
+        enable_web_research: bool = True,
+    ) -> Dict[str, Any]:
+        try:
+            return await LearningPathAIPlanner.build_plan(
+                goal=req_goal,
+                planning_text=planning_text,
+                title=title,
+                user_id=user_id,
+                enable_web_research=enable_web_research,
+                allow_deterministic_fallback=False,
+            )
+        except RuntimeError as exc:
+            raise ValidationError(str(exc), code="LEARNING_PATH_AI_GENERATION_FAILED") from exc
 
     @staticmethod
     async def create_path(db: AsyncSession, creator_id: UUID, path_in: LearningPathCreate) -> LearningPathTask:
-        plan = LearningPathPlanner.build_plan(path_in.goal, path_in.planning_text or path_in.goal, path_in.title)
-        stage_inputs = path_in.stages or [LearningPathStageIn(**stage) for stage in plan["stages"]]
-        node_inputs = path_in.nodes or [LearningPathNodeIn(**node) for node in plan["nodes"]]
-        edge_inputs = path_in.edges or [LearningPathEdgeIn(**edge) for edge in plan["edges"]]
+        if path_in.nodes:
+            stage_inputs = path_in.stages or [
+                LearningPathStageIn(title="学习路径", description="教师发布的学习路径结构。", order_index=0)
+            ]
+            node_inputs = path_in.nodes
+            edge_inputs = path_in.edges or [
+                LearningPathEdgeIn(
+                    source_key=node_inputs[index].key or f"node_{index + 1}",
+                    target_key=node_inputs[index + 1].key or f"node_{index + 2}",
+                )
+                for index in range(max(0, len(node_inputs) - 1))
+            ]
+            plan = LearningPathService._plan_from_graph_inputs(path_in.title, stage_inputs, node_inputs, edge_inputs)
+        else:
+            generated_plan = LearningPathPlanner.build_plan(path_in.goal, path_in.planning_text or path_in.goal, path_in.title)
+            stage_inputs = [LearningPathStageIn(**stage) for stage in generated_plan["stages"]]
+            node_inputs = [LearningPathNodeIn(**node) for node in generated_plan["nodes"]]
+            edge_inputs = [LearningPathEdgeIn(**edge) for edge in generated_plan["edges"]]
+            plan = generated_plan
         assignee_ids = await LearningPathService._resolve_assignees(db, path_in.class_id, path_in.assignee_ids)
 
         now = datetime.now(timezone.utc)
@@ -152,6 +185,52 @@ class LearningPathService:
                 link_url="/student/learning-paths",
             )
         return task
+
+    @staticmethod
+    def _plan_from_graph_inputs(
+        title: str,
+        stages: List[LearningPathStageIn],
+        nodes: List[LearningPathNodeIn],
+        edges: List[LearningPathEdgeIn],
+    ) -> Dict[str, Any]:
+        stage_items = []
+        for index, stage in enumerate(stages):
+            item = LearningPathService._schema_to_json_dict(stage)
+            item["order_index"] = item.get("order_index", index)
+            stage_items.append(item)
+
+        node_items = []
+        resources = []
+        for index, node in enumerate(nodes):
+            item = LearningPathService._schema_to_json_dict(node)
+            item["key"] = item.get("key") or f"node_{index + 1}"
+            item["order_index"] = item.get("order_index", index)
+            item["resources"] = item.get("resources") or []
+            for resource in item["resources"]:
+                resources.append(resource)
+            node_items.append(item)
+
+        edge_items = []
+        for index, edge in enumerate(edges):
+            item = LearningPathService._schema_to_json_dict(edge)
+            edge_items.append(item)
+
+        total_minutes = sum(int(node.get("estimated_minutes") or 0) for node in node_items)
+        return {
+            "stages": stage_items,
+            "nodes": node_items,
+            "edges": edge_items,
+            "resources": resources,
+            "summary": f"教师确认发布的学习路径「{title}」，共 {len(node_items)} 个节点，预计约 {total_minutes} 分钟。",
+        }
+
+    @staticmethod
+    def _schema_to_json_dict(item: Any) -> Dict[str, Any]:
+        if hasattr(item, "model_dump_json"):
+            return json.loads(item.model_dump_json())
+        if hasattr(item, "json"):
+            return json.loads(item.json())
+        return json.loads(json.dumps(item, ensure_ascii=False, default=str))
 
     @staticmethod
     async def update_path(db: AsyncSession, task_id: UUID, teacher_id: UUID, path_in: LearningPathUpdate) -> LearningPathTask:

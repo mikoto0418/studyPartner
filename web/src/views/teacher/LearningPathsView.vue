@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   FileText,
   GitBranch,
+  Globe2,
   GraduationCap,
   Link,
   Pencil,
@@ -48,6 +49,7 @@ const pathForm = ref({
   class_id: '',
   assignee_ids: [] as string[],
   due_date: '',
+  enable_web_research: true,
   publish: true
 })
 
@@ -92,6 +94,7 @@ const resetForm = () => {
     class_id: '',
     assignee_ids: [],
     due_date: '',
+    enable_web_research: true,
     publish: true
   }
   generatedPlan.value = null
@@ -112,13 +115,14 @@ const handleGeneratePlan = async () => {
     const res = await learningPathApi.generatePlan({
       title: pathForm.value.title || undefined,
       goal: pathForm.value.goal,
-      planning_text: pathForm.value.planning_text
+      planning_text: pathForm.value.planning_text,
+      enable_web_research: pathForm.value.enable_web_research
     })
     generatedPlan.value = res.data
     if (!pathForm.value.title) pathForm.value.title = pathForm.value.goal
     ElMessage.success('学习路径草案已生成')
   } catch (error) {
-    ElMessage.error('生成学习路径失败')
+    console.warn('Failed to generate learning path plan', error)
   } finally {
     generating.value = false
   }
@@ -536,16 +540,21 @@ onMounted(loadInitialData)
           <span>将自动分配给 {{ selectedClass.member_count }} 名班级学生，可再叠加单独指派对象。</span>
         </div>
 
-        <div class="flex items-center justify-between">
+        <div class="flex items-center justify-between gap-3">
           <button
             @click="handleGeneratePlan"
             :disabled="generating"
             class="inline-flex items-center gap-1.5 px-3 py-2 rounded bg-blue-600 text-white text-xs font-medium disabled:opacity-50"
           >
             <Bot class="w-4 h-4" />
-            <span>{{ generating ? '生成中' : '生成学习路径图谱' }}</span>
+            <span>{{ generating ? '生成中' : 'AI 生成路径' }}</span>
           </button>
-          <div class="flex items-center gap-3 text-[10px] text-gray-400">
+          <div class="flex items-center gap-4 text-[10px] text-gray-400">
+            <label class="inline-flex items-center gap-1.5 rounded border border-gray-200 px-2 py-1.5 text-gray-500 dark:border-zinc-800 dark:text-zinc-400">
+              <input v-model="pathForm.enable_web_research" type="checkbox" class="h-3.5 w-3.5 accent-blue-600" />
+              <Globe2 class="h-3.5 w-3.5 text-blue-600" />
+              <span>联网增强</span>
+            </label>
             <span v-if="generatedPlan">{{ generatedPlan.nodes.length }} 步</span>
             <span v-if="generatedPlan">约 {{ totalMinutes }} 分钟</span>
           </div>

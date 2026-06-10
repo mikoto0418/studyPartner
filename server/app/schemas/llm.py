@@ -37,6 +37,7 @@ class LLMConfigUpsertReq(BaseModel):
         "memory_extract",
         "memory_update",
         "knowledge_qa",
+        "learning_path_generate",
         "document_summary",
     ])
     enabled: bool = True

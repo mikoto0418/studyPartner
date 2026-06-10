@@ -166,7 +166,7 @@ export interface StudentGrowthOverviewOut {
 }
 
 export const learningPathApi = {
-  generatePlan(data: { title?: string; goal: string; planning_text: string }) {
+  generatePlan(data: { title?: string; goal: string; planning_text: string; enable_web_research?: boolean }) {
     return request.post('/learning-paths/generate', data)
   },
 
