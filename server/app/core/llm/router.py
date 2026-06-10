@@ -9,6 +9,7 @@ from app.core.llm.base import LLMProvider, ChatMessage, ChatResponse
 from app.core.security import decrypt_secret
 
 logger = logging.getLogger(__name__)
+OPENAI_COMPATIBLE_PROVIDERS = {"siliconflow", "xiaomi", "xiaomi_token_plan", "openai_compatible"}
 
 class RateLimiter:
     """Simple rate limiter checking user daily quotas and model configuration rules"""
@@ -144,7 +145,7 @@ class LLMRouter:
             # Find provider client or instantiate dynamically
             provider = self.providers.get(provider_name)
             should_close_provider = False
-            if provider_name == "siliconflow":
+            if provider_name in OPENAI_COMPATIBLE_PROVIDERS:
                 # Build a fresh client from the selected route config so admin
                 # config changes and per-task endpoints take effect immediately.
                 from app.core.llm.providers.siliconflow import SiliconFlowProvider
@@ -157,7 +158,11 @@ class LLMRouter:
                     api_key = settings.SILICONFLOW_CHAT_API_KEY or settings.SILICONFLOW_API_KEY
                     base_url = base_url or settings.SILICONFLOW_CHAT_BASE_URL or settings.SILICONFLOW_BASE_URL
                 
-                provider = SiliconFlowProvider({"api_key": api_key, "base_url": base_url})
+                provider = SiliconFlowProvider({
+                    "provider_name": provider_name,
+                    "api_key": api_key,
+                    "base_url": base_url,
+                })
                 should_close_provider = True
 
             if not provider:

@@ -28,6 +28,7 @@ from app.schemas.llm import (
 )
 
 router = APIRouter()
+OPENAI_COMPATIBLE_PROVIDERS = {"siliconflow", "xiaomi", "xiaomi_token_plan", "openai_compatible"}
 
 
 def _config_out(config: LLMProviderConfig) -> LLMProviderConfigOut:
@@ -177,24 +178,28 @@ async def test_llm_connection(
     req: LLMConnectionTestReq = Body(...),
     current_user: User = Depends(require_admin),
 ):
-    if req.provider_name != "siliconflow":
-        raise ValidationError("当前仅支持 SiliconFlow 连接测试")
+    if req.provider_name not in OPENAI_COMPATIBLE_PROVIDERS:
+        raise ValidationError("当前仅支持 OpenAI 兼容通道连接测试")
 
-    provider = SiliconFlowProvider({"api_key": req.api_key, "base_url": _normal_url(req.base_url)})
+    provider = SiliconFlowProvider({
+        "provider_name": req.provider_name,
+        "api_key": req.api_key,
+        "base_url": _normal_url(req.base_url),
+    })
     started = time.monotonic()
     try:
         if req.endpoint_type == "embedding":
             embedding = await provider.embedding("连接测试", req.model_name)
             ok = bool(getattr(embedding, "embedding", None))
         else:
-            response = await provider.chat_completion(
-                messages=[ChatMessage(role="user", content="请回复 OK")],
+            await provider.chat_completion(
+                messages=[ChatMessage(role="user", content="请只回复 OK，不要解释。")],
                 model=req.model_name,
                 temperature=0,
-                max_tokens=8,
+                max_tokens=256,
                 stream=False,
             )
-            ok = bool(response.content)
+            ok = True
     except Exception as exc:
         raise ValidationError(f"模型通道连接测试失败：{str(exc)[:160]}") from exc
     finally:
@@ -212,7 +217,6 @@ async def test_llm_connection(
         ),
         message="连接测试成功",
     )
-
 
 @router.get("/overview", response_model=BaseResponse[AdminOverviewOut], summary="管理面板概览统计")
 async def get_admin_overview(

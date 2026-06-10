@@ -6,18 +6,21 @@ from typing import AsyncIterator, List, Dict, Any, Union
 from app.core.llm.base import LLMProvider, ChatMessage, ChatResponse, EmbeddingResponse
 
 class SiliconFlowProvider(LLMProvider):
-    """SiliconFlow API integration (compatible with OpenAI format)"""
+    """OpenAI-compatible chat and embedding provider."""
 
     def __init__(self, config: Dict[str, Any]):
-        super().__init__(provider_name="siliconflow", config=config)
+        super().__init__(provider_name=config.get("provider_name", "siliconflow"), config=config)
         self.base_url = config.get("base_url", "https://api.siliconflow.cn/v1")
         self.api_key = config.get("api_key", "")
+        self.is_xiaomi_token_plan = "xiaomimimo.com" in self.base_url.lower()
+        headers = {"Content-Type": "application/json"}
+        if self.is_xiaomi_token_plan:
+            headers["api-key"] = self.api_key
+        else:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         self.http_client = httpx.AsyncClient(
             base_url=self.base_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            },
+            headers=headers,
             timeout=httpx.Timeout(60.0, connect=10.0)
         )
 
@@ -34,12 +37,15 @@ class SiliconFlowProvider(LLMProvider):
         # the OpenAI-compatible schema and may reject unknown fields such as task_type.
         provider_options = dict(kwargs)
         provider_options.pop("task_type", None)
+        provider_options.pop("max_tokens", None)
+        provider_options.pop("max_completion_tokens", None)
+        token_field = "max_completion_tokens" if self.is_xiaomi_token_plan else "max_tokens"
 
         payload = {
             "model": model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            token_field: max_tokens,
             "stream": stream,
             **provider_options
         }
@@ -55,8 +61,10 @@ class SiliconFlowProvider(LLMProvider):
 
         latency = (time.monotonic() - start_time) * 1000
 
+        message = data["choices"][0].get("message", {})
+
         return ChatResponse(
-            content=data["choices"][0]["message"]["content"],
+            content=message.get("content") or "",
             model=data.get("model", model),
             provider=self.provider_name,
             usage=data.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
