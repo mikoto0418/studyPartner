@@ -51,3 +51,4 @@ logs/
 .codex-run/
 *.log
 *.sqlite
+*.zip
