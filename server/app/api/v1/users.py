@@ -15,6 +15,10 @@ router = APIRouter()
 @router.get("/", response_model=BaseResponse[PageData[UserOut]], summary="获取用户列表")
 async def list_users(
     role_code: str = Query(None, description="按角色筛选"),
+    keyword: str = Query(None, description="按姓名、账号、邮箱、学号、年级、专业检索"),
+    grade: str = Query(None, description="按年级筛选"),
+    major: str = Query(None, description="按专业筛选"),
+    status: str = Query(None, description="按用户状态筛选"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页大小"),
     current_user: User = Depends(require_staff),
@@ -33,6 +37,10 @@ async def list_users(
         page=page,
         page_size=page_size,
         user_ids=allowed_user_ids,
+        keyword=keyword,
+        grade=grade,
+        major=major,
+        status=status,
     )
     page_data = PageData.create(
         items=[UserOut.model_validate(item) for item in items],

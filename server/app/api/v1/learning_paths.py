@@ -14,6 +14,8 @@ from app.schemas.learning_path import (
     ClassOverviewOut,
     LearningNodeReviewReq,
     LearningNodeSubmitReq,
+    LearningInsightOut,
+    LearningInsightStatusUpdate,
     LearningPathCreate,
     LearningPathDetailOut,
     LearningPathGenerateReq,
@@ -158,6 +160,17 @@ async def get_class_overview(
 ):
     overview = await LearningPathService.get_class_overview(db, class_id, current_user.id)
     return BaseResponse.success(data=ClassOverviewOut(**overview), message="获取成功")
+
+
+@router.patch("/insights/{insight_id}/status", response_model=BaseResponse[LearningInsightOut], summary="更新班级洞察状态")
+async def update_learning_insight_status(
+    insight_id: UUID = Path(...),
+    status_in: LearningInsightStatusUpdate = Body(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    insight = await LearningPathService.update_insight_status(db, insight_id, current_user.id, status_in)
+    return BaseResponse.success(data=LearningInsightOut(**insight), message="洞察状态已更新")
 
 
 @router.get("/growth/{student_id}", response_model=BaseResponse[StudentGrowthOverviewOut], summary="学生成长数据全览")

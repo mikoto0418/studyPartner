@@ -163,6 +163,30 @@ class LearningNodeSubmission(BaseModel):
     reviewer = relationship("User", foreign_keys=[reviewed_by], backref="reviewed_learning_submissions")
 
 
+class LearningInsight(BaseModel):
+    __tablename__ = "learning_insights"
+
+    scope = Column(String(30), default="class", nullable=False, index=True)
+    class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id", ondelete="CASCADE"), nullable=True, index=True)
+    student_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    teacher_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    title = Column(String(255), nullable=False)
+    insight_type = Column(String(60), default="observation", nullable=False, index=True)
+    severity = Column(String(30), default="medium", nullable=False, index=True)
+    summary = Column(Text, nullable=False)
+    affected_student_ids = Column(JSONB, nullable=True)
+    evidence = Column(JSONB, nullable=True)
+    suggested_actions = Column(JSONB, nullable=True)
+    status = Column(String(30), default="new", nullable=False, index=True)
+    source = Column(String(60), default="system", nullable=False)
+    source_fingerprint = Column(String(255), nullable=True, index=True)
+    generated_at = Column(DateTime(timezone=True), nullable=True)
+
+    class_group = relationship("ClassGroup", backref="learning_insights")
+    student = relationship("User", foreign_keys=[student_id], backref="student_learning_insights")
+    teacher = relationship("User", foreign_keys=[teacher_id], backref="teacher_learning_insights")
+
+
 class ClassMemorySnapshot(BaseModel):
     __tablename__ = "class_memory_snapshots"
 

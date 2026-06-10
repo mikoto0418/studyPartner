@@ -51,7 +51,15 @@ export const getUserAvatarText = (user?: Partial<Pick<UserOut, 'display_name' | 
 }
 
 export const userApi = {
-  listUsers(params?: { role_code?: string; page?: number; page_size?: number }) {
+  listUsers(params?: {
+    role_code?: string
+    keyword?: string
+    grade?: string
+    major?: string
+    status?: string
+    page?: number
+    page_size?: number
+  }) {
     return request.get('/users/', { params })
   },
 

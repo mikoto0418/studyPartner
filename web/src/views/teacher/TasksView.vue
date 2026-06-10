@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { Plus, CheckCircle, Clock, AlertCircle, Eye, User } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { taskApi } from '../../api/modules/task'
 import type { TaskOut, TaskDetails } from '../../api/modules/task'
-import { userApi } from '../../api/modules/user'
 import type { UserOut } from '../../api/modules/user'
+import StudentPickerDialog from '../../components/common/StudentPickerDialog.vue'
 
 // Data lists
 const tasks = ref<TaskOut[]>([])
-const students = ref<UserOut[]>([])
 
 // Loading states
 const loading = ref(false)
@@ -18,6 +17,8 @@ const loading = ref(false)
 const createDialogVisible = ref(false)
 const detailDrawerVisible = ref(false)
 const reviewDialogVisible = ref(false)
+const assigneePickerVisible = ref(false)
+const selectedAssigneeUsers = ref<UserOut[]>([])
 
 // Form states
 const taskForm = ref({
@@ -44,10 +45,7 @@ const reviewForm = ref({
 })
 
 const displayNameOf = (item: { display_name?: string; nickname?: string; username?: string }) => item.display_name || item.nickname?.trim() || '未设置姓名'
-const optionLabelOf = (item: { display_name?: string; nickname?: string; username?: string }) => {
-  const displayName = displayNameOf(item)
-  return item.username ? `${displayName}（账号：${item.username}）` : displayName
-}
+const selectedAssigneeNames = computed(() => selectedAssigneeUsers.value.map(displayNameOf).join('、'))
 
 // Fetch initial data
 const loadTasks = async () => {
@@ -60,16 +58,6 @@ const loadTasks = async () => {
     tasks.value = []
   } finally {
     loading.value = false
-  }
-}
-
-const loadStudents = async () => {
-  try {
-    const res = await userApi.listUsers({ role_code: 'student', page_size: 100 })
-    students.value = res.data?.items || []
-  } catch (error) {
-    console.warn('Failed to fetch students', error)
-    students.value = []
   }
 }
 
@@ -105,10 +93,15 @@ const handleCreateTask = async () => {
       due_date: '',
       assignee_ids: []
     }
+    selectedAssigneeUsers.value = []
   } catch (error) {
     console.warn('Failed to create task', error)
     ElMessage.error('任务发布失败')
   }
+}
+
+const handleAssigneesConfirm = (users: UserOut[]) => {
+  selectedAssigneeUsers.value = users
 }
 
 // Show task details and submissions
@@ -172,7 +165,6 @@ const formatDate = (isoStr?: string) => {
 
 onMounted(() => {
   loadTasks()
-  loadStudents()
 })
 </script>
 
@@ -305,19 +297,18 @@ onMounted(() => {
 
         <div>
           <label class="block text-[11px] font-medium text-gray-400 dark:text-zinc-500 mb-1">指派学生（多选）</label>
-          <el-select
-            v-model="taskForm.assignee_ids"
-            multiple
-            placeholder="选择接收此任务的学生"
-            class="w-full minimal-select"
+          <button
+            type="button"
+            @click="assigneePickerVisible = true"
+            class="flex min-h-10 w-full items-center justify-between gap-3 rounded border border-gray-200 px-3 py-2 text-left text-xs transition-colors hover:bg-gray-50 dark:border-zinc-800 dark:hover:bg-zinc-800"
           >
-            <el-option
-              v-for="s in students"
-              :key="s.id"
-              :label="optionLabelOf(s)"
-              :value="s.id"
-            />
-          </el-select>
+            <span class="min-w-0 truncate text-gray-600 dark:text-zinc-300">
+              {{ taskForm.assignee_ids.length ? selectedAssigneeNames : '选择接收此任务的学生' }}
+            </span>
+            <span class="shrink-0 rounded bg-blue-50 px-2 py-1 text-[10px] text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">
+              {{ taskForm.assignee_ids.length }} 人
+            </span>
+          </button>
         </div>
       </div>
 
@@ -338,6 +329,13 @@ onMounted(() => {
         </div>
       </template>
     </el-dialog>
+
+    <StudentPickerDialog
+      v-model:visible="assigneePickerVisible"
+      v-model="taskForm.assignee_ids"
+      title="选择任务指派学生"
+      @confirm="handleAssigneesConfirm"
+    />
 
     <!-- Details Drawer / Side Panel -->
     <el-drawer

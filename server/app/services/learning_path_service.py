@@ -1,3 +1,4 @@
+import hashlib
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,6 +20,7 @@ from app.models.learning_path import (
     LearningPathResource,
     LearningPathStage,
     LearningPathTask,
+    LearningInsight,
 )
 from app.models.student_memory import DailyReview, StudentMemory
 from app.models.user import User
@@ -26,6 +28,7 @@ from app.schemas.learning_path import (
     ClassCreate,
     LearningNodeReviewReq,
     LearningNodeSubmitReq,
+    LearningInsightStatusUpdate,
     LearningPathCreate,
     LearningPathEdgeIn,
     LearningPathNodeIn,
@@ -192,6 +195,19 @@ class LearningPathPlanner:
 
 
 class LearningPathService:
+    INSIGHT_VISIBLE_STATUSES = {"new", "acknowledged"}
+    INSIGHT_CLOSED_STATUSES = {"resolved", "dismissed"}
+    MEMORY_CATEGORY_LABELS = {
+        "goal": "学习目标",
+        "interest_area": "兴趣方向",
+        "learning_preference": "学习偏好",
+        "study_habit": "学习习惯",
+        "weakness": "薄弱点",
+        "strength": "优势能力",
+        "challenge": "学习阻碍",
+        "knowledge_gap": "知识缺口",
+    }
+
     @staticmethod
     async def create_class(db: AsyncSession, teacher_id: UUID, class_in: ClassCreate) -> ClassGroup:
         class_group = ClassGroup(
@@ -521,19 +537,49 @@ class LearningPathService:
     async def get_class_overview(db: AsyncSession, class_id: UUID, teacher_id: UUID) -> Dict[str, Any]:
         class_group = await LearningPathService.get_class(db, class_id, teacher_id)
         student_ids = [member.user_id for member in class_group.members if member.status == "active"]
+        class_info = LearningPathService._class_to_dict(class_group)
         metrics = await LearningPathService._class_metrics(db, class_id, student_ids)
         memory_summary = await LearningPathService._memory_summary(db, student_ids)
         attention_students = await LearningPathService._attention_students(db, student_ids, class_group.members)
         recent_paths = await LearningPathService._recent_class_paths(db, class_id)
         trend = await LearningPathService._class_trend(db, class_id, student_ids, metrics)
+        insights = await LearningPathService.refresh_class_insights(db, class_group, student_ids)
         return {
-            "class_info": LearningPathService._class_to_dict(class_group),
+            "class_info": class_info,
             "metrics": metrics,
             "trend": trend,
             "memory_summary": memory_summary,
+            "insights": insights,
             "attention_students": attention_students,
             "recent_paths": recent_paths,
         }
+
+    @staticmethod
+    async def update_insight_status(
+        db: AsyncSession,
+        insight_id: UUID,
+        teacher_id: UUID,
+        status_in: LearningInsightStatusUpdate,
+    ) -> Dict[str, Any]:
+        valid_statuses = LearningPathService.INSIGHT_VISIBLE_STATUSES | LearningPathService.INSIGHT_CLOSED_STATUSES
+        if status_in.status not in valid_statuses:
+            raise ValidationError("不支持的洞察状态", code="INVALID_INSIGHT_STATUS")
+
+        result = await db.execute(
+            select(LearningInsight).where(and_(LearningInsight.id == insight_id, LearningInsight.deleted_at.is_(None)))
+        )
+        insight = result.scalars().first()
+        if not insight:
+            raise NotFoundError("洞察不存在")
+        if insight.teacher_id and insight.teacher_id != teacher_id:
+            raise PermissionDenied("无权更新该洞察")
+
+        insight.status = status_in.status
+        insight.updated_at = datetime.now(timezone.utc)
+        db.add(insight)
+        await db.commit()
+        await db.refresh(insight)
+        return LearningPathService._insight_to_dict(insight)
 
     @staticmethod
     async def get_student_growth(db: AsyncSession, student_id: UUID, requester: User) -> Dict[str, Any]:
@@ -973,6 +1019,384 @@ class LearningPathService:
         else:
             summary = "班级尚未沉淀足够 Memory，建议先推动学生完成每日复盘与路径提交。"
         return {"top_categories": categories, "summary": summary}
+
+    @staticmethod
+    async def refresh_class_insights(db: AsyncSession, class_group: ClassGroup, student_ids: List[UUID]) -> List[Dict[str, Any]]:
+        if not student_ids:
+            return []
+
+        candidates = await LearningPathService._build_class_insight_candidates(db, class_group, student_ids)
+        existing_result = await db.execute(
+            select(LearningInsight)
+            .where(
+                and_(
+                    LearningInsight.class_id == class_group.id,
+                    LearningInsight.scope == "class",
+                    LearningInsight.deleted_at.is_(None),
+                )
+            )
+        )
+        existing_items = list(existing_result.scalars().all())
+        existing_by_fingerprint = {
+            item.source_fingerprint: item
+            for item in existing_items
+            if item.source_fingerprint
+        }
+
+        now = datetime.now(timezone.utc)
+        active_fingerprints = set()
+        for candidate in candidates[:8]:
+            fingerprint = candidate["source_fingerprint"]
+            active_fingerprints.add(fingerprint)
+            existing = existing_by_fingerprint.get(fingerprint)
+            if existing and existing.status in LearningPathService.INSIGHT_CLOSED_STATUSES:
+                continue
+
+            if not existing:
+                existing = LearningInsight(status="new", generated_at=now, **candidate)
+            else:
+                for field, value in candidate.items():
+                    setattr(existing, field, value)
+                existing.generated_at = now
+                existing.updated_at = now
+            db.add(existing)
+
+        for insight in existing_items:
+            if (
+                insight.source == "system"
+                and insight.status in LearningPathService.INSIGHT_VISIBLE_STATUSES
+                and insight.source_fingerprint not in active_fingerprints
+            ):
+                insight.status = "resolved"
+                insight.updated_at = now
+                db.add(insight)
+
+        await db.flush()
+        result = await db.execute(
+            select(LearningInsight)
+            .where(
+                and_(
+                    LearningInsight.class_id == class_group.id,
+                    LearningInsight.scope == "class",
+                    LearningInsight.status.in_(LearningPathService.INSIGHT_VISIBLE_STATUSES),
+                    LearningInsight.deleted_at.is_(None),
+                )
+            )
+            .order_by(desc(LearningInsight.generated_at), desc(LearningInsight.created_at))
+            .limit(8)
+        )
+        return [LearningPathService._insight_to_dict(item) for item in result.scalars().all()]
+
+    @staticmethod
+    async def _build_class_insight_candidates(
+        db: AsyncSession,
+        class_group: ClassGroup,
+        student_ids: List[UUID],
+    ) -> List[Dict[str, Any]]:
+        name_map = {
+            member.user_id: user_display_name(member.user.nickname) if member.user else "未设置姓名"
+            for member in class_group.members
+        }
+        candidates: List[Dict[str, Any]] = []
+        candidates.extend(await LearningPathService._memory_content_insight_candidates(db, class_group, student_ids, name_map))
+        progress_candidate = await LearningPathService._path_progress_insight_candidate(db, class_group, student_ids, name_map)
+        pending_candidate = await LearningPathService._pending_submission_insight_candidate(db, class_group, student_ids, name_map)
+        for item in [progress_candidate, pending_candidate]:
+            if item:
+                candidates.append(item)
+
+        severity_order = {"high": 0, "medium": 1, "low": 2}
+        return sorted(
+            candidates,
+            key=lambda item: (
+                severity_order.get(item.get("severity", "medium"), 1),
+                -len(item.get("affected_student_ids") or []),
+                item.get("title", ""),
+            ),
+        )
+
+    @staticmethod
+    async def _memory_content_insight_candidates(
+        db: AsyncSession,
+        class_group: ClassGroup,
+        student_ids: List[UUID],
+        name_map: Dict[UUID, str],
+    ) -> List[Dict[str, Any]]:
+        result = await db.execute(
+            select(StudentMemory)
+            .where(and_(StudentMemory.user_id.in_(student_ids), StudentMemory.status == "active"))
+            .order_by(desc(StudentMemory.confidence), desc(StudentMemory.updated_at))
+            .limit(120)
+        )
+        groups: Dict[str, Dict[str, Any]] = {}
+        for memory in result.scalars().all():
+            content = (memory.content or "").strip()
+            if not content:
+                continue
+            category = memory.category or "observation"
+            normalized = LearningPathService._normalize_insight_key(content)
+            key = f"{category}:{normalized[:120]}"
+            bucket = groups.setdefault(
+                key,
+                {
+                    "category": category,
+                    "content": content,
+                    "memories": [],
+                    "student_ids": set(),
+                    "confidence": 0.0,
+                },
+            )
+            bucket["memories"].append(memory)
+            bucket["student_ids"].add(memory.user_id)
+            bucket["confidence"] = max(float(memory.confidence or 0), bucket["confidence"])
+
+        candidates = []
+        risk_categories = {"weakness", "challenge", "knowledge_gap"}
+        actionable_categories = risk_categories | {"goal", "study_habit"}
+        for key, bucket in groups.items():
+            affected_ids = list(bucket["student_ids"])
+            category = bucket["category"]
+            if category not in actionable_categories and len(affected_ids) < 2:
+                continue
+
+            label = LearningPathService.MEMORY_CATEGORY_LABELS.get(category, category)
+            names = [name_map.get(student_id, "未设置姓名") for student_id in affected_ids[:4]]
+            content = bucket["content"]
+            affected_count = len(affected_ids)
+            severity = "high" if category in risk_categories and affected_count >= 3 else "medium"
+            if category not in risk_categories and affected_count < 2:
+                severity = "low"
+            title_prefix = f"{affected_count} 名学生出现相近{label}" if affected_count > 1 else f"{names[0]}的{label}"
+            title = f"{title_prefix}：{LearningPathService._short_text(content, 34)}"
+            summary = f"{'、'.join(names)} 的{label}内容指向：{content}"
+
+            memories = bucket["memories"][:4]
+            evidence = [
+                {
+                    "source_type": "student_memory",
+                    "source_id": str(memory.id),
+                    "student_id": str(memory.user_id),
+                    "student_name": name_map.get(memory.user_id, "未设置姓名"),
+                    "content": LearningPathService._memory_evidence_text(memory),
+                    "occurred_at": memory.updated_at.isoformat() if memory.updated_at else None,
+                }
+                for memory in memories
+            ]
+            actions = [
+                {
+                    "action_type": "create_targeted_path",
+                    "label": "生成针对性路径",
+                    "payload": {"category": category, "content": content, "student_ids": [str(item) for item in affected_ids]},
+                },
+                {
+                    "action_type": "draft_feedback",
+                    "label": "生成反馈草稿",
+                    "payload": {"student_ids": [str(item) for item in affected_ids], "focus": content},
+                },
+            ]
+            candidates.append({
+                "scope": "class",
+                "class_id": class_group.id,
+                "student_id": None,
+                "teacher_id": class_group.teacher_id,
+                "title": title,
+                "insight_type": "memory_pattern",
+                "severity": severity,
+                "summary": summary,
+                "affected_student_ids": [str(item) for item in affected_ids],
+                "evidence": evidence,
+                "suggested_actions": actions,
+                "source": "system",
+                "source_fingerprint": LearningPathService._fingerprint(class_group.id, "memory", key),
+            })
+
+        return candidates[:6]
+
+    @staticmethod
+    async def _path_progress_insight_candidate(
+        db: AsyncSession,
+        class_group: ClassGroup,
+        student_ids: List[UUID],
+        name_map: Dict[UUID, str],
+    ) -> Optional[Dict[str, Any]]:
+        avg_progress = func.coalesce(func.avg(LearningPathAssignee.progress_percent), 0)
+        result = await db.execute(
+            select(LearningPathAssignee.user_id, avg_progress, func.count(LearningPathAssignee.id))
+            .where(
+                and_(
+                    LearningPathAssignee.class_id == class_group.id,
+                    LearningPathAssignee.user_id.in_(student_ids),
+                    LearningPathAssignee.status != "completed",
+                )
+            )
+            .group_by(LearningPathAssignee.user_id)
+            .having(avg_progress < 60)
+            .order_by(avg_progress.asc())
+            .limit(8)
+        )
+        rows = result.all()
+        if not rows:
+            return None
+
+        affected_ids = [row[0] for row in rows]
+        evidence = [
+            {
+                "source_type": "learning_path_progress",
+                "student_id": str(user_id),
+                "student_name": name_map.get(user_id, "未设置姓名"),
+                "content": f"平均路径进度 {round(float(progress or 0), 1)}%，涉及 {int(task_count or 0)} 个未完成路径任务。",
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for user_id, progress, task_count in rows[:5]
+        ]
+        summary = "重点跟进：" + "、".join(
+            f"{name_map.get(user_id, '未设置姓名')}（{round(float(progress or 0), 1)}%）"
+            for user_id, progress, _ in rows[:5]
+        )
+        return {
+            "scope": "class",
+            "class_id": class_group.id,
+            "student_id": None,
+            "teacher_id": class_group.teacher_id,
+            "title": f"{len(affected_ids)} 名学生学习路径推进低于 60%",
+            "insight_type": "progress_risk",
+            "severity": "high" if len(affected_ids) >= 3 else "medium",
+            "summary": summary,
+            "affected_student_ids": [str(item) for item in affected_ids],
+            "evidence": evidence,
+            "suggested_actions": [
+                {
+                    "action_type": "send_reminder",
+                    "label": "生成跟进提醒",
+                    "payload": {"student_ids": [str(item) for item in affected_ids]},
+                },
+                {
+                    "action_type": "create_checkpoint",
+                    "label": "安排阶段检查",
+                    "payload": {"class_id": str(class_group.id), "student_ids": [str(item) for item in affected_ids]},
+                },
+            ],
+            "source": "system",
+            "source_fingerprint": LearningPathService._fingerprint(class_group.id, "progress", ",".join(sorted(str(item) for item in affected_ids))),
+        }
+
+    @staticmethod
+    async def _pending_submission_insight_candidate(
+        db: AsyncSession,
+        class_group: ClassGroup,
+        student_ids: List[UUID],
+        name_map: Dict[UUID, str],
+    ) -> Optional[Dict[str, Any]]:
+        result = await db.execute(
+            select(LearningNodeSubmission, LearningPathTask.title)
+            .join(LearningPathTask, LearningPathTask.id == LearningNodeSubmission.task_id)
+            .where(
+                and_(
+                    LearningPathTask.class_id == class_group.id,
+                    LearningNodeSubmission.user_id.in_(student_ids),
+                    LearningNodeSubmission.review_status == "pending",
+                    LearningPathTask.deleted_at.is_(None),
+                )
+            )
+            .order_by(desc(LearningNodeSubmission.created_at))
+            .limit(12)
+        )
+        rows = result.all()
+        if not rows:
+            return None
+
+        affected_ids = sorted({submission.user_id for submission, _ in rows}, key=lambda item: name_map.get(item, ""))
+        task_titles = list(dict.fromkeys(title for _, title in rows if title))[:3]
+        evidence = [
+            {
+                "source_type": "learning_submission",
+                "source_id": str(submission.id),
+                "student_id": str(submission.user_id),
+                "student_name": name_map.get(submission.user_id, "未设置姓名"),
+                "content": f"提交「{title or '学习路径节点'}」等待批改。",
+                "occurred_at": submission.created_at.isoformat() if submission.created_at else None,
+            }
+            for submission, title in rows[:5]
+        ]
+        return {
+            "scope": "class",
+            "class_id": class_group.id,
+            "student_id": None,
+            "teacher_id": class_group.teacher_id,
+            "title": f"{len(rows)} 份学习路径节点提交等待批改",
+            "insight_type": "review_backlog",
+            "severity": "high" if len(rows) >= 8 else "medium",
+            "summary": f"待处理提交集中在：{'、'.join(task_titles) if task_titles else '学习路径节点'}。",
+            "affected_student_ids": [str(item) for item in affected_ids],
+            "evidence": evidence,
+            "suggested_actions": [
+                {
+                    "action_type": "open_review_queue",
+                    "label": "进入批改队列",
+                    "payload": {"class_id": str(class_group.id)},
+                }
+            ],
+            "source": "system",
+            "source_fingerprint": LearningPathService._fingerprint(class_group.id, "pending_submission", len(rows), ",".join(str(item) for item in affected_ids)),
+        }
+
+    @staticmethod
+    def _insight_to_dict(insight: LearningInsight) -> Dict[str, Any]:
+        return {
+            "id": insight.id,
+            "scope": insight.scope,
+            "class_id": insight.class_id,
+            "student_id": insight.student_id,
+            "teacher_id": insight.teacher_id,
+            "title": insight.title,
+            "insight_type": insight.insight_type,
+            "severity": insight.severity,
+            "summary": insight.summary,
+            "affected_student_ids": insight.affected_student_ids or [],
+            "evidence": insight.evidence or [],
+            "suggested_actions": insight.suggested_actions or [],
+            "status": insight.status,
+            "source": insight.source,
+            "source_fingerprint": insight.source_fingerprint,
+            "generated_at": insight.generated_at,
+            "created_at": insight.created_at,
+            "updated_at": insight.updated_at,
+        }
+
+    @staticmethod
+    def _memory_evidence_text(memory: StudentMemory) -> str:
+        evidence = memory.evidence
+        if isinstance(evidence, dict):
+            for key in ["content", "text", "summary", "message"]:
+                value = evidence.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if isinstance(evidence, list) and evidence:
+            first = evidence[0]
+            if isinstance(first, dict):
+                for key in ["content", "text", "summary", "message"]:
+                    value = first.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+        return memory.content or ""
+
+    @staticmethod
+    def _normalize_insight_key(text: str) -> str:
+        return re.sub(r"\s+", "", text).strip().lower()
+
+    @staticmethod
+    def _short_text(text: str, limit: int) -> str:
+        compact = re.sub(r"\s+", " ", text or "").strip()
+        if len(compact) <= limit:
+            return compact
+        return compact[:limit] + "..."
+
+    @staticmethod
+    def _fingerprint(*parts: Any) -> str:
+        raw = "|".join(str(part) for part in parts)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     @staticmethod
     async def _attention_students(db: AsyncSession, student_ids: List[UUID], members: List[ClassMember]) -> List[Dict[str, Any]]:

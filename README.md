@@ -10,6 +10,7 @@
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white">
   <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white">
   <img alt="Docker" src="https://img.shields.io/badge/Docker_Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge">
 </p>
 
 <p align="center">
@@ -48,7 +49,8 @@ AI 伴学与智能体协同平台是一套围绕“学习行为记录、学情�
 - **学生管理**：查看学生概况、复盘日志、学情分析与任务状态。
 - **任务管理**：创建普通任务、查看提交、批改反馈。
 - **路径任务**：用 AI 把教学目标拆成阶段、节点和资源。
-- **班级学情记忆看板**：查看班级级别的学习状态、风险学生和记忆聚合。
+- **班级学情洞察看板**：把学情记忆、路径进度和待批改提交转成带证据链的教师洞察。
+- **大量学生选择器**：创建班级、发布任务、分配路径时支持搜索、筛选、分页和已选名单管理。
 
 ### 管理端
 
@@ -235,6 +237,8 @@ chmod +x deploy.sh
 - 学生端 AI 伴学对话与学情记忆管理。
 - 学习路径生成、发布与提交。
 - 教师端任务、学生、班级看板。
+- LearningInsight 班级洞察引擎与证据链。
+- 教师端大量学生选择器。
 - 管理端模型配置。
 - WebSocket 通知、Celery 定时复盘、知识库基础能力。
 - 学生个人信息与显示姓名口径统一。
@@ -243,8 +247,8 @@ chmod +x deploy.sh
 
 - **教师工作台重构**：把班级概况和需介入学生提升为首屏核心。
 - **教师 Agent 工作台**：从聊天框升级为可执行教学智能体，支持生成任务、反馈、简报和干预计划。
-- **班级洞察模型**：把学情记忆分类数量升级为带证据链的教学洞察卡片。
-- **大量学生选择器**：替换多选下拉，支持搜索、筛选、分页、批量选择和名单导入。
+- **洞察动作闭环**：把洞察建议动作接入任务生成、提醒草稿、简报生成和干预计划。
+- **大量学生选择器增强**：增加按班级筛选、导入学号名单、保存常用分组。
 - **Agent 审计与工具调用**：所有 AI 建议和动作需要可追溯、可确认、可回滚。
 
 ## 项目文档
@@ -252,6 +256,8 @@ chmod +x deploy.sh
 | 文档 | 说明 |
 |---|---|
 | [教师端与 Agent 平台重构设计方案](docs/teacher-agent-platform-redesign.md) | 教师仪表盘、班级洞察、Agent 工作台和大量学生选择器设计 |
+| [LearningInsight 洞察引擎设计](docs/learning-insight-engine.md) | 洞察模型、生成来源、API、状态闭环 |
+| [StudentPickerDialog 设计说明](docs/student-picker-dialog.md) | 大量学生选择器的组件合同、接口和协议边界 |
 | [UI 设计与界面交互规范](docs/ui-design.md) | 视觉系统、页面规范、交互状态 |
 | [系统架构设计](docs/architecture.md) | 平台整体架构与模块划分 |
 | [API 设计](docs/api-design.md) | 后端接口设计文档 |
@@ -270,4 +276,6 @@ chmod +x deploy.sh
 
 ## 许可证
 
-当前仓库尚未声明开源许可证。若计划公开发布，请在合并前补充 `LICENSE` 文件并明确授权范围。
+本项目采用 [Apache License 2.0](LICENSE) 开源协议。
+
+当前新增的 `StudentPickerDialog` 与教师端洞察组件均为项目内自研实现，未复制第三方组件站源码。后续如引入外部开源组件，请在合并前确认许可证兼容性，并在 README、NOTICE 或第三方声明文档中补充归属信息。

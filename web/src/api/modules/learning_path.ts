@@ -114,8 +114,45 @@ export interface ClassOverviewOut {
   metrics: Record<string, any>
   trend: Array<Record<string, any>>
   memory_summary: Record<string, any>
+  insights: LearningInsightOut[]
   attention_students: Array<Record<string, any>>
   recent_paths: LearningPathTaskOut[]
+}
+
+export interface InsightEvidenceOut {
+  source_type: string
+  source_id?: string
+  student_id?: string
+  student_name?: string
+  content: string
+  occurred_at?: string
+}
+
+export interface InsightActionOut {
+  action_type: string
+  label: string
+  payload: Record<string, any>
+}
+
+export interface LearningInsightOut {
+  id: string
+  scope: string
+  class_id?: string
+  student_id?: string
+  teacher_id?: string
+  title: string
+  insight_type: string
+  severity: 'low' | 'medium' | 'high' | string
+  summary: string
+  affected_student_ids: string[]
+  evidence: InsightEvidenceOut[]
+  suggested_actions: InsightActionOut[]
+  status: 'new' | 'acknowledged' | 'resolved' | 'dismissed' | string
+  source: string
+  source_fingerprint?: string
+  generated_at?: string
+  created_at: string
+  updated_at: string
 }
 
 export interface StudentGrowthOverviewOut {
@@ -199,6 +236,10 @@ export const learningPathApi = {
 
   getClassOverview(classId: string) {
     return request.get(`/learning-paths/classes/${classId}/overview`)
+  },
+
+  updateInsightStatus(insightId: string, status: 'new' | 'acknowledged' | 'resolved' | 'dismissed') {
+    return request.patch(`/learning-paths/insights/${insightId}/status`, { status })
   },
 
   getStudentGrowth(studentId: string) {

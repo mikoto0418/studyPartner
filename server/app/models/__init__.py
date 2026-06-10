@@ -22,6 +22,7 @@ from app.models.learning_path import (
     LearningPathTask,
     LearningNodeProgress,
     LearningNodeSubmission,
+    LearningInsight,
     ClassMemorySnapshot,
     StudentGrowthReport,
 )
@@ -40,5 +41,5 @@ __all__ = [
     "ClassGroup", "ClassMember",
     "LearningPathTask", "LearningPathStage", "LearningPathNode", "LearningPathEdge",
     "LearningPathResource", "LearningPathAssignee", "LearningNodeProgress",
-    "LearningNodeSubmission", "ClassMemorySnapshot", "StudentGrowthReport",
+    "LearningNodeSubmission", "LearningInsight", "ClassMemorySnapshot", "StudentGrowthReport",
 ]

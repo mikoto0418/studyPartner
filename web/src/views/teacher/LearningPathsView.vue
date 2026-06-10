@@ -25,12 +25,11 @@ import type {
   LearningPathPlanOut,
   LearningPathTaskOut
 } from '../../api/modules/learning_path'
-import { userApi } from '../../api/modules/user'
 import type { UserOut } from '../../api/modules/user'
+import StudentPickerDialog from '../../components/common/StudentPickerDialog.vue'
 
 const paths = ref<LearningPathTaskOut[]>([])
 const classes = ref<ClassOut[]>([])
-const students = ref<UserOut[]>([])
 const selectedPath = ref<LearningPathTaskOut | null>(null)
 const detail = ref<LearningPathDetailOut | null>(null)
 const loading = ref(false)
@@ -39,6 +38,8 @@ const saving = ref(false)
 
 const createPanelOpen = ref(false)
 const reviewDialogVisible = ref(false)
+const assigneePickerVisible = ref(false)
+const selectedAssigneeUsers = ref<UserOut[]>([])
 
 const pathForm = ref({
   title: '',
@@ -62,19 +63,17 @@ const reviewForm = ref({
 const selectedClass = computed(() => classes.value.find(item => item.id === pathForm.value.class_id))
 const totalMinutes = computed(() => generatedPlan.value?.nodes.reduce((sum, node) => sum + (node.estimated_minutes || 0), 0) || 0)
 const displayNameOf = (item: { display_name?: string; nickname?: string; username?: string }) => item.display_name || item.nickname?.trim() || '未设置姓名'
-const optionLabelOf = (item: { display_name?: string; nickname?: string; username?: string }) => item.username ? `${displayNameOf(item)}（账号：${item.username}）` : displayNameOf(item)
+const selectedAssigneeNames = computed(() => selectedAssigneeUsers.value.map(displayNameOf).join('、'))
 
 const loadInitialData = async () => {
   loading.value = true
   try {
-    const [pathRes, classRes, studentRes] = await Promise.all([
+    const [pathRes, classRes] = await Promise.all([
       learningPathApi.listTeacherPaths(),
-      learningPathApi.listClasses(),
-      userApi.listUsers({ role_code: 'student', page_size: 100 })
+      learningPathApi.listClasses()
     ])
     paths.value = pathRes.data || []
     classes.value = classRes.data || []
-    students.value = studentRes.data?.items || []
     if (paths.value.length > 0) {
       await selectPath(paths.value[0])
     }
@@ -96,6 +95,11 @@ const resetForm = () => {
     publish: true
   }
   generatedPlan.value = null
+  selectedAssigneeUsers.value = []
+}
+
+const handleAssigneesConfirm = (users: UserOut[]) => {
+  selectedAssigneeUsers.value = users
 }
 
 const handleGeneratePlan = async () => {
@@ -511,9 +515,18 @@ onMounted(loadInitialData)
           </label>
           <label class="space-y-1">
             <span class="text-xs text-gray-500">单独指派学生</span>
-            <el-select v-model="pathForm.assignee_ids" multiple class="w-full" placeholder="可多选">
-              <el-option v-for="student in students" :key="student.id" :label="optionLabelOf(student)" :value="student.id" />
-            </el-select>
+            <button
+              type="button"
+              @click="assigneePickerVisible = true"
+              class="flex min-h-10 w-full items-center justify-between gap-3 rounded border border-gray-200 px-3 py-2 text-left text-xs dark:border-zinc-800"
+            >
+              <span class="min-w-0 truncate text-gray-600 dark:text-zinc-300">
+                {{ pathForm.assignee_ids.length ? selectedAssigneeNames : '选择学生' }}
+              </span>
+              <span class="shrink-0 rounded bg-blue-50 px-2 py-1 text-[10px] text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">
+                {{ pathForm.assignee_ids.length }} 人
+              </span>
+            </button>
           </label>
         </div>
 
@@ -608,6 +621,13 @@ onMounted(loadInitialData)
         </div>
       </div>
     </el-drawer>
+
+    <StudentPickerDialog
+      v-model:visible="assigneePickerVisible"
+      v-model="pathForm.assignee_ids"
+      title="选择单独指派学生"
+      @confirm="handleAssigneesConfirm"
+    />
 
     <el-dialog v-model="reviewDialogVisible" title="批改学习节点提交" width="460px">
       <div v-if="selectedSubmission" class="space-y-4">

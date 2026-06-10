@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
-from sqlalchemy import select, and_, update, func, false
+from sqlalchemy import select, and_, update, func, false, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.models.user import User, Role, StudentProfile, UserRole
@@ -150,6 +150,10 @@ class UserService:
         page: int = 1,
         page_size: int = 20,
         user_ids: Optional[List[UUID]] = None,
+        keyword: Optional[str] = None,
+        grade: Optional[str] = None,
+        major: Optional[str] = None,
+        status: Optional[str] = None,
     ):
         # Build query
         query = select(User).where(User.deleted_at.is_(None))
@@ -157,6 +161,29 @@ class UserService:
             query = query.join(User.roles).where(Role.code == role_code)
         if user_ids is not None:
             query = query.where(User.id.in_(user_ids) if user_ids else false())
+        if status:
+            query = query.where(User.status == status)
+
+        needs_profile_join = any([keyword, grade, major])
+        if needs_profile_join:
+            query = query.outerjoin(StudentProfile, StudentProfile.user_id == User.id)
+        if keyword:
+            pattern = f"%{keyword.strip()}%"
+            query = query.where(or_(
+                User.username.ilike(pattern),
+                User.nickname.ilike(pattern),
+                User.email.ilike(pattern),
+                User.phone.ilike(pattern),
+                StudentProfile.student_id.ilike(pattern),
+                StudentProfile.grade.ilike(pattern),
+                StudentProfile.major.ilike(pattern),
+                StudentProfile.research_direction.ilike(pattern),
+            ))
+        if grade:
+            query = query.where(StudentProfile.grade.ilike(f"%{grade.strip()}%"))
+        if major:
+            query = query.where(StudentProfile.major.ilike(f"%{major.strip()}%"))
+        query = query.distinct()
 
         # Count total
         count_query = select(func.count()).select_from(query.subquery())

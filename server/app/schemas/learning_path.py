@@ -206,11 +206,55 @@ class LearningNodeReviewReq(BaseModel):
     reopen_until: Optional[datetime] = None
 
 
+class InsightEvidenceOut(BaseModel):
+    source_type: str
+    source_id: Optional[UUID] = None
+    student_id: Optional[UUID] = None
+    student_name: Optional[str] = None
+    content: str
+    occurred_at: Optional[datetime] = None
+
+
+class InsightActionOut(BaseModel):
+    action_type: str
+    label: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class LearningInsightOut(BaseModel):
+    id: UUID
+    scope: str
+    class_id: Optional[UUID] = None
+    student_id: Optional[UUID] = None
+    teacher_id: Optional[UUID] = None
+    title: str
+    insight_type: str
+    severity: str
+    summary: str
+    affected_student_ids: List[UUID] = Field(default_factory=list)
+    evidence: List[InsightEvidenceOut] = Field(default_factory=list)
+    suggested_actions: List[InsightActionOut] = Field(default_factory=list)
+    status: str
+    source: str
+    source_fingerprint: Optional[str] = None
+    generated_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LearningInsightStatusUpdate(BaseModel):
+    status: str = Field(..., description="new, acknowledged, resolved, dismissed")
+
+
 class ClassOverviewOut(BaseModel):
     class_info: ClassOut
     metrics: Dict[str, Any]
     trend: List[Dict[str, Any]]
     memory_summary: Dict[str, Any]
+    insights: List[LearningInsightOut] = Field(default_factory=list)
     attention_students: List[Dict[str, Any]]
     recent_paths: List[LearningPathTaskOut]
 

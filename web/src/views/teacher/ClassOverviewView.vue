@@ -1,19 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Activity, BarChart3, Brain, LineChart, Plus, RefreshCw, Users } from 'lucide-vue-next'
+import { Activity, AlertTriangle, BarChart3, Brain, CheckCircle2, LineChart, Plus, RefreshCw, Users } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { learningPathApi } from '../../api/modules/learning_path'
 import type { ClassOut, ClassOverviewOut } from '../../api/modules/learning_path'
-import { userApi } from '../../api/modules/user'
 import type { UserOut } from '../../api/modules/user'
-import { localizeMemorySummaryText, memoryCategoryLabel } from '../../utils/memoryLabels'
+import StudentPickerDialog from '../../components/common/StudentPickerDialog.vue'
+import { localizeMemorySummaryText } from '../../utils/memoryLabels'
 
 const classes = ref<ClassOut[]>([])
-const students = ref<UserOut[]>([])
 const selectedClassId = ref('')
 const overview = ref<ClassOverviewOut | null>(null)
 const loading = ref(false)
 const createDialogVisible = ref(false)
+const classStudentPickerVisible = ref(false)
+const selectedClassStudents = ref<UserOut[]>([])
 
 const classForm = ref({
   name: '',
@@ -25,17 +26,25 @@ const classForm = ref({
 
 const maxTrendProgress = computed(() => Math.max(...(overview.value?.trend.map(item => Number(item.avg_progress || 0)) || [1]), 1))
 const displayNameOf = (student: UserOut) => student.display_name || student.nickname?.trim() || '未设置姓名'
-const optionLabelOf = (student: UserOut) => `${displayNameOf(student)}（账号：${student.username}）`
+const selectedClassStudentNames = computed(() => selectedClassStudents.value.map(displayNameOf).join('、'))
+
+const insightSeverityText = (severity: string) => ({
+  high: '高优先级',
+  medium: '中优先级',
+  low: '低优先级'
+}[severity] || '待关注')
+
+const insightSeverityClass = (severity: string) => ({
+  high: 'bg-red-50 text-red-700 border-red-100 dark:bg-red-950/30 dark:text-red-300 dark:border-red-900',
+  medium: 'bg-amber-50 text-amber-700 border-amber-100 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900',
+  low: 'bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-900'
+}[severity] || 'bg-gray-50 text-gray-600 border-gray-100 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-700')
 
 const loadData = async () => {
   loading.value = true
   try {
-    const [classRes, studentRes] = await Promise.all([
-      learningPathApi.listClasses(),
-      userApi.listUsers({ role_code: 'student', page_size: 100 })
-    ])
+    const classRes = await learningPathApi.listClasses()
     classes.value = classRes.data || []
-    students.value = studentRes.data?.items || []
     if (!selectedClassId.value && classes.value.length > 0) {
       selectedClassId.value = classes.value[0].id
     }
@@ -69,6 +78,7 @@ const createClass = async () => {
     selectedClassId.value = res.data.id
     createDialogVisible.value = false
     classForm.value = { name: '', description: '', grade: '', subject: '', student_ids: [] }
+    selectedClassStudents.value = []
     await loadOverview(res.data.id)
     ElMessage.success('班级已创建')
   } catch (error) {
@@ -85,6 +95,20 @@ const metricCards = computed(() => {
     { label: '学情记忆条目', value: metrics.memory_count || 0, unit: '条', icon: Brain, tone: 'indigo' }
   ]
 })
+
+const handleClassStudentsConfirm = (users: UserOut[]) => {
+  selectedClassStudents.value = users
+}
+
+const handleInsightStatus = async (insightId: string, status: 'acknowledged' | 'resolved' | 'dismissed') => {
+  try {
+    await learningPathApi.updateInsightStatus(insightId, status)
+    if (selectedClassId.value) await loadOverview(selectedClassId.value)
+    ElMessage.success(status === 'acknowledged' ? '已标记为已读' : '洞察状态已更新')
+  } catch (error) {
+    ElMessage.error('更新洞察状态失败')
+  }
+}
 
 onMounted(loadData)
 </script>
@@ -194,29 +218,83 @@ onMounted(loadData)
           </div>
 
           <div class="xl:col-span-4 minimal-card bg-white dark:bg-zinc-900 p-6">
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50 flex items-center gap-2">
-              <Brain class="w-4 h-4 text-indigo-500" />
-              <span>学情记忆聚合</span>
-            </h3>
+            <div class="flex items-start justify-between gap-3">
+              <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50 flex items-center gap-2">
+                <Brain class="w-4 h-4 text-indigo-500" />
+                <span>班级学情洞察</span>
+              </h3>
+              <span class="text-[10px] text-gray-400">{{ overview.insights.length }} 条</span>
+            </div>
             <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-zinc-400">
               {{ localizeMemorySummaryText(overview.memory_summary.summary) }}
             </p>
+
             <div class="mt-5 space-y-3">
-              <div
-                v-for="item in overview.memory_summary.top_categories"
-                :key="item.category"
-                class="space-y-1"
+              <article
+                v-for="insight in overview.insights"
+                :key="insight.id"
+                class="rounded-lg border border-gray-100 bg-gray-50/50 p-3 dark:border-zinc-800 dark:bg-zinc-950/40"
               >
-                <div class="flex justify-between text-[10px] text-gray-500">
-                  <span>{{ memoryCategoryLabel(item.category) }}</span>
-                  <span>{{ item.count }}</span>
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                      <AlertTriangle v-if="insight.severity === 'high'" class="h-3.5 w-3.5 shrink-0 text-red-500" />
+                      <Brain v-else class="h-3.5 w-3.5 shrink-0 text-blue-500" />
+                      <h4 class="truncate text-xs font-semibold text-gray-900 dark:text-zinc-50">{{ insight.title }}</h4>
+                    </div>
+                    <span class="mt-2 inline-flex rounded border px-2 py-0.5 text-[10px]" :class="insightSeverityClass(insight.severity)">
+                      {{ insightSeverityText(insight.severity) }}
+                    </span>
+                  </div>
+                  <span class="rounded bg-white px-2 py-1 text-[10px] text-gray-500 dark:bg-zinc-900">
+                    {{ insight.affected_student_ids.length }} 人
+                  </span>
                 </div>
-                <div class="h-1.5 bg-gray-100 dark:bg-zinc-800 rounded">
-                  <div class="h-full bg-indigo-500 rounded" :style="{ width: `${Math.min(100, item.count * 18)}%` }"></div>
+                <p class="mt-3 text-xs leading-relaxed text-gray-600 dark:text-zinc-300">{{ insight.summary }}</p>
+
+                <div v-if="insight.evidence.length" class="mt-3 space-y-2">
+                  <div
+                    v-for="evidence in insight.evidence.slice(0, 2)"
+                    :key="`${insight.id}-${evidence.source_id || evidence.content}`"
+                    class="rounded border border-gray-100 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900"
+                  >
+                    <p class="text-[10px] font-medium text-gray-500">{{ evidence.student_name || '班级' }}</p>
+                    <p class="mt-1 line-clamp-2 text-[10px] leading-relaxed text-gray-500 dark:text-zinc-400">{{ evidence.content }}</p>
+                  </div>
                 </div>
-              </div>
-              <div v-if="overview.memory_summary.top_categories.length === 0" class="py-8 text-center text-xs text-gray-400">
-                暂无学情记忆聚合数据。
+
+                <div v-if="insight.suggested_actions.length" class="mt-3 flex flex-wrap gap-1.5">
+                  <span
+                    v-for="action in insight.suggested_actions"
+                    :key="`${insight.id}-${action.action_type}`"
+                    class="rounded bg-blue-50 px-2 py-1 text-[10px] text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
+                  >
+                    {{ action.label }}
+                  </span>
+                </div>
+
+                <div class="mt-3 flex justify-end gap-2">
+                  <button
+                    v-if="insight.status === 'new'"
+                    type="button"
+                    @click="handleInsightStatus(insight.id, 'acknowledged')"
+                    class="inline-flex items-center gap-1 rounded border border-gray-200 px-2 py-1 text-[10px] text-gray-500 dark:border-zinc-700"
+                  >
+                    <CheckCircle2 class="h-3 w-3" />
+                    已读
+                  </button>
+                  <button
+                    type="button"
+                    @click="handleInsightStatus(insight.id, 'resolved')"
+                    class="rounded bg-gray-900 px-2 py-1 text-[10px] text-white dark:bg-zinc-100 dark:text-zinc-950"
+                  >
+                    解决
+                  </button>
+                </div>
+              </article>
+
+              <div v-if="overview.insights.length === 0" class="py-10 text-center text-xs text-gray-400">
+                暂无需要处理的班级洞察。
               </div>
             </div>
           </div>
@@ -293,9 +371,18 @@ onMounted(loadData)
         </label>
         <label class="space-y-1 block">
           <span class="text-xs text-gray-500">班级学生</span>
-          <el-select v-model="classForm.student_ids" multiple class="w-full" placeholder="选择学生">
-            <el-option v-for="student in students" :key="student.id" :label="optionLabelOf(student)" :value="student.id" />
-          </el-select>
+          <button
+            type="button"
+            @click="classStudentPickerVisible = true"
+            class="flex min-h-10 w-full items-center justify-between gap-3 rounded border border-gray-200 px-3 py-2 text-left text-xs dark:border-zinc-800"
+          >
+            <span class="min-w-0 truncate text-gray-600 dark:text-zinc-300">
+              {{ classForm.student_ids.length ? selectedClassStudentNames : '选择学生' }}
+            </span>
+            <span class="shrink-0 rounded bg-blue-50 px-2 py-1 text-[10px] text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">
+              {{ classForm.student_ids.length }} 人
+            </span>
+          </button>
         </label>
       </div>
       <template #footer>
@@ -303,5 +390,12 @@ onMounted(loadData)
         <button @click="createClass" class="px-4 py-1.5 rounded bg-gray-900 text-white dark:bg-zinc-100 dark:text-zinc-900 text-xs">创建</button>
       </template>
     </el-dialog>
+
+    <StudentPickerDialog
+      v-model:visible="classStudentPickerVisible"
+      v-model="classForm.student_ids"
+      title="选择班级学生"
+      @confirm="handleClassStudentsConfirm"
+    />
   </div>
 </template>
