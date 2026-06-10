@@ -74,6 +74,7 @@ class LLMRouter:
     ) -> Union[ChatResponse, AsyncIterator[str]]:
         temperature_override = kwargs.pop("temperature", None)
         max_tokens_override = kwargs.pop("max_tokens", None)
+        require_task_config = kwargs.pop("require_task_config", False)
 
         # 1. Fetch active route configs for task_type from database sorted by priority
         async with SessionLocal() as db:
@@ -88,6 +89,8 @@ class LLMRouter:
 
         # 2. Use explicit environment configuration if no provider config exists in the database.
         if not route_configs:
+            if require_task_config:
+                raise RuntimeError(f"No task-specific LLM provider configured. Task: {task_type}")
             from app.config import settings
             sf_key = settings.SILICONFLOW_API_KEY
             if not sf_key:

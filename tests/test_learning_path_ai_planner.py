@@ -129,3 +129,88 @@ def test_ai_planner_appends_submission_when_llm_omits_final_submission():
 
     assert plan["nodes"][-1]["node_type"] == "submission"
     assert plan["nodes"][-1]["config"]["structural_patch"] == "append_submission_node"
+
+
+def test_ai_planner_rejects_sentence_splitting_for_vibecoding_path():
+    low_quality_plan = {
+        "nodes": [
+            {
+                "title": "了解能用的到的基本大模型概念比如mcp",
+                "description": "了解能用的到的基本大模型概念比如mcp",
+                "node_type": "learning",
+                "config": {"deliverable": "笔记", "success_criteria": "完成"},
+            },
+            {
+                "title": "skill",
+                "description": "skill",
+                "node_type": "learning",
+                "config": {"deliverable": "笔记", "success_criteria": "完成"},
+            },
+            {
+                "title": "常用构造链路",
+                "description": "常用构造链路",
+                "node_type": "submission",
+                "config": {"deliverable": "总结", "success_criteria": "提交"},
+            },
+        ]
+    }
+
+    issue = LearningPathAIPlanner._quality_issue(
+        low_quality_plan,
+        title="认知提升 0基础入门 vibecoding",
+        goal="从一个毫无基础的刚高考完的学生入门到能自主完成vibecoding",
+        planning_text="了解能用的到的基本大模型概念比如mcp，skill，然后了解一下常用工具，常用构造链路",
+    )
+
+    assert issue
+    assert "拆句" in issue or "复读" in issue
+
+
+def test_ai_planner_accepts_course_like_vibecoding_path():
+    nodes = [
+        {
+            "title": "建立 AI 编程工作流认知",
+            "description": "对比传统写代码和 vibecoding 的完整流程，拆出需求、上下文、生成、运行和验收环节。",
+            "node_type": "learning",
+            "config": {"deliverable": "流程图和术语卡片", "success_criteria": "能解释每一步为什么存在"},
+        },
+        {
+            "title": "练习提示词与上下文组织",
+            "description": "用同一个小需求分别写模糊提示词和结构化提示词，比较模型输出差异。",
+            "node_type": "practice",
+            "config": {"deliverable": "两组 prompt 与输出对比", "success_criteria": "能说明上下文如何影响结果"},
+        },
+        {
+            "title": "认识 MCP 与工具调用",
+            "description": "理解 MCP、文件读写、搜索、终端命令等工具在 Agent 工作流里的位置。",
+            "node_type": "learning",
+            "config": {"deliverable": "工具清单和使用边界", "success_criteria": "能判断什么任务需要工具介入"},
+        },
+        {
+            "title": "搭建一个最小项目脚手架",
+            "description": "用 AI 协助创建一个 Todo 页面或命令行工具，并运行到本地。",
+            "node_type": "practice",
+            "config": {"deliverable": "可运行 demo 和截图", "success_criteria": "项目能启动并完成核心功能"},
+        },
+        {
+            "title": "调试报错并做 Git 版本记录",
+            "description": "故意引入一个错误，让学生使用报错信息、搜索和 AI 对话完成定位和修复。",
+            "node_type": "practice",
+            "config": {"deliverable": "修复记录和 git commit", "success_criteria": "能复述定位问题的证据链"},
+        },
+        {
+            "title": "提交作品与复盘报告",
+            "description": "提交项目地址、运行截图、关键 prompt、踩坑记录和下一步迭代计划。",
+            "node_type": "submission",
+            "config": {"deliverable": "作品包和复盘报告", "success_criteria": "教师能验证作品并看到完整学习过程"},
+        },
+    ]
+
+    issue = LearningPathAIPlanner._quality_issue(
+        {"nodes": nodes},
+        title="认知提升 0基础入门 vibecoding",
+        goal="从零基础入门到能自主完成 vibecoding",
+        planning_text="了解大模型、mcp、skill、工具和构造链路",
+    )
+
+    assert issue is None

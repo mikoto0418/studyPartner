@@ -112,13 +112,7 @@
 learning_path_generate
 ```
 
-建议给它配置上下文能力较强、JSON 输出稳定的模型。环境变量兜底仍沿用现有 SiliconFlow 配置：
-
-```env
-SILICONFLOW_API_KEY=...
-SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
-SILICONFLOW_CHAT_MODEL=...
-```
+建议给它配置上下文能力较强、JSON 输出稳定的模型。学习路径生成强制使用管理员端保存的 `learning_path_generate` 任务配置；未配置时直接报错，不复用其他任务模型，也不走环境变量兜底。
 
 联网参数：
 
@@ -131,9 +125,10 @@ LEARNING_PATH_WEB_RESEARCH_MAX_RESULTS=5
 
 | 场景 | 行为 |
 |---|---|
-| LLM 未配置 | 返回 `LEARNING_PATH_AI_GENERATION_FAILED` |
+| `learning_path_generate` 未配置 | 返回 `LEARNING_PATH_AI_GENERATION_FAILED` |
 | LLM 调用失败 | 返回明确错误，不静默生成机械路径 |
 | LLM JSON 无效 | 返回明确错误，提示重试或换更强模型 |
+| LLM 只是复读/拆句 | 自动重试一次；仍不合格则返回错误 |
 | 联网失败 | 记录错误，仍把真实错误交给 LLM 作为上下文 |
 | 教师手动创建节点 | 不依赖 LLM，仍可保存发布 |
 

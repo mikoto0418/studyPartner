@@ -360,6 +360,17 @@ class LearningPathAIPlanner:
         "gagne_events",
         "project_based_learning",
     ]
+    VIBE_CODING_TERMS = (
+        "vibecoding",
+        "vibe coding",
+        "mcp",
+        "skill",
+        "agent",
+        "prompt",
+        "上下文",
+        "工具调用",
+        "构造链路",
+    )
 
     @classmethod
     async def build_plan(
@@ -389,24 +400,49 @@ class LearningPathAIPlanner:
                 user_id=user_id,
                 temperature=0.2,
                 max_tokens=4096,
+                require_task_config=True,
             )
         except Exception as exc:
             if allow_deterministic_fallback:
                 return cls._fallback_plan(deterministic_draft, research, exc)
             raise RuntimeError(
-                "LLM 学习路径通道不可用，请在模型配置中启用 learning_path_generate，"
-                "或检查环境变量 SILICONFLOW_API_KEY。"
+                "LLM 学习路径通道不可用，请在管理员模型配置中启用 learning_path_generate 并保存 API Key。"
             ) from exc
 
         try:
             plan_obj = cls._extract_json_object(response.content)
-            return cls._normalize_llm_plan(
+            plan = cls._normalize_llm_plan(
                 plan_obj,
                 fallback=deterministic_draft,
                 research=research,
                 model=response.model,
                 provider=response.provider,
             )
+            quality_issue = cls._quality_issue(plan, title=title, goal=goal, planning_text=planning_text)
+            if quality_issue:
+                retry_response = await llm_router.route(
+                    cls.TASK_TYPE,
+                    [
+                        ChatMessage(role=item["role"], content=item["content"])
+                        for item in cls._repair_messages(title, goal, planning_text, research, plan, quality_issue)
+                    ],
+                    user_id=user_id,
+                    temperature=0.25,
+                    max_tokens=4096,
+                    require_task_config=True,
+                )
+                retry_obj = cls._extract_json_object(retry_response.content)
+                plan = cls._normalize_llm_plan(
+                    retry_obj,
+                    fallback=deterministic_draft,
+                    research=research,
+                    model=retry_response.model,
+                    provider=retry_response.provider,
+                )
+                quality_issue = cls._quality_issue(plan, title=title, goal=goal, planning_text=planning_text)
+                if quality_issue:
+                    raise ValueError(f"LLM plan failed quality gate: {quality_issue}")
+            return plan
         except Exception as exc:
             if allow_deterministic_fallback:
                 return cls._fallback_plan(deterministic_draft, research, exc)
@@ -496,6 +532,54 @@ class LearningPathAIPlanner:
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+
+    @classmethod
+    def _repair_messages(
+        cls,
+        title: Optional[str],
+        goal: str,
+        planning_text: str,
+        research: Dict[str, Any],
+        rejected_plan: Dict[str, Any],
+        quality_issue: str,
+    ) -> List[Dict[str, str]]:
+        context = {
+            "task": {"title": title, "goal": goal, "planning_text": planning_text},
+            "web_research": {
+                "enabled": research.get("enabled"),
+                "input_urls": research.get("input_urls") or [],
+                "items": [
+                    {
+                        "title": item.get("title"),
+                        "url": item.get("url"),
+                        "source_type": item.get("source_type"),
+                        "content": item.get("content"),
+                    }
+                    for item in (research.get("items") or [])[:5]
+                ],
+                "errors": research.get("errors") or [],
+            },
+            "rejected_plan": [
+                {
+                    "title": node.get("title"),
+                    "description": node.get("description"),
+                    "node_type": node.get("node_type"),
+                }
+                for node in rejected_plan.get("nodes", [])
+            ],
+            "rejection_reason": quality_issue,
+        }
+        system_prompt = (
+            "你刚才生成的学习路径被质量门拒绝。现在必须重新设计，不许复述原句，不许只拆关键词。\n"
+            "目标是给老师一份能直接发布给学生执行的路径。每个节点要包含：学习动作、工具/材料、具体产出、验收标准。\n"
+            "如果主题是 vibecoding / Agent / MCP / Skill，请按以下能力梯度设计：AI 编程工作流认知、提示词与上下文、"
+            "工具和 MCP、项目脚手架、真实小功能实现、调试与版本管理、作品发布、复盘报告。\n"
+            "输出 6 到 9 个节点，最后一个必须是 submission。只输出 JSON。"
+        )
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
         ]
 
     @classmethod
@@ -663,6 +747,71 @@ class LearningPathAIPlanner:
         ] or [{"title": "学习路径", "description": "大模型生成的学习路径", "order_index": 0}]
 
     @classmethod
+    def _quality_issue(
+        cls,
+        plan: Dict[str, Any],
+        title: Optional[str],
+        goal: str,
+        planning_text: str,
+    ) -> Optional[str]:
+        nodes = plan.get("nodes") or []
+        if len(nodes) < 5:
+            return "节点数量过少，像是在拆句而不是规划学习路径"
+
+        source_text = " ".join([title or "", goal or "", planning_text or ""])
+        source_phrases = cls._source_phrases(source_text)
+        copied_titles = []
+        for node in nodes:
+            node_title = cls._compact_for_compare(str(node.get("title") or ""))
+            if not node_title:
+                continue
+            if any(node_title == phrase or node_title in phrase or phrase in node_title for phrase in source_phrases):
+                copied_titles.append(node.get("title"))
+        if len(copied_titles) >= 2:
+            return f"节点标题大量复读输入片段：{', '.join(str(item) for item in copied_titles[:3])}"
+
+        weak_nodes = []
+        for node in nodes:
+            config = node.get("config") or {}
+            description = str(node.get("description") or "")
+            deliverable = str(config.get("deliverable") or "")
+            success = str(config.get("success_criteria") or "")
+            if len(description) < 24 or len(deliverable) < 8 or len(success) < 10:
+                weak_nodes.append(node.get("title"))
+        if len(weak_nodes) >= 2:
+            return f"多个节点缺少具体动作、产出或验收标准：{', '.join(str(item) for item in weak_nodes[:3])}"
+
+        context = cls._compact_for_compare(source_text).lower()
+        if any(term.replace(" ", "") in context for term in cls.VIBE_CODING_TERMS):
+            combined = " ".join(
+                str(part or "")
+                for node in nodes
+                for part in [
+                    node.get("title"),
+                    node.get("description"),
+                    (node.get("config") or {}).get("deliverable"),
+                    (node.get("config") or {}).get("success_criteria"),
+                ]
+            ).lower()
+            required_groups = {
+                "工具/MCP": ("mcp", "工具", "tool"),
+                "提示词/上下文": ("提示词", "prompt", "上下文", "context"),
+                "真实项目实践": ("项目", "功能", "脚手架", "实现", "demo", "作品"),
+                "调试与版本": ("调试", "报错", "git", "版本", "复盘"),
+            }
+            missing = [
+                label
+                for label, keywords in required_groups.items()
+                if not any(keyword in combined for keyword in keywords)
+            ]
+            if missing:
+                return f"vibecoding 路径缺少关键能力链路：{'、'.join(missing)}"
+
+        if nodes[-1].get("node_type") != "submission":
+            return "最后一个节点不是提交节点"
+        return None
+
+    @classmethod
     def _normalize_resources(
         cls,
         raw_resources: Any,
@@ -697,6 +846,19 @@ class LearningPathAIPlanner:
                 "metadata": {"node_key": node_key, **(raw.get("metadata") or {})},
             })
         return resources
+
+    @staticmethod
+    def _source_phrases(text: str) -> Set[str]:
+        phrases = set()
+        for part in re.split(r"[，。；;、,\n]|然后|再|最后|了解|一下|常用", text or ""):
+            compact = LearningPathAIPlanner._compact_for_compare(part)
+            if len(compact) >= 4:
+                phrases.add(compact)
+        return phrases
+
+    @staticmethod
+    def _compact_for_compare(text: str) -> str:
+        return re.sub(r"\s+", "", text or "").strip().lower()
 
     @classmethod
     def _allowed_resource_urls(cls, research: Dict[str, Any]) -> Set[str]:
