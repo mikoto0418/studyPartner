@@ -34,6 +34,15 @@ function Wait-Port([int]$Port, [string]$Name) {
     throw "$Name did not start on port $Port"
 }
 
+function Stop-PortListeners([int]$Port, [string]$Name) {
+    $pids = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($processId in $pids) {
+        Write-Host "[INFO] Restarting $Name process $processId on port $Port"
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Resolve-CommandPath([string]$Name, [string]$Fallback) {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -100,6 +109,10 @@ if (Test-PortListening $BackendPort) {
 }
 
 Write-Host "[4/5] Starting frontend..."
+if ($TunnelHostname -and (Test-PortListening $FrontendPort)) {
+    Stop-PortListeners $FrontendPort "Frontend"
+    Start-Sleep -Milliseconds 800
+}
 if (Test-PortListening $FrontendPort) {
     Write-Host "[OK] Frontend already listening on port $FrontendPort"
 } else {
