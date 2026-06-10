@@ -110,6 +110,7 @@ const handleGeneratePlan = async () => {
   generating.value = true
   try {
     const res = await learningPathApi.generatePlan({
+      title: pathForm.value.title || undefined,
       goal: pathForm.value.goal,
       planning_text: pathForm.value.planning_text
     })

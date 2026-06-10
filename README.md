@@ -258,6 +258,7 @@ chmod +x deploy.sh
 | [教师端与 Agent 平台重构设计方案](docs/teacher-agent-platform-redesign.md) | 教师仪表盘、班级洞察、Agent 工作台和大量学生选择器设计 |
 | [LearningInsight 洞察引擎设计](docs/learning-insight-engine.md) | 洞察模型、生成来源、API、状态闭环 |
 | [StudentPickerDialog 设计说明](docs/student-picker-dialog.md) | 大量学生选择器的组件合同、接口和协议边界 |
+| [学习路径规划器设计](docs/learning-path-planner.md) | 教学设计框架、场景模板、节点产出与完成标准 |
 | [UI 设计与界面交互规范](docs/ui-design.md) | 视觉系统、页面规范、交互状态 |
 | [系统架构设计](docs/architecture.md) | 平台整体架构与模块划分 |
 | [API 设计](docs/api-design.md) | 后端接口设计文档 |

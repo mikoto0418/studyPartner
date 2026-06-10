@@ -34,7 +34,7 @@ async def generate_learning_path_plan(
     req: LearningPathGenerateReq = Body(...),
     current_user: User = Depends(require_staff),
 ):
-    plan = await LearningPathService.generate_plan(req.goal, req.planning_text)
+    plan = await LearningPathService.generate_plan(req.goal, req.planning_text, req.title)
     return BaseResponse.success(data=LearningPathPlanOut(**plan), message="学习路径草案已生成")
 
 

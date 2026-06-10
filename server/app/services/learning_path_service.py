@@ -37,161 +37,9 @@ from app.schemas.learning_path import (
     LearningPathUpdate,
 )
 from app.services.access_control import AccessControlService
+from app.services.learning_path_planner import LearningPathPlanner
 from app.services.notification_service import NotificationService
 from app.utils.display_name import user_display_name
-
-
-class LearningPathPlanner:
-    """Deterministic first version of the AI planner.
-
-    The shape is intentionally LLM-ready: a later implementation can replace
-    this method with a model call while keeping the same JSON contract.
-    """
-
-    STEP_SPLIT_PATTERN = re.compile(r"(?:\s*(?:先|再|然后|接着|最后|其次|之后|，|。|；|;|\n)\s*)+")
-    BV_PATTERN = re.compile(r"\b(BV[0-9A-Za-z]{10,})\b")
-
-    @classmethod
-    def build_plan(cls, goal: str, planning_text: str) -> Dict[str, Any]:
-        raw_parts = [part.strip(" ，。；;") for part in cls.STEP_SPLIT_PATTERN.split(planning_text or "") if part.strip()]
-        parts = cls._normalize_parts(raw_parts, goal)
-
-        stages = cls._build_stages(parts)
-        nodes: List[Dict[str, Any]] = []
-        resources: List[Dict[str, Any]] = []
-
-        for index, part in enumerate(parts):
-            node_type = cls._infer_node_type(part, index, len(parts))
-            node_key = f"node_{index + 1}"
-            node_resource_list = cls._extract_resources(part, node_key)
-            resources.extend(node_resource_list)
-            nodes.append({
-                "key": node_key,
-                "title": cls._build_title(part, node_type, index),
-                "description": part,
-                "node_type": node_type,
-                "order_index": index,
-                "estimated_minutes": cls._estimate_minutes(node_type),
-                "required": True,
-                "config": {
-                    "source": "rule_planner",
-                    "stage_order": cls._stage_order_for_index(index, len(parts)),
-                },
-                "resources": node_resource_list,
-            })
-
-        edges = [
-            {
-                "source_key": nodes[index]["key"],
-                "target_key": nodes[index + 1]["key"],
-            }
-            for index in range(max(0, len(nodes) - 1))
-        ]
-
-        return {
-            "stages": stages,
-            "nodes": nodes,
-            "edges": edges,
-            "resources": resources,
-            "summary": f"已将「{goal}」拆解为 {len(nodes)} 个可执行节点，按理解、练习、提交复盘逐步推进。",
-        }
-
-    @classmethod
-    def _normalize_parts(cls, parts: List[str], goal: str) -> List[str]:
-        if len(parts) >= 3:
-            normalized = parts
-        else:
-            topic = goal.strip() or "当前主题"
-            normalized = [
-                f"理解{topic}的核心概念和学习目标",
-                f"观看或阅读{topic}的基础材料并记录关键问题",
-                f"完成{topic}的小练习或案例验证",
-                f"提交{topic}学习总结和后续问题",
-            ]
-
-        if not any(cls._infer_node_type(part, idx, len(normalized)) == "submission" for idx, part in enumerate(normalized)):
-            normalized.append(f"提交{goal.strip() or '本次学习'}总结、附件或反思文档")
-        return normalized[:12]
-
-    @classmethod
-    def _build_stages(cls, parts: List[str]) -> List[Dict[str, Any]]:
-        if len(parts) <= 4:
-            return [
-                {"title": "理解与输入", "description": "建立概念框架，完成必要材料学习。", "order_index": 0},
-                {"title": "练习与产出", "description": "通过练习、提交和反馈完成闭环。", "order_index": 1},
-            ]
-        return [
-            {"title": "准备", "description": "明确目标并完成基础输入。", "order_index": 0},
-            {"title": "推进", "description": "按节点完成练习、阅读、观看和阶段检查。", "order_index": 1},
-            {"title": "交付", "description": "提交成果，等待教师反馈并二次完善。", "order_index": 2},
-        ]
-
-    @staticmethod
-    def _stage_order_for_index(index: int, total: int) -> int:
-        if total <= 4:
-            return 0 if index < max(1, total // 2) else 1
-        if index < max(1, total // 3):
-            return 0
-        if index < max(2, total - 1):
-            return 1
-        return 2
-
-    @classmethod
-    def _extract_resources(cls, text: str, node_key: str) -> List[Dict[str, Any]]:
-        resources = []
-        for match in cls.BV_PATTERN.findall(text or ""):
-            resources.append({
-                "resource_type": "bilibili",
-                "title": f"B 站视频 {match}",
-                "url": f"https://www.bilibili.com/video/{match}",
-                "bv_id": match,
-                "file_id": None,
-                "metadata": {"node_key": node_key},
-            })
-        return resources
-
-    @classmethod
-    def _infer_node_type(cls, text: str, index: int, total: int) -> str:
-        lower_text = text.lower()
-        if cls.BV_PATTERN.search(text) or "视频" in text or "b站" in lower_text or "bilibili" in lower_text:
-            return "video"
-        if any(keyword in text for keyword in ["阅读", "文档", "资料", "论文", "课件"]):
-            return "reading"
-        if any(keyword in text for keyword in ["练习", "实验", "复现", "实现", "代码", "案例"]):
-            return "practice"
-        if any(keyword in text for keyword in ["提交", "总结", "报告", "作业", "附件"]) or index == total - 1:
-            return "submission"
-        if any(keyword in text for keyword in ["检查", "测验", "自测", "阶段"]):
-            return "checkpoint"
-        return "learning"
-
-    @staticmethod
-    def _build_title(text: str, node_type: str, index: int) -> str:
-        compact = re.sub(r"\s+", "", text)
-        compact = re.sub(r"\bBV[0-9A-Za-z]{10,}\b", "", compact).strip(" ，。；;")
-        if len(compact) > 22:
-            compact = compact[:22] + "..."
-        if compact:
-            return compact
-        labels = {
-            "video": "观看课程视频",
-            "reading": "阅读学习材料",
-            "practice": "完成实践练习",
-            "submission": "提交阶段成果",
-            "checkpoint": "完成阶段检查",
-        }
-        return labels.get(node_type, f"学习节点 {index + 1}")
-
-    @staticmethod
-    def _estimate_minutes(node_type: str) -> int:
-        return {
-            "video": 45,
-            "reading": 50,
-            "practice": 90,
-            "submission": 40,
-            "checkpoint": 30,
-            "learning": 45,
-        }.get(node_type, 45)
 
 
 class LearningPathService:
@@ -261,12 +109,12 @@ class LearningPathService:
         return class_group
 
     @staticmethod
-    async def generate_plan(req_goal: str, planning_text: str) -> Dict[str, Any]:
-        return LearningPathPlanner.build_plan(req_goal, planning_text)
+    async def generate_plan(req_goal: str, planning_text: str, title: Optional[str] = None) -> Dict[str, Any]:
+        return LearningPathPlanner.build_plan(req_goal, planning_text, title)
 
     @staticmethod
     async def create_path(db: AsyncSession, creator_id: UUID, path_in: LearningPathCreate) -> LearningPathTask:
-        plan = LearningPathPlanner.build_plan(path_in.goal, path_in.planning_text or path_in.goal)
+        plan = LearningPathPlanner.build_plan(path_in.goal, path_in.planning_text or path_in.goal, path_in.title)
         stage_inputs = path_in.stages or [LearningPathStageIn(**stage) for stage in plan["stages"]]
         node_inputs = path_in.nodes or [LearningPathNodeIn(**node) for node in plan["nodes"]]
         edge_inputs = path_in.edges or [LearningPathEdgeIn(**edge) for edge in plan["edges"]]
