@@ -56,3 +56,7 @@ logs/
 *.log
 *.sqlite
 *.zip
+
+# Local submission artifacts
+PROJECT_SUBMISSION.md
+PROJECT_SUBMISSION.pdf

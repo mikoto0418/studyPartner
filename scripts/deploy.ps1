@@ -21,6 +21,7 @@ try {
     }
     if ($LASTEXITCODE -ne 0) { throw "PostgreSQL did not become ready." }
 
+    docker compose -f docker-compose.prod.yml exec -T backend alembic upgrade head
     docker compose -f docker-compose.prod.yml exec -T backend python -m app.seed
     Write-Host "[OK] Deployment finished: http://localhost"
 }

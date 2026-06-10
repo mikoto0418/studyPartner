@@ -64,6 +64,26 @@ class LLMRouter:
         self.rate_limiter = RateLimiter()
         self.usage_logger = UsageLogger()
 
+    async def _close_provider_client(self, provider: LLMProvider) -> None:
+        http_client = getattr(provider, "http_client", None)
+        if not http_client:
+            return
+        try:
+            await http_client.aclose()
+        except Exception as exc:
+            logger.warning(f"Failed to close LLM provider client: {exc}")
+
+    async def _stream_with_cleanup(
+        self,
+        stream_response: AsyncIterator[str],
+        provider: LLMProvider,
+    ) -> AsyncIterator[str]:
+        try:
+            async for chunk in stream_response:
+                yield chunk
+        finally:
+            await self._close_provider_client(provider)
+
     async def route(
         self,
         task_type: str,
@@ -92,7 +112,7 @@ class LLMRouter:
             if require_task_config:
                 raise RuntimeError(f"No task-specific LLM provider configured. Task: {task_type}")
             from app.config import settings
-            sf_key = settings.SILICONFLOW_API_KEY
+            sf_key = settings.SILICONFLOW_CHAT_API_KEY or settings.SILICONFLOW_API_KEY
             if not sf_key:
                 raise RuntimeError(f"No available LLM provider configured. Task: {task_type}")
             configs_to_try = [{
@@ -101,7 +121,7 @@ class LLMRouter:
                 "temperature": 0.7,
                 "max_tokens": 2048,
                 "api_key": sf_key,
-                "base_url": settings.SILICONFLOW_BASE_URL
+                "base_url": settings.SILICONFLOW_CHAT_BASE_URL or settings.SILICONFLOW_BASE_URL
             }]
         else:
             configs_to_try = [
@@ -123,21 +143,22 @@ class LLMRouter:
             
             # Find provider client or instantiate dynamically
             provider = self.providers.get(provider_name)
-            if not provider and provider_name == "siliconflow":
-                # Auto-initialize SiliconFlowProvider if not in registered map
+            should_close_provider = False
+            if provider_name == "siliconflow":
+                # Build a fresh client from the selected route config so admin
+                # config changes and per-task endpoints take effect immediately.
                 from app.core.llm.providers.siliconflow import SiliconFlowProvider
-                # If DB provider configuration is used, load credentials
                 api_key = route_config.get("api_key")
                 base_url = route_config.get("base_url")
                 
                 # Use environment configuration when DB config does not carry credentials.
                 if not api_key:
                     from app.config import settings
-                    api_key = settings.SILICONFLOW_API_KEY
-                    base_url = settings.SILICONFLOW_BASE_URL
+                    api_key = settings.SILICONFLOW_CHAT_API_KEY or settings.SILICONFLOW_API_KEY
+                    base_url = base_url or settings.SILICONFLOW_CHAT_BASE_URL or settings.SILICONFLOW_BASE_URL
                 
                 provider = SiliconFlowProvider({"api_key": api_key, "base_url": base_url})
-                self.providers[provider_name] = provider
+                should_close_provider = True
 
             if not provider:
                 logger.warning(f"LLM Provider {provider_name} is not registered. Skipping.")
@@ -145,6 +166,8 @@ class LLMRouter:
 
             # Check rate limit rules
             if not await self.rate_limiter.check_limit(provider_name, user_id):
+                if should_close_provider:
+                    await self._close_provider_client(provider)
                 continue
 
             try:
@@ -172,6 +195,8 @@ class LLMRouter:
                         latency_ms=(time.monotonic() - start_time) * 1000,
                         status="success"
                     )
+                    if should_close_provider:
+                        return self._stream_with_cleanup(response, provider)
                     return response
 
                 # Log tokens and latency for block call
@@ -188,6 +213,8 @@ class LLMRouter:
                     latency_ms=response.latency_ms,
                     status="success"
                 )
+                if should_close_provider:
+                    await self._close_provider_client(provider)
                 return response
 
             except Exception as e:
@@ -203,6 +230,8 @@ class LLMRouter:
                     latency_ms=0,
                     status=f"error: {str(e)[:200]}"
                 )
+                if should_close_provider:
+                    await self._close_provider_client(provider)
                 continue
 
         raise RuntimeError(f"No available LLM provider responded. Task: {task_type}. Last Error: {last_error}")

@@ -10,6 +10,7 @@ from app.api.deps import require_admin
 from app.config import settings
 from app.core.database import get_db
 from app.core.exceptions import ValidationError
+from app.core.llm.base import ChatMessage
 from app.core.llm.providers.siliconflow import SiliconFlowProvider
 from app.core.security import encrypt_secret
 from app.models.knowledge import FileModel
@@ -73,6 +74,10 @@ def _smtp_configured() -> bool:
     )
 
 
+def _normal_url(value: str | None) -> str:
+    return (value or "").strip().rstrip("/")
+
+
 @router.get("/llm-configs", response_model=BaseResponse[List[LLMProviderConfigOut]], summary="获取 LLM 通道配置")
 async def list_llm_configs(
     current_user: User = Depends(require_admin),
@@ -90,30 +95,71 @@ async def upsert_llm_configs(
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    encrypted_key = encrypt_secret(req.api_key) if req.api_key else None
-    task_model_pairs = [(task_type, req.chat_model) for task_type in req.task_types]
-    task_model_pairs.append(("knowledge_embedding", req.embedding_model))
+    chat_base_url = _normal_url(
+        req.chat_base_url
+        or req.base_url
+        or settings.SILICONFLOW_CHAT_BASE_URL
+        or settings.SILICONFLOW_BASE_URL
+    )
+    embedding_base_url = _normal_url(
+        req.embedding_base_url
+        or req.base_url
+        or settings.SILICONFLOW_EMBEDDING_BASE_URL
+        or settings.SILICONFLOW_BASE_URL
+    )
+    if not chat_base_url or not embedding_base_url:
+        raise ValidationError("对话模型和嵌入模型都必须分别填写 Base URL")
+
+    chat_api_key = req.chat_api_key or req.api_key
+    embedding_api_key = req.embedding_api_key or req.api_key
+    encrypted_chat_key = encrypt_secret(chat_api_key) if chat_api_key else None
+    encrypted_embedding_key = encrypt_secret(embedding_api_key) if embedding_api_key else None
+
+    chat_task_types = [task_type for task_type in req.task_types if task_type != "knowledge_embedding"]
+    task_specs = [
+        {
+            "task_type": task_type,
+            "model_name": req.chat_model,
+            "base_url": chat_base_url,
+            "encrypted_key": encrypted_chat_key,
+            "channel_label": "对话模型",
+        }
+        for task_type in chat_task_types
+    ]
+    task_specs.append(
+        {
+            "task_type": "knowledge_embedding",
+            "model_name": req.embedding_model,
+            "base_url": embedding_base_url,
+            "encrypted_key": encrypted_embedding_key,
+            "channel_label": "嵌入模型",
+        }
+    )
 
     saved: List[LLMProviderConfig] = []
-    for priority, (task_type, model_name) in enumerate(task_model_pairs):
+    for priority, spec in enumerate(task_specs):
         existing = (await db.execute(
             select(LLMProviderConfig).where(
                 and_(
                     LLMProviderConfig.provider_name == req.provider_name,
-                    LLMProviderConfig.task_type == task_type,
+                    LLMProviderConfig.task_type == spec["task_type"],
                 )
             )
         )).scalars().first()
+
         if not existing:
-            if not encrypted_key:
-                raise ValidationError("首次保存 LLM 配置必须填写 API Key")
-            existing = LLMProviderConfig(provider_name=req.provider_name, task_type=task_type)
+            if not spec["encrypted_key"]:
+                raise ValidationError(f"首次保存{spec['channel_label']}配置必须填写 API Key")
+            existing = LLMProviderConfig(provider_name=req.provider_name, task_type=spec["task_type"])
+
         existing.display_name = req.display_name
-        existing.base_url = req.base_url
-        if encrypted_key:
-            existing.api_key_enc = encrypted_key
-        existing.model_name = model_name
-        existing.priority = len(task_model_pairs) - priority
+        existing.base_url = spec["base_url"]
+        if spec["encrypted_key"]:
+            existing.api_key_enc = spec["encrypted_key"]
+        if not existing.api_key_enc:
+            raise ValidationError(f"{spec['channel_label']}配置缺少 API Key")
+        existing.model_name = spec["model_name"]
+        existing.priority = len(task_specs) - priority
         existing.enabled = req.enabled
         existing.rpm_limit = req.rpm_limit
         existing.tpm_limit = req.tpm_limit
@@ -126,19 +172,37 @@ async def upsert_llm_configs(
     return BaseResponse.success(data=[_config_out(item) for item in saved], message="LLM 配置已保存")
 
 
-@router.post("/llm-configs/test", response_model=BaseResponse[LLMConnectionTestOut], summary="测试 LLM 网关连接")
+@router.post("/llm-configs/test", response_model=BaseResponse[LLMConnectionTestOut], summary="测试 LLM 通道连接")
 async def test_llm_connection(
     req: LLMConnectionTestReq = Body(...),
     current_user: User = Depends(require_admin),
 ):
     if req.provider_name != "siliconflow":
         raise ValidationError("当前仅支持 SiliconFlow 连接测试")
-    provider = SiliconFlowProvider({"api_key": req.api_key, "base_url": req.base_url})
+
+    provider = SiliconFlowProvider({"api_key": req.api_key, "base_url": _normal_url(req.base_url)})
     started = time.monotonic()
-    ok = await provider.health_check()
+    try:
+        if req.endpoint_type == "embedding":
+            embedding = await provider.embedding("连接测试", req.model_name)
+            ok = bool(getattr(embedding, "embedding", None))
+        else:
+            response = await provider.chat_completion(
+                messages=[ChatMessage(role="user", content="请回复 OK")],
+                model=req.model_name,
+                temperature=0,
+                max_tokens=8,
+                stream=False,
+            )
+            ok = bool(response.content)
+    except Exception as exc:
+        raise ValidationError(f"模型通道连接测试失败：{str(exc)[:160]}") from exc
+    finally:
+        await provider.http_client.aclose()
+
     latency_ms = int((time.monotonic() - started) * 1000)
     if not ok:
-        raise ValidationError("LLM 网关连接测试失败，请检查 Base URL 与 API Key")
+        raise ValidationError("模型通道连接测试失败，请检查 Base URL、API Key 和模型名")
     return BaseResponse.success(
         data=LLMConnectionTestOut(
             provider_name=req.provider_name,

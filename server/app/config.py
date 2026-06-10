@@ -75,7 +75,11 @@ class Settings(BaseSettings):
     # ========== SiliconFlow (LLM) ==========
     SILICONFLOW_API_KEY: str = ""
     SILICONFLOW_BASE_URL: str = "https://api.siliconflow.cn/v1"
+    SILICONFLOW_CHAT_API_KEY: str = ""
+    SILICONFLOW_CHAT_BASE_URL: Optional[str] = None
     SILICONFLOW_CHAT_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
+    SILICONFLOW_EMBEDDING_API_KEY: str = ""
+    SILICONFLOW_EMBEDDING_BASE_URL: Optional[str] = None
     SILICONFLOW_EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
 
     # ========== SMTP (Email) ==========

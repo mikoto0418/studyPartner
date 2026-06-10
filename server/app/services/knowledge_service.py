@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 async def get_embedding(text: str) -> List[float]:
     """Generate a real vector embedding for text chunks."""
-    api_key = settings.SILICONFLOW_API_KEY
-    base_url = settings.SILICONFLOW_BASE_URL
+    api_key = settings.SILICONFLOW_EMBEDDING_API_KEY or settings.SILICONFLOW_API_KEY
+    base_url = settings.SILICONFLOW_EMBEDDING_BASE_URL or settings.SILICONFLOW_BASE_URL
     model = settings.SILICONFLOW_EMBEDDING_MODEL
 
     async with SessionLocal() as route_db:
@@ -52,10 +52,13 @@ async def get_embedding(text: str) -> List[float]:
         "api_key": api_key,
         "base_url": base_url
     })
-    res = await provider.embedding(text, model)
-    if isinstance(res, list):
-        return res[0].embedding
-    return res.embedding
+    try:
+        res = await provider.embedding(text, model)
+        if isinstance(res, list):
+            return res[0].embedding
+        return res.embedding
+    finally:
+        await provider.http_client.aclose()
 
 class KnowledgeService:
     @staticmethod

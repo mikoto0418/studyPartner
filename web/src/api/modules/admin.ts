@@ -19,9 +19,13 @@ export interface LLMProviderConfigOut {
 export interface LLMConfigUpsertData {
   provider_name: string
   display_name?: string
-  base_url: string
+  base_url?: string
   api_key?: string
+  chat_base_url: string
+  chat_api_key?: string
   chat_model: string
+  embedding_base_url: string
+  embedding_api_key?: string
   embedding_model: string
   task_types: string[]
   enabled: boolean
@@ -34,6 +38,7 @@ export interface LLMConnectionTestData {
   base_url: string
   api_key: string
   model_name: string
+  endpoint_type: 'chat' | 'embedding'
 }
 
 export interface LLMConnectionTestOut {

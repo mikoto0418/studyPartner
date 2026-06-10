@@ -59,15 +59,29 @@ if (-not (Test-Path $ServerEnv) -and (Test-Path $ServerEnvExample)) {
 }
 
 if (-not (Test-PortListening 15432) -or -not (Test-PortListening 6379) -or -not (Test-PortListening 6333) -or -not (Test-PortListening 9000)) {
-    Write-Host "[1/4] Starting infrastructure containers..."
+    Write-Host "[1/5] Starting infrastructure containers..."
     Push-Location $Root
     docker compose up -d postgres redis minio qdrant
     Pop-Location
 } else {
-    Write-Host "[1/4] Infrastructure ports are already listening."
+    Write-Host "[1/5] Infrastructure ports are already listening."
 }
 
-Write-Host "[2/4] Starting backend..."
+Write-Host "[2/5] Running database migrations..."
+Wait-Port 15432 "PostgreSQL"
+Push-Location (Join-Path $Root "server")
+try {
+    $alembic = Resolve-CommandPath "alembic.exe" "alembic"
+    & $alembic upgrade head
+    if ($LASTEXITCODE -ne 0) {
+        throw "Database migration failed."
+    }
+}
+finally {
+    Pop-Location
+}
+
+Write-Host "[3/5] Starting backend..."
 if (Test-PortListening $BackendPort) {
     Write-Host "[OK] Backend already listening on port $BackendPort"
 } else {
@@ -85,7 +99,7 @@ if (Test-PortListening $BackendPort) {
     Wait-Port $BackendPort "Backend"
 }
 
-Write-Host "[3/4] Starting frontend..."
+Write-Host "[4/5] Starting frontend..."
 if (Test-PortListening $FrontendPort) {
     Write-Host "[OK] Frontend already listening on port $FrontendPort"
 } else {
@@ -108,7 +122,7 @@ if (Test-PortListening $FrontendPort) {
     Wait-Port $FrontendPort "Frontend"
 }
 
-Write-Host "[4/4] Local dev services are ready."
+Write-Host "[5/5] Local dev services are ready."
 Write-Host "Frontend: http://127.0.0.1:$FrontendPort"
 Write-Host "Backend:  http://127.0.0.1:$BackendPort/api/health"
 if ($TunnelHostname) {

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -27,9 +27,13 @@ class LLMProviderConfigOut(BaseModel):
 class LLMConfigUpsertReq(BaseModel):
     provider_name: str = "siliconflow"
     display_name: Optional[str] = "SiliconFlow"
-    base_url: str = "https://api.siliconflow.cn/v1"
+    base_url: Optional[str] = None
     api_key: Optional[str] = Field(default=None, min_length=8)
+    chat_base_url: Optional[str] = None
+    chat_api_key: Optional[str] = Field(default=None, min_length=8)
     chat_model: str
+    embedding_base_url: Optional[str] = None
+    embedding_api_key: Optional[str] = Field(default=None, min_length=8)
     embedding_model: str
     task_types: List[str] = Field(default_factory=lambda: [
         "student_chat",
@@ -50,6 +54,7 @@ class LLMConnectionTestReq(BaseModel):
     base_url: str = "https://api.siliconflow.cn/v1"
     api_key: str = Field(..., min_length=8)
     model_name: str
+    endpoint_type: Literal["chat", "embedding"] = "chat"
 
 
 class LLMConnectionTestOut(BaseModel):
