@@ -34,6 +34,10 @@ pip-delete-this-directory.txt
 # Environment files
 .env
 server/.env
+local.*.env
+*.pid
+*.out.log
+*.err.log
 
 # IDEs
 .vscode/

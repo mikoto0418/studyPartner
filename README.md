@@ -144,6 +144,38 @@ studyPartner/
 - Docker Desktop 或 Docker Engine
 - PostgreSQL / Redis 可由 Docker Compose 自动拉起
 
+### Windows 一键启动
+
+本仓库提供一组 Windows 脚本，方便在本地开发和演示时启动系统。公开仓库只包含通用脚本和配置模板，不包含任何 Cloudflare Tunnel 的真实域名、Tunnel ID、凭据路径或 API Key。
+
+| 脚本 | 用途 |
+|---|---|
+| `start-dev.bat` | 启动开发依赖容器、后端 `8001`、前端 `5173` |
+| `stop-dev.bat` | 关闭由脚本启动的前端和后端进程，保留数据库等容器 |
+| `start-tunnel.bat` | 按本机私有 `local.tunnel.env` 启动 Cloudflare Tunnel |
+| `stop-tunnel.bat` | 只关闭匹配当前项目私有配置的 Cloudflare Tunnel 进程 |
+| `deploy.bat` | 使用 `docker-compose.prod.yml` 构建并启动生产编排 |
+
+首次在自己的电脑使用隧道脚本时，复制模板并填入本机私有信息：
+
+```powershell
+Copy-Item local.tunnel.env.example local.tunnel.env
+```
+
+`local.tunnel.env` 已被 `.gitignore` 排除，请只在本机维护真实域名、`cloudflared` 配置路径和端口。正常演示流程：
+
+```powershell
+.\start-dev.bat
+.\start-tunnel.bat
+```
+
+结束演示：
+
+```powershell
+.\stop-tunnel.bat
+.\stop-dev.bat
+```
+
 ### 1. 准备环境变量
 
 ```bash
