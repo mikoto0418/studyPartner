@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.core.database import SessionLocal
 from app.models.llm import LLMUsageLog, LLMProviderConfig
-from app.core.llm.base import LLMProvider, ChatMessage, ChatResponse
+from app.core.llm.base import LLMProvider, ChatMessage, ChatResponse, LLMProviderError
 from app.core.security import decrypt_secret
 
 logger = logging.getLogger(__name__)
@@ -96,6 +96,10 @@ class LLMRouter:
         temperature_override = kwargs.pop("temperature", None)
         max_tokens_override = kwargs.pop("max_tokens", None)
         require_task_config = kwargs.pop("require_task_config", False)
+        timeout_seconds = kwargs.pop("timeout_seconds", None)
+        if timeout_seconds is None:
+            from app.config import settings
+            timeout_seconds = settings.LLM_CHAT_TIMEOUT_SECONDS
 
         # 1. Fetch active route configs for task_type from database sorted by priority
         async with SessionLocal() as db:
@@ -141,6 +145,7 @@ class LLMRouter:
         for route_config in configs_to_try:
             provider_name = route_config["provider_name"]
             model = route_config["model_name"]
+            route_timeout_seconds = timeout_seconds
             
             # Find provider client or instantiate dynamically
             provider = self.providers.get(provider_name)
@@ -157,11 +162,13 @@ class LLMRouter:
                     from app.config import settings
                     api_key = settings.SILICONFLOW_CHAT_API_KEY or settings.SILICONFLOW_API_KEY
                     base_url = base_url or settings.SILICONFLOW_CHAT_BASE_URL or settings.SILICONFLOW_BASE_URL
+                    route_timeout_seconds = route_timeout_seconds or settings.LLM_CHAT_TIMEOUT_SECONDS
                 
                 provider = SiliconFlowProvider({
                     "provider_name": provider_name,
                     "api_key": api_key,
                     "base_url": base_url,
+                    "timeout_seconds": route_timeout_seconds,
                 })
                 should_close_provider = True
 
@@ -239,4 +246,6 @@ class LLMRouter:
                     await self._close_provider_client(provider)
                 continue
 
+        if isinstance(last_error, (TimeoutError, LLMProviderError)):
+            raise last_error
         raise RuntimeError(f"No available LLM provider responded. Task: {task_type}. Last Error: {last_error}")

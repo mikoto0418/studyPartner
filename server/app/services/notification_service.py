@@ -8,6 +8,26 @@ from app.core.exceptions import NotFoundError
 
 class NotificationService:
     @staticmethod
+    async def _push_notification(db_notification: Notification, user_id: UUID) -> None:
+        from app.core.websocket_manager import manager
+
+        try:
+            payload = {
+                "type": "notification",
+                "data": {
+                    "id": str(db_notification.id),
+                    "title": db_notification.title,
+                    "content": db_notification.content,
+                    "notification_type": db_notification.notification_type,
+                    "link_url": db_notification.link_url,
+                    "created_at": db_notification.created_at.isoformat() if db_notification.created_at else None
+                }
+            }
+            await manager.send_personal_message(payload, str(user_id))
+        except Exception:
+            pass
+
+    @staticmethod
     async def create_notification(
         db: AsyncSession,
         user_id: UUID,
@@ -27,25 +47,33 @@ class NotificationService:
         await db.commit()
         await db.refresh(db_notification)
 
-        # Send WebSocket real-time push notification
-        from app.core.websocket_manager import manager
-        try:
-            payload = {
-                "type": "notification",
-                "data": {
-                    "id": str(db_notification.id),
-                    "title": db_notification.title,
-                    "content": db_notification.content,
-                    "notification_type": db_notification.notification_type,
-                    "link_url": db_notification.link_url,
-                    "created_at": db_notification.created_at.isoformat() if db_notification.created_at else None
-                }
-            }
-            await manager.send_personal_message(payload, str(user_id))
-        except Exception:
-            pass
+        await NotificationService._push_notification(db_notification, user_id)
 
         return db_notification
+
+    @staticmethod
+    async def add_notification(
+        db: AsyncSession,
+        user_id: UUID,
+        title: str,
+        content: str,
+        notification_type: str = "system",
+        link_url: Optional[str] = None
+    ) -> Notification:
+        db_notification = Notification(
+            user_id=user_id,
+            title=title,
+            content=content,
+            notification_type=notification_type,
+            link_url=link_url
+        )
+        db.add(db_notification)
+        return db_notification
+
+    @staticmethod
+    async def push_notifications(notifications: List[Notification]) -> None:
+        for notification in notifications:
+            await NotificationService._push_notification(notification, notification.user_id)
 
     @staticmethod
     async def list_notifications(

@@ -173,10 +173,8 @@ class LearningPathService:
         if assignee_ids:
             await LearningPathService._assign_students(db, task, assignee_ids)
 
-        await db.commit()
-        await db.refresh(task)
-        for student_id in assignee_ids:
-            await NotificationService.create_notification(
+        notifications = [
+            await NotificationService.add_notification(
                 db,
                 user_id=student_id,
                 title="新的学习路径任务",
@@ -184,6 +182,12 @@ class LearningPathService:
                 notification_type="learning_path",
                 link_url="/student/learning-paths",
             )
+            for student_id in assignee_ids
+        ]
+
+        await db.commit()
+        await db.refresh(task)
+        await NotificationService.push_notifications(notifications)
         return task
 
     @staticmethod

@@ -393,6 +393,8 @@ class LearningPathAIPlanner:
 
         try:
             from app.core.llm import ChatMessage, llm_router
+            from app.core.llm.base import LLMProviderError
+            from app.config import settings
 
             response = await llm_router.route(
                 cls.TASK_TYPE,
@@ -400,8 +402,13 @@ class LearningPathAIPlanner:
                 user_id=user_id,
                 temperature=0.2,
                 max_tokens=4096,
+                timeout_seconds=settings.LEARNING_PATH_LLM_TIMEOUT_SECONDS,
                 require_task_config=True,
             )
+        except TimeoutError as exc:
+            raise RuntimeError(str(exc)) from exc
+        except LLMProviderError as exc:
+            raise RuntimeError(str(exc)) from exc
         except Exception as exc:
             if allow_deterministic_fallback:
                 return cls._fallback_plan(deterministic_draft, research, exc)
@@ -429,6 +436,7 @@ class LearningPathAIPlanner:
                     user_id=user_id,
                     temperature=0.25,
                     max_tokens=4096,
+                    timeout_seconds=settings.LEARNING_PATH_LLM_TIMEOUT_SECONDS,
                     require_task_config=True,
                 )
                 retry_obj = cls._extract_json_object(retry_response.content)
@@ -443,6 +451,10 @@ class LearningPathAIPlanner:
                 if quality_issue:
                     raise ValueError(f"LLM plan failed quality gate: {quality_issue}")
             return plan
+        except TimeoutError as exc:
+            raise RuntimeError(str(exc)) from exc
+        except LLMProviderError as exc:
+            raise RuntimeError(str(exc)) from exc
         except Exception as exc:
             if allow_deterministic_fallback:
                 return cls._fallback_plan(deterministic_draft, research, exc)

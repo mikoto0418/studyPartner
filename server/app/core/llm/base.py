@@ -2,6 +2,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional, List, Dict, Any, Union
 
+class LLMProviderError(RuntimeError):
+    """Provider-side error that should be shown to admins/operators."""
+
+    pass
+
 @dataclass
 class ChatMessage:
     role: str          # "system" | "user" | "assistant"

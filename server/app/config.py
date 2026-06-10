@@ -81,6 +81,8 @@ class Settings(BaseSettings):
     SILICONFLOW_EMBEDDING_API_KEY: str = ""
     SILICONFLOW_EMBEDDING_BASE_URL: Optional[str] = None
     SILICONFLOW_EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
+    LLM_CHAT_TIMEOUT_SECONDS: float = 60.0
+    LEARNING_PATH_LLM_TIMEOUT_SECONDS: float = 90.0
 
     # ========== SMTP (Email) ==========
     SMTP_HOST: str = "smtp.qq.com"
