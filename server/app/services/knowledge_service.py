@@ -7,13 +7,14 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
 from fastapi import UploadFile
-from sqlalchemy import select, and_, desc, func
+from sqlalchemy import select, and_, desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import SessionLocal
 from app.core.security import decrypt_secret
 from app.models.knowledge import FileModel, KnowledgeDocument, KnowledgeChunk
+from app.models.learning_path import LearningNodeSubmission, LearningPathAssignee, LearningPathResource, LearningPathTask
 from app.models.llm import LLMProviderConfig
 from app.models.task import Task, TaskAssignee
 from app.models.user import User
@@ -120,6 +121,38 @@ class KnowledgeService:
             )
         )).scalars().all()
         if any(KnowledgeService.can_read_document(user, doc) for doc in doc_rows):
+            return db_file
+
+        path_resource = (await db.execute(
+            select(LearningPathResource.id)
+            .join(LearningPathAssignee, LearningPathAssignee.task_id == LearningPathResource.task_id)
+            .where(
+                and_(
+                    LearningPathResource.file_id == db_file.id,
+                    LearningPathAssignee.user_id == user.id,
+                )
+            )
+            .limit(1)
+        )).scalar_one_or_none()
+        if path_resource:
+            return db_file
+
+        submission_attachment = (await db.execute(
+            select(LearningNodeSubmission.id)
+            .join(LearningPathTask, LearningPathTask.id == LearningNodeSubmission.task_id)
+            .where(
+                and_(
+                    LearningNodeSubmission.attachment_ids.contains([str(db_file.id)]),
+                    LearningPathTask.deleted_at.is_(None),
+                    or_(
+                        LearningNodeSubmission.user_id == user.id,
+                        LearningPathTask.creator_id == user.id,
+                    ),
+                )
+            )
+            .limit(1)
+        )).scalar_one_or_none()
+        if submission_attachment:
             return db_file
 
         await KnowledgeService._ensure_file_can_be_used(db, user.id, db_file)

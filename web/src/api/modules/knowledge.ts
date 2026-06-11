@@ -105,6 +105,10 @@ export const knowledgeApi = {
     return request.get('/knowledge/teacher-files')
   },
 
+  getFileDownloadUrl(fileId: string) {
+    return request.get(`/files/${fileId}/download`)
+  },
+
   searchKnowledge(query: string, limit = 5) {
     return request.post(`/knowledge/search?limit=${limit}`, { query })
   },

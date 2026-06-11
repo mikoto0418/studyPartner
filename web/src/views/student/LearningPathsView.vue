@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { CheckCircle2, Circle, Clock3, FileText, GraduationCap, Lock, PlaySquare, Send, UploadCloud } from 'lucide-vue-next'
+import { CheckCircle2, ChevronLeft, ChevronRight, Circle, Clock3, FileText, GraduationCap, Link, Lock, PlaySquare, Send, UploadCloud } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { learningPathApi } from '../../api/modules/learning_path'
 import { knowledgeApi, type FileOut } from '../../api/modules/knowledge'
@@ -18,9 +18,11 @@ const submitForm = ref({
 })
 const uploadedFiles = ref<FileOut[]>([])
 const uploadingAttachment = ref(false)
+const graphScrollRef = ref<HTMLDivElement | null>(null)
 
 const completedCount = computed(() => detail.value?.nodes.filter(node => node.progress?.status === 'completed').length || 0)
 const totalCount = computed(() => detail.value?.nodes.length || 0)
+const graphCanvasWidth = computed(() => Math.max(980, (detail.value?.nodes.length || 0) * 210))
 
 const loadPaths = async () => {
   loading.value = true
@@ -120,13 +122,45 @@ const formatDate = (iso?: string) => {
 }
 
 const graphPoints = (nodes: LearningPathNode[]) => {
-  const width = 900
+  const width = graphCanvasWidth.value - 120
   const gap = nodes.length > 1 ? width / (nodes.length - 1) : width
   return nodes.map((node, idx) => ({
     key: node.key || `node_${idx + 1}`,
-    x: 45 + idx * gap,
-    y: idx % 2 === 0 ? 76 : 144
+    x: 60 + idx * gap,
+    y: idx % 2 === 0 ? 78 : 152
   }))
+}
+
+const graphTitleLines = (title: string) => {
+  const clean = (title || '').trim()
+  if (clean.length <= 12) return [clean]
+  return [clean.slice(0, 12), clean.slice(12, 24)]
+}
+
+const handleGraphWheel = (event: WheelEvent) => {
+  if (!graphScrollRef.value) return
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+  event.preventDefault()
+  graphScrollRef.value.scrollBy({ left: event.deltaY, behavior: 'auto' })
+}
+
+const scrollGraph = (direction: -1 | 1) => {
+  graphScrollRef.value?.scrollBy({ left: direction * 420, behavior: 'smooth' })
+}
+
+const openResource = async (resource: Record<string, any>) => {
+  try {
+    if (resource.file_id) {
+      const res = await knowledgeApi.getFileDownloadUrl(resource.file_id)
+      if (res.data?.url) window.open(res.data.url, '_blank')
+      return
+    }
+    const url = resource.url || (resource.bv_id ? `https://www.bilibili.com/video/${resource.bv_id}` : '')
+    if (url) window.open(url, '_blank')
+  } catch (error) {
+    console.warn('Failed to open learning path resource', error)
+    ElMessage.error('打开资源失败')
+  }
 }
 
 onMounted(loadPaths)
@@ -182,32 +216,59 @@ onMounted(loadPaths)
             </div>
           </div>
 
-          <div class="mt-6 overflow-x-auto border border-gray-100 dark:border-zinc-800 rounded-lg bg-gray-50/50 dark:bg-zinc-950/40">
-            <svg :width="1000" height="220" class="min-w-[1000px]">
-              <template v-for="edge in detail.edges" :key="edge.id || `${edge.source_key}-${edge.target_key}`">
-                <line
-                  v-if="graphPoints(detail.nodes).find(p => p.key === edge.source_key) && graphPoints(detail.nodes).find(p => p.key === edge.target_key)"
-                  :x1="graphPoints(detail.nodes).find(p => p.key === edge.source_key)!.x"
-                  :y1="graphPoints(detail.nodes).find(p => p.key === edge.source_key)!.y"
-                  :x2="graphPoints(detail.nodes).find(p => p.key === edge.target_key)!.x"
-                  :y2="graphPoints(detail.nodes).find(p => p.key === edge.target_key)!.y"
-                  stroke="#93c5fd"
-                  stroke-width="2"
-                />
-              </template>
-              <g v-for="(point, idx) in graphPoints(detail.nodes)" :key="point.key">
-                <circle
-                  :cx="point.x"
-                  :cy="point.y"
-                  r="24"
-                  :fill="detail.nodes[idx].progress?.status === 'completed' ? '#10b981' : detail.nodes[idx].progress?.status === 'locked' ? '#e5e7eb' : '#ffffff'"
-                  :stroke="detail.nodes[idx].progress?.status === 'locked' ? '#9ca3af' : '#2563eb'"
-                  stroke-width="2"
-                />
-                <text :x="point.x" :y="point.y + 4" text-anchor="middle" :class="detail.nodes[idx].progress?.status === 'completed' ? 'fill-white' : 'fill-blue-700'" class="text-xs font-bold">{{ idx + 1 }}</text>
-                <text :x="point.x" :y="point.y + 46" text-anchor="middle" class="fill-gray-600 text-[10px]">{{ detail.nodes[idx].title.slice(0, 9) }}</text>
-              </g>
-            </svg>
+          <div class="relative mt-6 overflow-hidden rounded-lg border border-gray-100 bg-gray-50/50 dark:border-zinc-800 dark:bg-zinc-950/40">
+            <button
+              type="button"
+              @click="scrollGraph(-1)"
+              class="absolute left-3 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-gray-200 bg-white/90 text-gray-500 shadow-sm backdrop-blur hover:text-blue-600 dark:border-zinc-800 dark:bg-zinc-900/90"
+              title="向左浏览"
+            >
+              <ChevronLeft class="h-4 w-4" />
+            </button>
+            <div ref="graphScrollRef" class="scrollbar-none overflow-x-auto scroll-smooth" @wheel="handleGraphWheel">
+              <svg :width="graphCanvasWidth" height="260" :viewBox="`0 0 ${graphCanvasWidth} 260`">
+                <template v-for="edge in detail.edges" :key="edge.id || `${edge.source_key}-${edge.target_key}`">
+                  <line
+                    v-if="graphPoints(detail.nodes).find(p => p.key === edge.source_key) && graphPoints(detail.nodes).find(p => p.key === edge.target_key)"
+                    :x1="graphPoints(detail.nodes).find(p => p.key === edge.source_key)!.x"
+                    :y1="graphPoints(detail.nodes).find(p => p.key === edge.source_key)!.y"
+                    :x2="graphPoints(detail.nodes).find(p => p.key === edge.target_key)!.x"
+                    :y2="graphPoints(detail.nodes).find(p => p.key === edge.target_key)!.y"
+                    stroke="#93c5fd"
+                    stroke-width="2"
+                  />
+                </template>
+                <g v-for="(point, idx) in graphPoints(detail.nodes)" :key="point.key">
+                  <circle
+                    :cx="point.x"
+                    :cy="point.y"
+                    r="26"
+                    :fill="detail.nodes[idx].progress?.status === 'completed' ? '#10b981' : detail.nodes[idx].progress?.status === 'locked' ? '#e5e7eb' : '#ffffff'"
+                    :stroke="detail.nodes[idx].progress?.status === 'locked' ? '#9ca3af' : '#2563eb'"
+                    stroke-width="2"
+                  />
+                  <text :x="point.x" :y="point.y + 4" text-anchor="middle" :class="detail.nodes[idx].progress?.status === 'completed' ? 'fill-white' : 'fill-blue-700'" class="text-xs font-bold">{{ idx + 1 }}</text>
+                  <text :x="point.x" :y="point.y + 48" text-anchor="middle" class="fill-gray-700 text-[10px] font-medium">
+                    <tspan
+                      v-for="(line, lineIdx) in graphTitleLines(detail.nodes[idx].title)"
+                      :key="lineIdx"
+                      :x="point.x"
+                      :dy="lineIdx === 0 ? 0 : 13"
+                    >
+                      {{ line }}
+                    </tspan>
+                  </text>
+                </g>
+              </svg>
+            </div>
+            <button
+              type="button"
+              @click="scrollGraph(1)"
+              class="absolute right-3 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-gray-200 bg-white/90 text-gray-500 shadow-sm backdrop-blur hover:text-blue-600 dark:border-zinc-800 dark:bg-zinc-900/90"
+              title="向右浏览"
+            >
+              <ChevronRight class="h-4 w-4" />
+            </button>
           </div>
         </div>
 
@@ -242,17 +303,18 @@ onMounted(loadPaths)
                 <p class="mt-3 text-xs leading-relaxed text-gray-500 dark:text-zinc-400">{{ node.description || '暂无说明' }}</p>
 
                 <div v-if="node.resources.length" class="mt-4 flex flex-wrap gap-2">
-                  <a
+                  <button
                     v-for="res in node.resources"
                     :key="res.id || res.bv_id || res.url"
-                    :href="res.url"
-                    target="_blank"
+                    type="button"
+                    @click="openResource(res)"
                     class="inline-flex items-center gap-1 px-2 py-1 rounded bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-300 text-[10px]"
                   >
                     <PlaySquare v-if="res.resource_type === 'bilibili'" class="w-3 h-3" />
-                    <FileText v-else class="w-3 h-3" />
-                    <span>{{ res.title || res.bv_id || res.url }}</span>
-                  </a>
+                    <FileText v-else-if="res.resource_type === 'file'" class="w-3 h-3" />
+                    <Link v-else class="w-3 h-3" />
+                    <span>{{ res.title || res.bv_id || res.url || '附件' }}</span>
+                  </button>
                 </div>
 
                 <button
@@ -316,3 +378,14 @@ onMounted(loadPaths)
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+</style>

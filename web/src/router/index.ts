@@ -18,6 +18,8 @@ import WorkbenchView from '../views/teacher/WorkbenchView.vue'
 import StudentsView from '../views/teacher/StudentsView.vue'
 import TasksView from '../views/teacher/TasksView.vue'
 import TeacherLearningPathsView from '../views/teacher/LearningPathsView.vue'
+import TeacherLearningPathCreateView from '../views/teacher/LearningPathCreateView.vue'
+import TeacherLearningPathStudentProgressView from '../views/teacher/LearningPathStudentProgressView.vue'
 import ClassOverviewView from '../views/teacher/ClassOverviewView.vue'
 
 import OverviewView from '../views/admin/OverviewView.vue'
@@ -123,6 +125,18 @@ const routes: Array<RouteRecordRaw> = [
         name: 'TeacherLearningPaths',
         component: TeacherLearningPathsView,
         meta: { title: '学习路径任务' }
+      },
+      {
+        path: 'learning-paths/new',
+        name: 'TeacherLearningPathCreate',
+        component: TeacherLearningPathCreateView,
+        meta: { title: '布置学习路径任务' }
+      },
+      {
+        path: 'learning-paths/:taskId/students/:studentId',
+        name: 'TeacherLearningPathStudentProgress',
+        component: TeacherLearningPathStudentProgressView,
+        meta: { title: '学生路径进度' }
       },
       {
         path: 'classes',

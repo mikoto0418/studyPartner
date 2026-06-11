@@ -194,6 +194,16 @@ class LearningPathDetailOut(BaseModel):
     submissions: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class LearningPathStudentProgressOut(BaseModel):
+    task: LearningPathTaskOut
+    stages: List[LearningPathStageOut]
+    nodes: List[LearningPathNodeOut]
+    edges: List[LearningPathEdgeOut]
+    student: Dict[str, Any]
+    assignee: Dict[str, Any]
+    submissions: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class LearningNodeSubmitReq(BaseModel):
     content: Optional[str] = None
     attachment_ids: List[UUID] = Field(default_factory=list)

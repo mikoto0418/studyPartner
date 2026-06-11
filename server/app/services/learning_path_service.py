@@ -370,6 +370,87 @@ class LearningPathService:
         }
 
     @staticmethod
+    async def get_student_path_progress(
+        db: AsyncSession,
+        task_id: UUID,
+        student_id: UUID,
+        teacher_id: UUID,
+    ) -> Dict[str, Any]:
+        task = await LearningPathService.get_teacher_task(db, task_id, teacher_id)
+        assignee_result = await db.execute(
+            select(LearningPathAssignee)
+            .options(selectinload(LearningPathAssignee.user).selectinload(User.student_profile))
+            .where(and_(LearningPathAssignee.task_id == task_id, LearningPathAssignee.user_id == student_id))
+        )
+        assignee = assignee_result.scalars().first()
+        if not assignee:
+            raise NotFoundError("该学生未分配此学习路径任务")
+
+        stages, nodes, edges, resources = await LearningPathService._load_graph(db, task.id)
+        progress_map = await LearningPathService._load_progress_map(db, task.id, student_id)
+        resource_map: Dict[UUID, List[LearningPathResource]] = {}
+        for resource in resources:
+            if resource.node_id:
+                resource_map.setdefault(resource.node_id, []).append(resource)
+
+        node_out = []
+        for node in nodes:
+            node_out.append({
+                "id": node.id,
+                "task_id": node.task_id,
+                "stage_id": node.stage_id,
+                "key": node.key,
+                "title": node.title,
+                "description": node.description,
+                "node_type": node.node_type,
+                "order_index": node.order_index,
+                "estimated_minutes": node.estimated_minutes,
+                "required": node.required,
+                "config": node.config,
+                "resources": [LearningPathService._resource_to_dict(res) for res in resource_map.get(node.id, [])],
+                "progress": progress_map.get(node.id),
+            })
+
+        submissions_result = await db.execute(
+            select(LearningNodeSubmission)
+            .options(selectinload(LearningNodeSubmission.user), selectinload(LearningNodeSubmission.node))
+            .where(and_(LearningNodeSubmission.task_id == task_id, LearningNodeSubmission.user_id == student_id))
+            .order_by(desc(LearningNodeSubmission.created_at))
+        )
+        submissions = [LearningPathService._submission_to_dict(item) for item in submissions_result.scalars().all()]
+        student = assignee.user
+        display_name = user_display_name(student.nickname)
+
+        return {
+            "task": await LearningPathService._task_summary(db, task),
+            "stages": stages,
+            "nodes": node_out,
+            "edges": edges,
+            "student": {
+                "id": str(student.id),
+                "username": student.username,
+                "nickname": student.nickname,
+                "display_name": display_name,
+                "email": student.email,
+                "student_profile": {
+                    "student_id": student.student_profile.student_id if student.student_profile else None,
+                    "grade": student.student_profile.grade if student.student_profile else None,
+                    "major": student.student_profile.major if student.student_profile else None,
+                    "research_direction": student.student_profile.research_direction if student.student_profile else None,
+                },
+            },
+            "assignee": {
+                "id": str(assignee.id),
+                "user_id": str(assignee.user_id),
+                "status": assignee.status,
+                "progress_percent": assignee.progress_percent,
+                "assigned_at": assignee.assigned_at.isoformat() if assignee.assigned_at else None,
+                "completed_at": assignee.completed_at.isoformat() if assignee.completed_at else None,
+            },
+            "submissions": submissions,
+        }
+
+    @staticmethod
     async def submit_node(
         db: AsyncSession,
         task_id: UUID,
@@ -846,29 +927,30 @@ class LearningPathService:
             .where(LearningNodeSubmission.task_id == task_id)
             .order_by(desc(LearningNodeSubmission.created_at))
         )
-        return [
-            {
-                "id": str(item.id),
-                "task_id": str(item.task_id),
-                "node_id": str(item.node_id),
-                "node_title": item.node.title if item.node else "",
-                "user_id": str(item.user_id),
-                "username": item.user.username,
-                "nickname": item.user.nickname,
-                "display_name": user_display_name(item.user.nickname),
-                "content": item.content,
-                "attachment_ids": item.attachment_ids or [],
-                "review_status": item.review_status,
-                "score": item.score,
-                "feedback": item.feedback,
-                "follow_up": item.follow_up,
-                "reviewed_by": str(item.reviewed_by) if item.reviewed_by else None,
-                "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else None,
-                "reopen_until": item.reopen_until.isoformat() if item.reopen_until else None,
-                "created_at": item.created_at.isoformat(),
-            }
-            for item in result.scalars().all()
-        ]
+        return [LearningPathService._submission_to_dict(item) for item in result.scalars().all()]
+
+    @staticmethod
+    def _submission_to_dict(item: LearningNodeSubmission) -> Dict[str, Any]:
+        return {
+            "id": str(item.id),
+            "task_id": str(item.task_id),
+            "node_id": str(item.node_id),
+            "node_title": item.node.title if item.node else "",
+            "user_id": str(item.user_id),
+            "username": item.user.username if item.user else "",
+            "nickname": item.user.nickname if item.user else "",
+            "display_name": user_display_name(item.user.nickname) if item.user else "未设置姓名",
+            "content": item.content,
+            "attachment_ids": item.attachment_ids or [],
+            "review_status": item.review_status,
+            "score": item.score,
+            "feedback": item.feedback,
+            "follow_up": item.follow_up,
+            "reviewed_by": str(item.reviewed_by) if item.reviewed_by else None,
+            "reviewed_at": item.reviewed_at.isoformat() if item.reviewed_at else None,
+            "reopen_until": item.reopen_until.isoformat() if item.reopen_until else None,
+            "created_at": item.created_at.isoformat(),
+        }
 
     @staticmethod
     def _resource_to_dict(resource: LearningPathResource) -> Dict[str, Any]:

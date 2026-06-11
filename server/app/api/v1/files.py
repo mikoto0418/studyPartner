@@ -1,5 +1,6 @@
 from uuid import UUID
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Query, Path
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -9,6 +10,8 @@ from app.services.knowledge_service import KnowledgeService
 from app.services.minio_service import MinioService
 from app.api.deps import get_current_user
 from app.models.user import User
+from app.models.knowledge import FileModel
+from app.core.exceptions import NotFoundError
 
 router = APIRouter()
 
@@ -35,4 +38,19 @@ async def get_download_url(
 ):
     await KnowledgeService.ensure_file_download_allowed(db, path, current_user)
     url = MinioService.get_download_url(path)
+    return BaseResponse.success(data={"url": url}, message="获取成功")
+
+
+@router.get("/{file_id}/download", summary="按文件 ID 获取文件下载直链")
+async def get_download_url_by_id(
+    file_id: UUID = Path(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(FileModel).where(FileModel.id == file_id))
+    db_file = result.scalars().first()
+    if not db_file:
+        raise NotFoundError("文件不存在")
+    await KnowledgeService.ensure_file_download_allowed(db, db_file.storage_path, current_user)
+    url = MinioService.get_download_url(db_file.storage_path)
     return BaseResponse.success(data={"url": url}, message="获取成功")

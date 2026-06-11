@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   Bot,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   FileText,
   GitBranch,
   Globe2,
@@ -19,6 +22,7 @@ import {
 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { learningPathApi } from '../../api/modules/learning_path'
+import { knowledgeApi } from '../../api/modules/knowledge'
 import type {
   ClassOut,
   LearningPathDetailOut,
@@ -28,6 +32,9 @@ import type {
 } from '../../api/modules/learning_path'
 import type { UserOut } from '../../api/modules/user'
 import StudentPickerDialog from '../../components/common/StudentPickerDialog.vue'
+
+const route = useRoute()
+const router = useRouter()
 
 const paths = ref<LearningPathTaskOut[]>([])
 const classes = ref<ClassOut[]>([])
@@ -41,6 +48,7 @@ const createPanelOpen = ref(false)
 const reviewDialogVisible = ref(false)
 const assigneePickerVisible = ref(false)
 const selectedAssigneeUsers = ref<UserOut[]>([])
+const graphScrollRef = ref<HTMLDivElement | null>(null)
 
 const pathForm = ref({
   title: '',
@@ -77,7 +85,9 @@ const loadInitialData = async () => {
     paths.value = pathRes.data || []
     classes.value = classRes.data || []
     if (paths.value.length > 0) {
-      await selectPath(paths.value[0])
+      const queryTaskId = typeof route.query.taskId === 'string' ? route.query.taskId : ''
+      const targetPath = paths.value.find(item => item.id === queryTaskId) || paths.value[0]
+      await selectPath(targetPath)
     }
   } catch (error) {
     console.warn('Failed to load learning path data', error)
@@ -103,6 +113,21 @@ const resetForm = () => {
 
 const handleAssigneesConfirm = (users: UserOut[]) => {
   selectedAssigneeUsers.value = users
+}
+
+const openCreatePage = () => {
+  router.push({ name: 'TeacherLearningPathCreate' })
+}
+
+const openStudentProgress = (item: Record<string, any>) => {
+  if (!selectedPath.value || !item.user_id) return
+  router.push({
+    name: 'TeacherLearningPathStudentProgress',
+    params: {
+      taskId: selectedPath.value.id,
+      studentId: item.user_id
+    }
+  })
 }
 
 const handleGeneratePlan = async () => {
@@ -276,14 +301,49 @@ const nodeIcon = (nodeType: string) => {
   return GraduationCap
 }
 
+const graphCanvasWidth = computed(() => Math.max(980, (detail.value?.nodes.length || 0) * 210))
+
 const graphPoints = (nodes: LearningPathNode[]) => {
-  const width = 920
+  const width = graphCanvasWidth.value - 120
   const gap = nodes.length > 1 ? width / (nodes.length - 1) : width
   return nodes.map((node, idx) => ({
     key: node.key || `node_${idx + 1}`,
-    x: 40 + idx * gap,
-    y: idx % 2 === 0 ? 74 : 146
+    x: 60 + idx * gap,
+    y: idx % 2 === 0 ? 78 : 152
   }))
+}
+
+const graphTitleLines = (title: string) => {
+  const clean = (title || '').trim()
+  if (clean.length <= 12) return [clean]
+  return [clean.slice(0, 12), clean.slice(12, 24)]
+}
+
+const handleGraphWheel = (event: WheelEvent) => {
+  if (!graphScrollRef.value) return
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+  event.preventDefault()
+  graphScrollRef.value.scrollBy({ left: event.deltaY, behavior: 'auto' })
+}
+
+const scrollGraph = (direction: -1 | 1) => {
+  graphScrollRef.value?.scrollBy({ left: direction * 420, behavior: 'smooth' })
+}
+
+const openResource = async (resource: Record<string, any>) => {
+  try {
+    if (resource.file_id) {
+      const res = await knowledgeApi.getFileDownloadUrl(resource.file_id)
+      const url = res.data?.url
+      if (url) window.open(url, '_blank')
+      return
+    }
+    const url = resource.url || (resource.bv_id ? `https://www.bilibili.com/video/${resource.bv_id}` : '')
+    if (url) window.open(url, '_blank')
+  } catch (error) {
+    console.warn('Failed to open learning path resource', error)
+    ElMessage.error('打开资源失败')
+  }
 }
 
 onMounted(loadInitialData)
@@ -298,7 +358,7 @@ onMounted(loadInitialData)
           <p class="mt-1 text-[10px] text-gray-400">教师规划、AI 拆解、学生逐步完成</p>
         </div>
         <button
-          @click="createPanelOpen = true"
+          @click="openCreatePage"
           class="p-2 rounded bg-gray-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
           title="新建学习路径"
         >
@@ -363,26 +423,53 @@ onMounted(loadInitialData)
             </button>
           </div>
 
-          <div class="mt-6 overflow-x-auto border border-gray-100 dark:border-zinc-800 rounded-lg bg-gray-50/50 dark:bg-zinc-950/40">
-            <svg :width="1000" height="220" class="min-w-[1000px]">
-              <template v-for="edge in detail.edges" :key="edge.id || `${edge.source_key}-${edge.target_key}`">
-                <line
-                  v-if="graphPoints(detail.nodes).find(p => p.key === edge.source_key) && graphPoints(detail.nodes).find(p => p.key === edge.target_key)"
-                  :x1="graphPoints(detail.nodes).find(p => p.key === edge.source_key)!.x"
-                  :y1="graphPoints(detail.nodes).find(p => p.key === edge.source_key)!.y"
-                  :x2="graphPoints(detail.nodes).find(p => p.key === edge.target_key)!.x"
-                  :y2="graphPoints(detail.nodes).find(p => p.key === edge.target_key)!.y"
-                  stroke="#93c5fd"
-                  stroke-width="2"
-                  stroke-dasharray="5 6"
-                />
-              </template>
-              <g v-for="(point, idx) in graphPoints(detail.nodes)" :key="point.key">
-                <circle :cx="point.x" :cy="point.y" r="24" fill="#ffffff" stroke="#2563eb" stroke-width="2" />
-                <text :x="point.x" :y="point.y + 4" text-anchor="middle" class="fill-blue-700 text-xs font-bold">{{ idx + 1 }}</text>
-                <text :x="point.x" :y="point.y + 46" text-anchor="middle" class="fill-gray-600 text-[10px]">{{ detail.nodes[idx].title.slice(0, 9) }}</text>
-              </g>
-            </svg>
+          <div class="relative mt-6 overflow-hidden rounded-lg border border-gray-100 bg-gray-50/50 dark:border-zinc-800 dark:bg-zinc-950/40">
+            <button
+              type="button"
+              @click="scrollGraph(-1)"
+              class="absolute left-3 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-gray-200 bg-white/90 text-gray-500 shadow-sm backdrop-blur hover:text-blue-600 dark:border-zinc-800 dark:bg-zinc-900/90"
+              title="向左浏览"
+            >
+              <ChevronLeft class="h-4 w-4" />
+            </button>
+            <div ref="graphScrollRef" class="scrollbar-none overflow-x-auto scroll-smooth" @wheel="handleGraphWheel">
+              <svg :width="graphCanvasWidth" height="260" :viewBox="`0 0 ${graphCanvasWidth} 260`">
+                <template v-for="edge in detail.edges" :key="edge.id || `${edge.source_key}-${edge.target_key}`">
+                  <line
+                    v-if="graphPoints(detail.nodes).find(p => p.key === edge.source_key) && graphPoints(detail.nodes).find(p => p.key === edge.target_key)"
+                    :x1="graphPoints(detail.nodes).find(p => p.key === edge.source_key)!.x"
+                    :y1="graphPoints(detail.nodes).find(p => p.key === edge.source_key)!.y"
+                    :x2="graphPoints(detail.nodes).find(p => p.key === edge.target_key)!.x"
+                    :y2="graphPoints(detail.nodes).find(p => p.key === edge.target_key)!.y"
+                    stroke="#93c5fd"
+                    stroke-width="2"
+                    stroke-dasharray="5 6"
+                  />
+                </template>
+                <g v-for="(point, idx) in graphPoints(detail.nodes)" :key="point.key">
+                  <circle :cx="point.x" :cy="point.y" r="26" fill="#ffffff" stroke="#2563eb" stroke-width="2" />
+                  <text :x="point.x" :y="point.y + 4" text-anchor="middle" class="fill-blue-700 text-xs font-bold">{{ idx + 1 }}</text>
+                  <text :x="point.x" :y="point.y + 48" text-anchor="middle" class="fill-gray-700 text-[10px] font-medium">
+                    <tspan
+                      v-for="(line, lineIdx) in graphTitleLines(detail.nodes[idx].title)"
+                      :key="lineIdx"
+                      :x="point.x"
+                      :dy="lineIdx === 0 ? 0 : 13"
+                    >
+                      {{ line }}
+                    </tspan>
+                  </text>
+                </g>
+              </svg>
+            </div>
+            <button
+              type="button"
+              @click="scrollGraph(1)"
+              class="absolute right-3 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-gray-200 bg-white/90 text-gray-500 shadow-sm backdrop-blur hover:text-blue-600 dark:border-zinc-800 dark:bg-zinc-900/90"
+              title="向右浏览"
+            >
+              <ChevronRight class="h-4 w-4" />
+            </button>
           </div>
         </div>
 
@@ -406,17 +493,18 @@ onMounted(loadInitialData)
                     </div>
                     <p class="mt-1 text-[11px] leading-relaxed text-gray-500 dark:text-zinc-400">{{ node.description || '暂无说明' }}</p>
                     <div v-if="node.resources.length" class="mt-3 flex flex-wrap gap-2">
-                      <a
+                      <button
                         v-for="res in node.resources"
                         :key="res.id || res.bv_id || res.url"
-                        :href="res.url"
-                        target="_blank"
+                        type="button"
+                        @click="openResource(res)"
                         class="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-blue-50 text-blue-700 dark:bg-blue-950/20 dark:text-blue-300"
                       >
                         <PlaySquare v-if="res.resource_type === 'bilibili'" class="w-3 h-3" />
+                        <FileText v-else-if="res.resource_type === 'file'" class="w-3 h-3" />
                         <Link v-else class="w-3 h-3" />
-                        <span>{{ res.title || res.bv_id || res.url }}</span>
-                      </a>
+                        <span>{{ res.title || res.bv_id || res.url || '附件' }}</span>
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -428,10 +516,12 @@ onMounted(loadInitialData)
             <div class="minimal-card bg-white dark:bg-zinc-900 p-6">
               <h3 class="text-sm font-semibold mb-4 text-gray-900 dark:text-zinc-50">学生进度</h3>
               <div class="space-y-3 max-h-72 overflow-y-auto">
-                <div
+                <button
                   v-for="item in detail.assignees"
                   :key="item.id"
-                  class="p-3 rounded-lg border border-gray-100 dark:border-zinc-800"
+                  type="button"
+                  @click="openStudentProgress(item)"
+                  class="w-full p-3 rounded-lg border border-gray-100 dark:border-zinc-800 text-left transition hover:border-blue-200 hover:bg-blue-50/50 dark:hover:border-blue-900 dark:hover:bg-blue-950/20"
                 >
                   <div class="flex items-center justify-between">
                     <span class="text-xs font-semibold text-gray-800 dark:text-zinc-200">{{ displayNameOf(item) }}</span>
@@ -441,7 +531,7 @@ onMounted(loadInitialData)
                   <div class="mt-2 h-1.5 bg-gray-100 dark:bg-zinc-800 rounded">
                     <div class="h-full bg-emerald-500 rounded" :style="{ width: `${Math.min(100, item.progress_percent || 0)}%` }"></div>
                   </div>
-                </div>
+                </button>
                 <div v-if="detail.assignees.length === 0" class="py-8 text-center text-xs text-gray-400">
                   尚未分配学生。
                 </div>
@@ -677,3 +767,14 @@ onMounted(loadInitialData)
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+</style>

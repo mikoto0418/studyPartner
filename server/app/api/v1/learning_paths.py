@@ -20,6 +20,7 @@ from app.schemas.learning_path import (
     LearningPathDetailOut,
     LearningPathGenerateReq,
     LearningPathPlanOut,
+    LearningPathStudentProgressOut,
     LearningPathTaskOut,
     LearningPathUpdate,
     StudentGrowthOverviewOut,
@@ -81,6 +82,17 @@ async def get_learning_path_detail(
 ):
     detail = await LearningPathService.get_path_detail(db, task_id, current_user)
     return BaseResponse.success(data=LearningPathDetailOut(**detail), message="获取成功")
+
+
+@router.get("/{task_id}/students/{student_id}", response_model=BaseResponse[LearningPathStudentProgressOut], summary="教师查看学生学习路径进度")
+async def get_learning_path_student_progress(
+    task_id: UUID = Path(...),
+    student_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    detail = await LearningPathService.get_student_path_progress(db, task_id, student_id, current_user.id)
+    return BaseResponse.success(data=LearningPathStudentProgressOut(**detail), message="获取成功")
 
 
 @router.put("/{task_id}", response_model=BaseResponse[LearningPathTaskOut], summary="教师微调学习路径任务")

@@ -109,6 +109,16 @@ export interface LearningPathDetailOut {
   submissions: Array<Record<string, any>>
 }
 
+export interface LearningPathStudentProgressOut {
+  task: LearningPathTaskOut
+  stages: LearningPathStage[]
+  nodes: LearningPathNode[]
+  edges: LearningPathEdge[]
+  student: Record<string, any>
+  assignee: Record<string, any>
+  submissions: Array<Record<string, any>>
+}
+
 export interface ClassOverviewOut {
   class_info: ClassOut
   metrics: Record<string, any>
@@ -210,6 +220,10 @@ export const learningPathApi = {
 
   getPathDetail(taskId: string) {
     return request.get(`/learning-paths/${taskId}`)
+  },
+
+  getStudentProgress(taskId: string, studentId: string) {
+    return request.get(`/learning-paths/${taskId}/students/${studentId}`)
   },
 
   submitNode(taskId: string, nodeId: string, data: { content?: string; attachment_ids?: string[]; mark_complete?: boolean }) {
