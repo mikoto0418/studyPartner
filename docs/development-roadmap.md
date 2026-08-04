@@ -552,7 +552,7 @@ const routes = [
 **验收标准**：
 
 - [ ] 管理员登录后跳转到 `/admin/dashboard`
-- [ ] 教师登录后跳转到 `/teacher/workspace`
+- [ ] 教师登录后跳转到 `/teacher/workbench`
 - [ ] 学生登录后跳转到 `/student/dashboard`
 - [ ] 三端布局各自独立，侧边栏菜单不同
 - [ ] 路由懒加载正常工作
@@ -1346,42 +1346,46 @@ DELETE /api/v1/notifications/{id}           # 删除通知
 
 | 字段 | 内容 |
 |------|------|
-| **任务名称** | 教师工作台（学生列表 + 任务统计） |
+| **任务名称** | 教师工作台（班级态势驾驶舱 + Agent 工作台） |
 | **优先级** | P1 |
 | **预估工时** | 3 天 |
 | **前置依赖** | 任务 3.2（任务系统） |
-| **涉及前端页面/组件** | `pages/teacher/Workspace.vue`、`pages/teacher/StudentList.vue`、`pages/teacher/StudentDetail.vue`、`pages/teacher/TaskStats.vue` |
-| **涉及后端 API** | `GET /api/v1/teacher/students`、`GET /api/v1/teacher/students/{id}/overview`、`GET /api/v1/teacher/tasks/stats` |
-| **涉及数据库表** | `teacher_student_relations`、`users`、`tasks`、`task_assignees`、`study_time_logs` |
+| **涉及前端页面/组件** | `views/teacher/WorkbenchView.vue`、`views/teacher/ClassOverviewView.vue`、`views/teacher/TasksView.vue`、`views/teacher/LearningPathsView.vue` |
+| **涉及后端 API** | `GET /api/v1/learning-paths/classes/list`、`GET /api/v1/learning-paths/classes/{class_id}/overview`、`GET /api/v1/tasks/`、`GET /api/v1/tasks/{task_id}`、`POST /api/v1/ai/chat/conversations/{id}/messages` |
+| **涉及数据库表** | `learning_classes`、`learning_class_members`、`learning_insights`、`learning_path_tasks`、`tasks`、`task_assignees`、`task_submissions`、`ai_conversations`、`ai_messages` |
 
 **后端 API 定义**：
 
 ```
-GET /api/v1/teacher/students
-  Response: [{ id, username, display_name, last_login_at, today_study_time, pending_tasks, completed_tasks }]
+GET /api/v1/learning-paths/classes/list
+  Response: [{ id, name, description, grade, subject, member_count, members }]
 
-GET /api/v1/teacher/students/{id}/overview
-  Response: { user_info, study_stats, recent_tasks, recent_behavior_summary }
+GET /api/v1/learning-paths/classes/{class_id}/overview
+  Response: { class_info, metrics, trend, memory_summary, insights, attention_students, recent_paths }
 
-GET /api/v1/teacher/tasks/stats
-  Response: { total_tasks, completion_rate, overdue_count, pending_review_count, by_student: [...] }
+GET /api/v1/tasks/
+  Response: [{ id, title, description, priority, status, due_date, created_at }]
+
+GET /api/v1/tasks/{task_id}
+  Response: { task, assignees, submissions }
 ```
 
 **前端工作内容**：
 
-1. 教师工作台首页（学生概览卡片 + 待处理任务 + 统计数据）
-2. 学生列表页面（学生信息 + 最近学习时长 + 任务完成率）
-3. 学生详情页面（学习概览 + 最近行为 + 任务列表）
-4. 任务统计面板（完成率 + 逾期率 + 按学生统计）
+1. 教师工作台首页（班级选择 + 核心指标 + 趋势 + 洞察 + 待办）
+2. 需关注学生区（显示风险原因、路径进度和真实洞察来源）
+3. 近期学习路径区（展示路径目标、截止日期、分配人数和平均进度）
+4. 待办队列（普通任务待批改 + 未处理洞察）
+5. 教师 Agent 工作台（基于当前班级快照生成简报、干预计划、分层任务草稿、反馈话术）
 
 **验收标准**：
 
-- [ ] 教师可以查看关联学生列表
-- [ ] 学生列表展示每个学生的基础学习数据
-- [ ] 教师可以进入学生详情查看学习概览
-- [ ] 教师工作台展示待审核的任务提交
-- [ ] 任务统计面板展示完成率和逾期情况
-- [ ] 教师只能查看自己关联的学生数据
+- [ ] 教师可以在工作台切换自己创建或管理的班级
+- [ ] 工作台展示班级人数、平均路径进度、需关注学生、待处理事项和学情记忆数
+- [ ] 工作台展示高优先级班级洞察，并支持标记已读或解决
+- [ ] 工作台展示待审核的任务提交，并可跳转到任务管理处理
+- [ ] 教师 Agent 动作只基于当前班级真实快照生成内容，不编造学生或任务
+- [ ] 教师只能查看自己有权限的班级、任务和学生数据
 
 ---
 

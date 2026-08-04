@@ -118,7 +118,7 @@ web/
 │   │   │   └── statistics.ts        # 平台统计
 │   │   └── teacher/                 # 教师专用 API
 │   │       ├── students.ts          # 学生列表/详情
-│   │       └── workspace.ts         # 教师工作台数据
+│   │       └── workbench.ts         # 教师工作台聚合数据（当前由 learning_path/task/ai_chat 组合）
 │   │
 │   ├── assets/                      # 静态资源（会被 Vite 处理）
 │   │   ├── images/                  # 图片资源
@@ -226,7 +226,7 @@ web/
 │   │   │   ├── DailyReviewPage.vue  # 每日复盘
 │   │   │   └── MemoryPage.vue       # 我的 Memory
 │   │   ├── teacher/                 # 教师端页面
-│   │   │   ├── WorkspacePage.vue    # 教师工作台
+│   │   │   ├── WorkbenchView.vue    # 教师工作台：班级态势驾驶舱 + Agent 工作台
 │   │   │   ├── StudentsPage.vue     # 学生列表
 │   │   │   ├── StudentDetailPage.vue # 学生详情
 │   │   │   ├── TaskManagePage.vue   # 任务管理
@@ -627,15 +627,15 @@ export const teacherRoutes: RouteRecordRaw[] = [
   {
     path: '/teacher',
     component: () => import('@/layouts/MainLayout.vue'),
-    redirect: '/teacher/workspace',
+    redirect: '/teacher/workbench',
     meta: { roles: ['teacher'] },
     children: [
       {
-        path: 'workspace',
-        name: 'TeacherWorkspace',
-        component: () => import('@/pages/teacher/WorkspacePage.vue'),
+        path: 'workbench',
+        name: 'TeacherWorkbench',
+        component: () => import('@/views/teacher/WorkbenchView.vue'),
         meta: {
-          title: '工作台',
+          title: '教学工作台',
           icon: 'i-ep-platform',
           order: 1,
         },
@@ -1041,7 +1041,7 @@ export function setupGuards(router: Router) {
 get homeRoute(): string {
   switch (this.role) {
     case 'student': return '/student/dashboard'
-    case 'teacher': return '/teacher/workspace'
+    case 'teacher': return '/teacher/workbench'
     case 'admin':   return '/admin/overview'
     default:        return '/login'
   }
@@ -1287,7 +1287,7 @@ export const useAuthStore = defineStore('auth', () => {
   const homeRoute = computed(() => {
     switch (role.value) {
       case 'student': return '/student/dashboard'
-      case 'teacher': return '/teacher/workspace'
+      case 'teacher': return '/teacher/workbench'
       case 'admin':   return '/admin/overview'
       default:        return '/login'
     }
@@ -3076,7 +3076,7 @@ export default defineConfig({
 
 | # | 页面 | 路由 | 布局描述 |
 |---|------|------|---------|
-| 1 | **工作台** | `/teacher/workspace` | 统计卡片（学生总数/活跃学生/待审任务/逾期任务），学生活跃排行，待处理事项列表，最近公告 |
+| 1 | **工作台** | `/teacher/workbench` | 班级态势驾驶舱：班级切换、核心指标、近 7 天路径趋势、高优先级洞察、需关注学生、近期路径、待办队列与教师 Agent 动作面板 |
 | 2 | **学生列表** | `/teacher/students` | 学生表格（头像/姓名/最近登录/学习时长/任务完成率/活跃度标签），搜索/筛选，点击进入详情 |
 | 3 | **学生详情** | `/teacher/students/:id` | 学生基本信息 + Tab 切换：学习概览/热力图/任务列表/复盘记录/学习计划 |
 | 4 | **任务管理** | `/teacher/tasks` | 任务列表（标题/分配对象/状态/截止日期/完成率），新建任务弹窗（标题/描述/分配对象/截止日期/附件上传） |

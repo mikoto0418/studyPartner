@@ -44,8 +44,6 @@ const routes: Array<RouteRecordRaw> = [
     path: '/',
     redirect: '/login'
   },
-  
-  // Student routes inside MainLayout
   {
     path: '/student',
     component: MainLayout,
@@ -67,7 +65,7 @@ const routes: Array<RouteRecordRaw> = [
         path: 'calendar',
         name: 'StudentCalendar',
         component: CalendarView,
-        meta: { title: '学习计划日历' }
+        meta: { title: '学习计划月历' }
       },
       {
         path: 'knowledge',
@@ -79,7 +77,7 @@ const routes: Array<RouteRecordRaw> = [
         path: 'bilibili',
         name: 'StudentBilibili',
         component: BilibiliView,
-        meta: { title: 'B站学习室' }
+        meta: { title: 'B 站学习室' }
       },
       {
         path: 'learning-paths',
@@ -95,8 +93,6 @@ const routes: Array<RouteRecordRaw> = [
       }
     ]
   },
-
-  // Teacher routes inside MainLayout
   {
     path: '/teacher',
     component: MainLayout,
@@ -152,8 +148,6 @@ const routes: Array<RouteRecordRaw> = [
       }
     ]
   },
-
-  // Admin routes inside MainLayout
   {
     path: '/admin',
     component: MainLayout,
@@ -191,8 +185,6 @@ const routes: Array<RouteRecordRaw> = [
       }
     ]
   },
-
-  // Common Profile inside MainLayout
   {
     path: '/common',
     component: MainLayout,
@@ -206,8 +198,6 @@ const routes: Array<RouteRecordRaw> = [
       }
     ]
   },
-
-  // 404 Route
   {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
@@ -221,9 +211,7 @@ const router = createRouter({
   routes
 })
 
-// Route Guards
 router.beforeEach((to, _from, next) => {
-  // Update document title
   if (to.meta.title) {
     document.title = `${to.meta.title} - AI伴学协同平台`
   }
@@ -231,35 +219,34 @@ router.beforeEach((to, _from, next) => {
   const token = localStorage.getItem('sp_token')
   const userRole = localStorage.getItem('sp_role')
 
-  // Check if target requires auth
   if (to.matched.some(record => record.meta.requiresAuth)) {
     if (!token) {
-      // Not logged in, redirect to login
       next('/login')
-    } else {
-      // User is logged in, check role if specified
-      const requiredRole = to.matched.find(record => record.meta.role)?.meta.role
-      if (requiredRole && requiredRole !== userRole) {
-        // Role mismatch, redirect to 403 Forbidden
-        next('/403')
-      } else {
-        next()
-      }
+      return
     }
-  } else {
-    // If accessing login but already logged in, redirect to respective dashboard
-    if (to.path === '/login' && token && userRole) {
-      if (userRole === 'admin') {
-        next('/admin/overview')
-      } else if (userRole === 'teacher') {
-        next('/teacher/workbench')
-      } else {
-        next('/student/dashboard')
-      }
-    } else {
-      next()
+
+    const requiredRole = to.matched.find(record => record.meta.role)?.meta.role
+    if (requiredRole && requiredRole !== userRole) {
+      next('/403')
+      return
     }
+
+    next()
+    return
   }
+
+  if (to.path === '/login' && token && userRole) {
+    if (userRole === 'admin') {
+      next('/admin/overview')
+    } else if (userRole === 'teacher') {
+      next('/teacher/workbench')
+    } else {
+      next('/student/dashboard')
+    }
+    return
+  }
+
+  next()
 })
 
 export default router
