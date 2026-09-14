@@ -13,6 +13,7 @@ import KnowledgeView from '../views/student/KnowledgeView.vue'
 import BilibiliView from '../views/student/BilibiliView.vue'
 import StudentLearningPathsView from '../views/student/LearningPathsView.vue'
 import GrowthView from '../views/student/GrowthView.vue'
+import MemoryWikiView from '../views/student/MemoryWikiView.vue'
 
 import WorkbenchView from '../views/teacher/WorkbenchView.vue'
 import StudentsView from '../views/teacher/StudentsView.vue'
@@ -90,6 +91,12 @@ const routes: Array<RouteRecordRaw> = [
         name: 'StudentGrowth',
         component: GrowthView,
         meta: { title: '成长数据全览' }
+      },
+      {
+        path: 'memory-wiki',
+        name: 'StudentMemoryWiki',
+        component: MemoryWikiView,
+        meta: { title: '记忆 Wiki' }
       }
     ]
   },

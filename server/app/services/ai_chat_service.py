@@ -18,6 +18,7 @@ from app.models.task import Task, TaskAssignee
 from app.models.calendar_event import CalendarEvent
 from app.models.student_memory import StudentMemory
 from app.schemas.ai_conversation import ContextOptions
+from app.services.memory_wiki_service import MemoryWikiService
 from app.core.llm import llm_router, ChatMessage
 from app.core.exceptions import NotFoundError, ValidationError
 
@@ -129,7 +130,12 @@ class AIChatService:
         return list(res.scalars().all()), total
 
     @staticmethod
-    async def build_context_system_prompt(db: AsyncSession, user_id: UUID, options: ContextOptions) -> str:
+    async def build_context_system_prompt(
+        db: AsyncSession,
+        user_id: UUID,
+        options: ContextOptions,
+        query: Optional[str] = None,
+    ) -> str:
         """Assembles user profile, TODOs, tasks, and memory databases to build a highly personal prompt."""
         system_instructions = [
             "你是一个温和、严谨且充满智慧的 AI 伴学智能体助手（Notion/Linear 极简伴学平台灵魂伙伴）。",
@@ -162,20 +168,27 @@ class AIChatService:
 
         # 2. Memories Context
         if options.include_memory:
-            mem_stmt = select(StudentMemory).where(
-                and_(
-                    StudentMemory.user_id == user_id,
-                    StudentMemory.status == "active"
-                )
+            # Memory Wiki first (retrieval-based, top-k). Fallback to legacy flat memories.
+            wiki_memory = await MemoryWikiService.build_memory_context(
+                db, user_id, query=query, max_pages=8
             )
-            mem_res = await db.execute(mem_stmt)
-            memories = mem_res.scalars().all()
-            if memories:
-                mem_str = "【学生学习画像 & 记忆（Memory）】\n"
-                for idx, m in enumerate(memories):
-                    m_type_zh = "习惯/偏好" if m.memory_type == "long_term" else "阶段焦点"
-                    mem_str += f"{idx+1}. [{m.category}/{m_type_zh}] {m.content} (置信度: {m.confidence:.1f})\n"
-                system_instructions.append(mem_str)
+            if wiki_memory:
+                system_instructions.append(wiki_memory)
+            else:
+                mem_stmt = select(StudentMemory).where(
+                    and_(
+                        StudentMemory.user_id == user_id,
+                        StudentMemory.status == "active"
+                    )
+                )
+                mem_res = await db.execute(mem_stmt)
+                memories = mem_res.scalars().all()
+                if memories:
+                    mem_str = "【学生学习画像 & 记忆（Memory）】\n"
+                    for idx, m in enumerate(memories):
+                        m_type_zh = "习惯/偏好" if m.memory_type == "long_term" else "阶段焦点"
+                        mem_str += f"{idx+1}. [{m.category}/{m_type_zh}] {m.content} (置信度: {m.confidence:.1f})\n"
+                    system_instructions.append(mem_str)
 
         # 3. TODOs Context
         if options.include_todos:
@@ -252,7 +265,7 @@ class AIChatService:
         db_messages.reverse() # Restore timeline order
 
         # 3. Build system prompt injecting user data contexts
-        system_prompt = await AIChatService.build_context_system_prompt(db, user_id, options)
+        system_prompt = await AIChatService.build_context_system_prompt(db, user_id, options, query=content)
 
         # 4. Map to ChatMessage classes
         messages: List[ChatMessage] = [ChatMessage(role="system", content=system_prompt)]

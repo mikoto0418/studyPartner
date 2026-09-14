@@ -17,7 +17,8 @@ import {
   GitBranch,
   BarChart3,
   TrendingUp,
-  Megaphone
+  Megaphone,
+  Brain
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -60,6 +61,7 @@ const menuItems = computed(() => {
     return [
       { name: '仪表盘', path: '/student/dashboard', icon: LayoutDashboard },
       { name: 'AI伴学', path: '/student/ai-chat', icon: MessageSquare },
+      { name: '记忆 Wiki', path: '/student/memory-wiki', icon: Brain },
       { name: '月历计划', path: '/student/calendar', icon: Calendar },
       { name: '知识库', path: '/student/knowledge', icon: BookOpen },
       { name: 'B站学习', path: '/student/bilibili', icon: Tv },

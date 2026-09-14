@@ -18,6 +18,7 @@ from app.models.bilibili import StudyTimeLog, BilibiliWatchLog
 from app.models.knowledge import FileModel
 from app.core.llm import llm_router, ChatMessage
 from app.core.exceptions import NotFoundError, ValidationError
+from app.services.memory_wiki_service import MemoryWikiService
 
 logger = logging.getLogger(__name__)
 
@@ -583,7 +584,13 @@ class MemoryService:
             db.add(review)
             await db.commit()
             await db.refresh(review)
-            
+
+            # Sync into Memory Wiki incrementally (deterministic fallback pipeline)
+            try:
+                await MemoryWikiService.ingest_daily_review(db, student_id, review)
+            except Exception as wiki_err:
+                logger.warning(f"Memory Wiki ingest failed for student {student_id}: {wiki_err}", exc_info=True)
+
             logger.info(f"Successfully generated daily review for student {student_id} on {review_date}")
             return review
 

@@ -9,6 +9,7 @@ from app.models.notification import Notification
 from app.models.llm import LLMProviderConfig, LLMUsageLog
 from app.models.ai_conversation import AIConversation, AIMessage
 from app.models.student_memory import DailyReview, StudentMemory
+from app.models.memory_wiki import MemoryPage, MemorySource, MemoryLink, MemoryEvent, MemoryReviewTask
 from app.models.knowledge import FileModel, KnowledgeDocument, KnowledgeChunk
 from app.models.bilibili import StudyTimeLog, BilibiliResource, BilibiliWatchLog
 from app.models.learning_path import (
@@ -36,6 +37,7 @@ __all__ = [
     "LLMProviderConfig", "LLMUsageLog",
     "AIConversation", "AIMessage",
     "DailyReview", "StudentMemory",
+    "MemoryPage", "MemorySource", "MemoryLink", "MemoryEvent", "MemoryReviewTask",
     "FileModel", "KnowledgeDocument", "KnowledgeChunk",
     "StudyTimeLog", "BilibiliResource", "BilibiliWatchLog",
     "ClassGroup", "ClassMember",

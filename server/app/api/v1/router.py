@@ -13,6 +13,7 @@ from app.api.v1 import (
     knowledge,
     learning_paths,
     memory,
+    memory_wiki,
     notes,
     notifications,
     reviews,
@@ -36,6 +37,7 @@ api_router.include_router(calendar.router, prefix="/calendar", tags=["日历日�
 api_router.include_router(notifications.router, prefix="/notifications", tags=["通知中心"])
 api_router.include_router(ai_chat.router, prefix="/ai/chat", tags=["AI 对话"])
 api_router.include_router(memory.router, prefix="/ai/memory", tags=["AI Memory"])
+api_router.include_router(memory_wiki.router, prefix="/memory-wiki", tags=["Memory Wiki"])
 api_router.include_router(reviews.router, prefix="/reviews", tags=["每日复盘"])
 api_router.include_router(files.router, prefix="/files", tags=["文件系统"])
 api_router.include_router(knowledge.router, prefix="/knowledge", tags=["知识库中心"])
