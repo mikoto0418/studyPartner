@@ -177,6 +177,13 @@ class AssessmentService:
         paper.question_count = len(questions)
         paper.total_score = total_score
         paper.parse_status = "awaiting_review"
+        # 回到「待发布」就必须清掉上一次的预约：否则 beat 会按残留的 publish_at
+        # 自动发布，而且失败时存的是未解析的 raw_target（可能含他人班级 id、
+        # 且没有 due_at），教师会拿到一份没点过发布、也没有截止时间的试卷。
+        paper.publish_at = None
+        paper.publish_target = None
+        paper.published_at = None
+        paper.parse_error = None
         await db.commit()
         await db.refresh(paper)
         return paper
@@ -218,8 +225,13 @@ class AssessmentService:
                 target["blacklist"] = blacklist
             else:
                 target.pop("blacklist", None)
+            # 解析为空说明这些学生全都不在当前教师班内，必须 pop 掉：
+            # 保留原始值的话 _is_targeted 会拿未解析的 ID 做字符串比对，
+            # 把试卷发给其他教师班级的学生。
             if subset:
                 target["student_ids"] = subset
+            else:
+                target.pop("student_ids", None)
 
             ttype = str(target.get("type") or "").strip()
             if ttype == "student":
@@ -256,6 +268,16 @@ class AssessmentService:
             await db.commit()
             await db.refresh(paper)
             raise
+        except (TypeError, ValueError):
+            # publish_target 是自由 dict，内层值没有 schema 校验。解析途中出现
+            # 未预期的类型错误时也要落到 publish_failed，而不是冒到全局变成 500。
+            paper.publish_target = raw_target
+            paper.publish_at = publish_at
+            paper.parse_status = "publish_failed"
+            paper.parse_error = "发布对象格式不正确"
+            await db.commit()
+            await db.refresh(paper)
+            raise ValidationError("发布对象格式不正确")
 
         if due_at is not None:
             target["due_at"] = due_at.isoformat()
@@ -431,9 +453,15 @@ class AssessmentService:
             return default
 
     @staticmethod
-    def _to_uuid_list(items: List[Any]) -> List[UUID]:
+    def _to_uuid_list(items: Any) -> List[UUID]:
+        # publish_target 是自由 dict，内层值不受 schema 约束。标量（如 ids: 1）
+        # 直接迭代会抛 TypeError 冒到全局兜底变成 500，这里统一收敛为「无有效值」。
+        if isinstance(items, (str, UUID)):
+            items = [items]
+        elif not isinstance(items, (list, tuple, set)):
+            return []
         out: List[UUID] = []
-        for it in items or []:
+        for it in items:
             try:
                 out.append(UUID(str(it)))
             except (ValueError, TypeError):
@@ -512,6 +540,9 @@ class AssessmentService:
     ) -> List[str]:
         if isinstance(values, str):
             values = [values]
+        elif values and not isinstance(values, (list, tuple, set)):
+            # 同上：whitelist / student_ids 传成标量时不能让迭代炸成 500
+            return []
         if not values:
             return []
         resolved: List[str] = []
@@ -890,6 +921,19 @@ class AssessmentService:
         )
         if attempt.status != "in_progress":
             raise ValidationError("已交卷，不能重复提交")
+
+        # 过期后仍要放行交卷（否则到点自动交卷会被服务端拒绝），但不能再接收新答案：
+        # 否则学生等到截止后照常作答、再调这个接口，答案就会被写库并计分，
+        # due_at 对答案内容等于没有约束力。
+        paper = (
+            await db.execute(
+                select(AssessmentPaper).where(AssessmentPaper.id == attempt.paper_id)
+            )
+        ).scalars().first()
+        due_at = AssessmentService._due_at_of(paper) if paper else None
+        if due_at is not None and datetime.now(timezone.utc) > due_at:
+            logger.info("Attempt %s submitted after due_at; ignoring client answers", attempt.id)
+            return await AssessmentService._finalize_attempt(db, attempt)
 
         await AssessmentService._upsert_answers(db, attempt, answers)
         return await AssessmentService._finalize_attempt(db, attempt)
