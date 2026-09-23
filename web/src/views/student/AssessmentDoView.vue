@@ -22,6 +22,9 @@ const starting = ref(false)
 const started = ref(false)
 const dueAt = ref<string | null>(null)
 const remainingSeconds = ref<number | null>(null)
+// 截止后「从未开考」的试卷：startAttempt 会 400，此时没有 attempt、拿不到
+// due_at，只能靠这个标志落到 isExpired 分支，否则页面停在空白卷面出不去。
+const blockedByExpiry = ref(false)
 const questions = ref<StudentQuestion[]>([])
 const attempt = ref<StudentAttempt | null>(null)
 const answers = ref<Record<string, any>>({})
@@ -53,7 +56,9 @@ const showOverlay = computed(
   () => started.value && !submitted.value && antiCheat.fullscreenExitCount.value > 0 && !antiCheat.fullscreenActive.value
 )
 
-const isExpired = computed(() => remainingSeconds.value !== null && remainingSeconds.value <= 0)
+const isExpired = computed(
+  () => blockedByExpiry.value || (remainingSeconds.value !== null && remainingSeconds.value <= 0)
+)
 
 const formattedRemaining = computed(() => {
   if (remainingSeconds.value === null) return ''
@@ -267,8 +272,10 @@ const load = async () => {
       aRes = await assessmentApi.startAttempt(paperId)
     } catch (err) {
       if (isExpiredError(err)) {
-        // 走已有的 isExpired 分支，给出明确的「已超过截止时间」提示
-        remainingSeconds.value = 0
+        // 走已有的 isExpired 分支，给出明确的「已超过截止时间」提示。
+        // 不能只置 remainingSeconds：此时 dueAt 还是空的，syncRemaining()
+        // 会把它重置回 null，isExpired 又变 false，页面退回死路。
+        blockedByExpiry.value = true
         return
       }
       throw err
