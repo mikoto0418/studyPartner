@@ -77,9 +77,10 @@ function hasMeaningfulDraft(): boolean {
     blacklistIds.value.trim() ||
     selectedClassId.value ||
     selectedStudentIds.value.length ||
-    selectedGuidedStudentIds.value.length ||
-    selectedFile.value
+    selectedGuidedStudentIds.value.length
   )
+  // 注意：不要把 selectedFile 计入草稿判定 —— File 对象无法 JSON 序列化，
+  // 写进 localStorage 的草稿里并不含它，恢复出来会是一份空草稿。
 }
 
 function buildDraft() {

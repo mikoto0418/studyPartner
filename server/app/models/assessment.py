@@ -66,6 +66,9 @@ class AssessmentAssignment(BaseModel):
 
 class AssessmentAttempt(BaseModel):
     __tablename__ = "assessment_attempts"
+    __table_args__ = (
+        UniqueConstraint("paper_id", "student_id", name="uq_assessment_attempts_paper_student"),
+    )
 
     paper_id = Column(UUID(as_uuid=True), ForeignKey("assessment_papers.id", ondelete="CASCADE"), nullable=False, index=True)
     student_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)

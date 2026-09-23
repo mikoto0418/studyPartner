@@ -146,6 +146,17 @@ class StudentAnswersReq(BaseModel):
     answers: List[StudentAnswerIn] = Field(default_factory=list)
 
 
+class StudentAnswerOut(BaseModel):
+    question_id: UUID
+    answer: Optional[Any] = None
+
+
+class StudentAnswersOut(BaseModel):
+    attempt_id: Optional[UUID] = None
+    status: Optional[str] = None
+    answers: List[StudentAnswerOut] = Field(default_factory=list)
+
+
 class BehaviorEventIn(BaseModel):
     event_type: str
     payload: Optional[dict] = None
@@ -156,6 +167,30 @@ class BehaviorBatchReq(BaseModel):
     session_id: str = Field(..., max_length=64)
     attempt_id: Optional[UUID] = None
     events: List[BehaviorEventIn] = Field(default_factory=list, max_length=200)
+
+
+class AttemptAnswerOut(BaseModel):
+    question_id: UUID
+    order_index: int
+    question_type: str
+    stem: str
+    options: Optional[List[dict]] = None
+    reference_answer: Optional[Any] = None
+    max_score: float
+    answer: Optional[Any] = None
+    score: float = 0.0
+    graded: bool = False
+    is_correct: Optional[bool] = None
+
+
+class GradeItemIn(BaseModel):
+    question_id: UUID
+    score: float = 0.0
+
+
+class GradeAttemptReq(BaseModel):
+    grades: List[GradeItemIn] = Field(default_factory=list)
+    finalize: bool = True
 
 
 class AttemptMonitorOut(BaseModel):
@@ -171,6 +206,7 @@ class AttemptMonitorOut(BaseModel):
     suspicious: bool
     event_count: int
     flagged_count: int
+    pending_grade_count: int = 0
 
 
 class BehaviorEventOut(BaseModel):

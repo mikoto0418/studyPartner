@@ -26,6 +26,7 @@ const questions = ref<StudentQuestion[]>([])
 const attempt = ref<StudentAttempt | null>(null)
 const answers = ref<Record<string, any>>({})
 const submitted = ref(false)
+const pendingReview = ref(false)
 const result = ref<StudentAttempt | null>(null)
 const elapsedSeconds = ref(0)
 
@@ -33,6 +34,9 @@ let sessionId = ''
 let timer: number | undefined
 let autosaveTimer: number | undefined
 let countdownTimer: number | undefined
+// 自动交卷只触发一次：失败后交给学生手动交卷，避免每秒刷屏重试
+let expirySubmitTriggered = false
+let violationSubmitTriggered = false
 
 const generateSessionId = () => {
   try {
@@ -80,14 +84,15 @@ const typeLabel = (t: string) => {
   return map[t] || '题目'
 }
 
+// 必须把 promise 交回给 useAntiCheat：上报失败时它会把这批事件放回队列重投
 const reportEvents = (events: BehaviorEventPayload[]) => {
-  assessmentApi
+  return assessmentApi
     .reportBehavior({
       session_id: sessionId,
       attempt_id: attempt.value?.id ?? null,
       events
     })
-    .catch(() => {})
+    .then(() => undefined)
 }
 
 const submit = async (auto = false) => {
@@ -113,6 +118,9 @@ const submit = async (auto = false) => {
 }
 
 const handleAutoSubmit = async () => {
+  // onMaxViolations 在每次「已超上限的退出全屏」时都会回调，只处理一次
+  if (violationSubmitTriggered || submitted.value) return
+  violationSubmitTriggered = true
   ElMessageBox.alert('你已连续多次退出全屏，本次作答将自动交卷。', '防作弊提醒', {
     confirmButtonText: '知道了'
   })
@@ -193,7 +201,8 @@ const syncRemaining = () => {
 const tickCountdown = () => {
   if (remainingSeconds.value === null || submitted.value) return
   syncRemaining()
-  if (remainingSeconds.value <= 0) {
+  if (remainingSeconds.value <= 0 && !expirySubmitTriggered) {
+    expirySubmitTriggered = true
     ElMessage.warning('已到截止时间，正在自动交卷')
     submit(true)
   }
@@ -226,10 +235,12 @@ const load = async () => {
     questions.value = qRes.data || []
     attempt.value = aRes.data
 
-    if (attempt.value && attempt.value.status === 'submitted') {
+    // pending_review：客观题已判分、主观题待批改，同样属于已交卷，不能再作答
+    if (attempt.value && (attempt.value.status === 'submitted' || attempt.value.status === 'pending_review')) {
       result.value = attempt.value
       submitted.value = true
-      ElMessage.info('该试卷已交卷，无法重复作答')
+      pendingReview.value = attempt.value.status === 'pending_review'
+      ElMessage.info(pendingReview.value ? '该试卷已交卷，等待老师批改' : '该试卷已交卷，无法重复作答')
       loading.value = false
       return
     }
@@ -246,8 +257,20 @@ const load = async () => {
       return map
     }
 
-    // 已存在的草稿答案通过重新请求无法获取，这里仅初始化空答案
+    // 回填已保存的答案，否则学生刷新后会看到空白卷面，
+    // 而库里那些答案仍在参与判分。
     answers.value = prefill(questions.value)
+    try {
+      const savedRes = await assessmentApi.getStudentAnswers(paperId)
+      const saved: Array<{ question_id: string; answer?: any }> = savedRes.data?.answers || []
+      saved.forEach((item) => {
+        if (item.question_id in answers.value) {
+          answers.value[item.question_id] = item.answer
+        }
+      })
+    } catch {
+      // 回读失败时保留空白卷面，不阻断作答
+    }
 
     // 截止时间仅用于前端提示，真正的拦截在后端
     try {
@@ -314,7 +337,11 @@ onUnmounted(() => {
 
     <div v-if="result" class="surface-panel p-8 text-center">
       <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">本次作答已提交</p>
-      <p class="mt-2 text-xs text-gray-400">得分 {{ result.score ?? 0 }} 分 · 用时 {{ result.duration_seconds ?? 0 }} 秒</p>
+      <p v-if="pendingReview" class="mt-2 text-xs text-amber-500">
+        含主观题，待老师批改后给出最终成绩（当前客观题得分 {{ result.score ?? 0 }} 分）
+      </p>
+      <p v-else class="mt-2 text-xs text-gray-400">得分 {{ result.score ?? 0 }} 分 · 用时 {{ result.duration_seconds ?? 0 }} 秒</p>
+      <p v-if="pendingReview" class="mt-1 text-xs text-gray-400">用时 {{ result.duration_seconds ?? 0 }} 秒</p>
       <button class="ui-button-primary mt-4" @click="router.push('/student/assessment')">返回试卷列表</button>
     </div>
 

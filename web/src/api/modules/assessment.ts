@@ -81,10 +81,35 @@ export interface StudentAnswerIn {
   answer?: any
 }
 
+export interface StudentAnswerOut {
+  question_id: string
+  answer?: any
+}
+
+export interface StudentAnswersOut {
+  attempt_id?: string | null
+  status?: string | null
+  answers: StudentAnswerOut[]
+}
+
 export interface BehaviorEventPayload {
   event_type: string
   payload?: Record<string, any>
   occurred_at?: string
+}
+
+export interface AttemptAnswer {
+  question_id: string
+  order_index: number
+  question_type: string
+  stem: string
+  options?: any[] | null
+  reference_answer?: any
+  max_score: number
+  answer?: any
+  score: number
+  graded: boolean
+  is_correct?: boolean | null
 }
 
 export interface AttemptMonitor {
@@ -100,6 +125,7 @@ export interface AttemptMonitor {
   suspicious: boolean
   event_count: number
   flagged_count: number
+  pending_grade_count: number
 }
 
 export interface BehaviorEventOut {
@@ -167,6 +193,10 @@ export const assessmentApi = {
     return request.post(`/assessment/student/papers/${paperId}/attempts`)
   },
 
+  getStudentAnswers(paperId: string) {
+    return request.get(`/assessment/student/papers/${paperId}/answers`)
+  },
+
   saveAnswers(attemptId: string, answers: StudentAnswerIn[]) {
     return request.put(`/assessment/student/attempts/${attemptId}/answers`, { answers })
   },
@@ -189,5 +219,13 @@ export const assessmentApi = {
 
   listAttemptBehavior(attemptId: string) {
     return request.get(`/assessment/attempts/${attemptId}/behavior`)
+  },
+
+  listAttemptAnswers(attemptId: string) {
+    return request.get(`/assessment/attempts/${attemptId}/answers`)
+  },
+
+  gradeAttempt(attemptId: string, grades: { question_id: string; score: number }[], finalize = true) {
+    return request.post(`/assessment/attempts/${attemptId}/grade`, { grades, finalize })
   }
 }

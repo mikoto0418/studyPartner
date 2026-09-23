@@ -18,8 +18,11 @@ from app.schemas.assessment import (
     ParseStatusOut,
     QuestionsSaveReq,
     StudentAnswersReq,
+    StudentAnswersOut,
     StudentAttemptOut,
     StudentPaperOut,
+    AttemptAnswerOut,
+    GradeAttemptReq,
     StudentQuestionOut,
 )
 from app.schemas.common import BaseResponse
@@ -167,6 +170,41 @@ async def list_attempt_behavior(
 
 
 @router.get(
+    "/attempts/{attempt_id}/answers",
+    response_model=BaseResponse[List[AttemptAnswerOut]],
+    summary="教师查看某次作答的逐题答案（用于批改主观题）",
+)
+async def list_attempt_answers(
+    attempt_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    answers = await AssessmentService.list_attempt_answers(db, attempt_id, current_user.id)
+    return BaseResponse.success(
+        data=[AttemptAnswerOut(**a) for a in answers],
+        message="获取成功",
+    )
+
+
+@router.post(
+    "/attempts/{attempt_id}/grade",
+    response_model=BaseResponse[StudentAttemptOut],
+    summary="教师批改主观题并重算总分",
+)
+async def grade_attempt(
+    attempt_id: UUID = Path(...),
+    req: GradeAttemptReq = Body(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    grades = [{"question_id": g.question_id, "score": g.score} for g in req.grades]
+    attempt = await AssessmentService.grade_attempt(
+        db, attempt_id, current_user.id, grades, finalize=req.finalize
+    )
+    return BaseResponse.success(data=StudentAttemptOut.model_validate(attempt), message="批改已保存")
+
+
+@router.get(
     "/student/papers",
     response_model=BaseResponse[List[StudentPaperOut]],
     summary="学生端已发布试卷列表",
@@ -227,6 +265,23 @@ async def student_save_answers(
     answers = [{"question_id": a.question_id, "answer": a.answer} for a in req.answers]
     await AssessmentService.save_answers(db, attempt_id, current_user.id, answers)
     return BaseResponse.success(message="已保存")
+
+
+@router.get(
+    "/student/papers/{paper_id}/answers",
+    response_model=BaseResponse[StudentAnswersOut],
+    summary="学生回读自己已保存的作答",
+)
+async def student_get_answers(
+    paper_id: UUID = Path(...),
+    current_user: User = Depends(require_student),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await AssessmentService.get_student_answers(db, paper_id, current_user.id)
+    return BaseResponse.success(
+        data=StudentAnswersOut(**data),
+        message="获取成功",
+    )
 
 
 @router.post(

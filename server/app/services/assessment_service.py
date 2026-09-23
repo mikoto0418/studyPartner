@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, PermissionDenied, ValidationError
@@ -20,7 +21,7 @@ from app.models.assessment import (
     BehaviorEvent,
 )
 from app.models.knowledge import FileModel
-from app.models.learning_path import ClassMember
+from app.models.learning_path import ClassGroup, ClassMember
 from app.models.user import StudentProfile, User
 from app.services.minio_service import MinioService
 from app.services import question_parser as question_parser_module
@@ -29,6 +30,9 @@ from app.utils.parser import extract_images, parse_document
 IMG_RE = re.compile(r"\[\[IMG:(\d+)\]\]")
 
 logger = logging.getLogger(__name__)
+
+# 与前端 useAntiCheat({ maxFullscreenExits: 3 }) 保持一致
+FULLSCREEN_EXIT_LIMIT = 3
 
 
 class AssessmentService:
@@ -190,9 +194,15 @@ class AssessmentService:
 
         target = dict(raw_target)
         try:
-            whitelist = await AssessmentService._resolve_student_identifiers(db, target.get("whitelist") or [])
-            blacklist = await AssessmentService._resolve_student_identifiers(db, target.get("blacklist") or [])
-            subset = await AssessmentService._resolve_student_identifiers(db, target.get("student_ids") or [])
+            whitelist = await AssessmentService._resolve_student_identifiers(
+                db, target.get("whitelist") or [], teacher_id
+            )
+            blacklist = await AssessmentService._resolve_student_identifiers(
+                db, target.get("blacklist") or [], teacher_id
+            )
+            subset = await AssessmentService._resolve_student_identifiers(
+                db, target.get("student_ids") or [], teacher_id
+            )
 
             if whitelist:
                 target["whitelist"] = whitelist
@@ -206,7 +216,9 @@ class AssessmentService:
                 target["student_ids"] = subset
 
             if str(target.get("type") or "").strip() == "student":
-                resolved_ids = await AssessmentService._resolve_student_identifiers(db, target.get("ids") or [])
+                resolved_ids = await AssessmentService._resolve_student_identifiers(
+                    db, target.get("ids") or [], teacher_id
+                )
                 if not resolved_ids:
                     raise ValidationError("未匹配到任何有效学生，请检查学号 / 用户名 / 学生 ID")
                 target["ids"] = resolved_ids
@@ -294,7 +306,7 @@ class AssessmentService:
         attempt_ids = [a.id for a, _, _ in rows]
 
         stats: Dict[UUID, Dict[str, int]] = {
-            aid: {"total": 0, "flagged": 0} for aid in attempt_ids
+            aid: {"total": 0, "flagged": 0, "pending": 0} for aid in attempt_ids
         }
         if attempt_ids:
             event_rows = await db.execute(
@@ -313,9 +325,22 @@ class AssessmentService:
                 if event_type in AssessmentService.BEHAVIOR_FLAG_TYPES:
                     stats[aid]["flagged"] += cnt
 
+        if attempt_ids:
+            pending_rows = await db.execute(
+                select(AssessmentAnswer.attempt_id, func.count(AssessmentAnswer.id))
+                .where(
+                    AssessmentAnswer.attempt_id.in_(attempt_ids),
+                    AssessmentAnswer.graded.is_(False),
+                )
+                .group_by(AssessmentAnswer.attempt_id)
+            )
+            for aid, cnt in pending_rows.all():
+                if aid in stats:
+                    stats[aid]["pending"] = cnt
+
         out: List[Dict[str, Any]] = []
         for attempt, nickname, username in rows:
-            s = stats.get(attempt.id, {"total": 0, "flagged": 0})
+            s = stats.get(attempt.id, {"total": 0, "flagged": 0, "pending": 0})
             out.append(
                 {
                     "id": attempt.id,
@@ -330,6 +355,7 @@ class AssessmentService:
                     "suspicious": bool(attempt.suspicious or s["flagged"] > 0),
                     "event_count": s["total"],
                     "flagged_count": s["flagged"],
+                    "pending_grade_count": s["pending"],
                 }
             )
         return out
@@ -367,6 +393,15 @@ class AssessmentService:
             }
             for e in events
         ]
+
+    @staticmethod
+    def _to_float_safe(value: Any, default: float) -> float:
+        try:
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     @staticmethod
     def _to_uuid_list(items: List[Any]) -> List[UUID]:
@@ -427,7 +462,27 @@ class AssessmentService:
         return AssessmentService._norm(answer) == AssessmentService._norm(question.answer)
 
     @staticmethod
-    async def _resolve_student_identifiers(db: AsyncSession, values: List[Any]) -> List[str]:
+    async def _own_student_ids(db: AsyncSession, teacher_id: UUID, student_ids: List[str]) -> set:
+        """返回其中确实属于该教师所带班级的学生 id 集合。"""
+        ids = AssessmentService._to_uuid_list(student_ids)
+        if not ids:
+            return set()
+        result = await db.execute(
+            select(ClassMember.user_id)
+            .join(ClassGroup, ClassGroup.id == ClassMember.class_id)
+            .where(
+                ClassGroup.teacher_id == teacher_id,
+                ClassMember.user_id.in_(ids),
+                ClassMember.status == "active",
+                ClassMember.deleted_at.is_(None),
+            )
+        )
+        return {str(uid) for uid in result.scalars().all()}
+
+    @staticmethod
+    async def _resolve_student_identifiers(
+        db: AsyncSession, values: List[Any], teacher_id: Optional[UUID] = None
+    ) -> List[str]:
         if isinstance(values, str):
             values = [values]
         if not values:
@@ -461,6 +516,11 @@ class AssessmentService:
             if match and str(match.id) not in seen:
                 seen.add(str(match.id))
                 resolved.append(str(match.id))
+
+        # 限定为自己班级的学生，避免教师把试卷指派给非本班学生
+        if teacher_id is not None and resolved:
+            own = await AssessmentService._own_student_ids(db, teacher_id, resolved)
+            resolved = [sid for sid in resolved if sid in own]
         return resolved
 
     @staticmethod
@@ -605,7 +665,7 @@ class AssessmentService:
         paper = await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
         attempt = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
         if attempt:
-            return attempt
+            return await AssessmentService._enforce_violation_limit(db, attempt)
 
         AssessmentService._ensure_not_expired(paper)
         attempt = AssessmentAttempt(
@@ -615,7 +675,15 @@ class AssessmentService:
             started_at=datetime.now(timezone.utc),
         )
         db.add(attempt)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            # 并发下另一个请求已建好作答，(paper_id, student_id) 唯一约束兜底
+            await db.rollback()
+            existing = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
+            if existing:
+                return existing
+            raise
         await db.refresh(attempt)
         return attempt
 
@@ -679,9 +747,11 @@ class AssessmentService:
         否则到点自动交卷会被服务端拒绝，学生反而交不了卷。
         """
         result = await db.execute(
-            select(AssessmentAttempt).where(
+            select(AssessmentAttempt)
+            .where(
                 AssessmentAttempt.id == attempt_id, AssessmentAttempt.student_id == student_id
             )
+            .with_for_update()
         )
         attempt = result.scalars().first()
         if not attempt:
@@ -703,10 +773,64 @@ class AssessmentService:
         db: AsyncSession, attempt_id: UUID, student_id: UUID, answers: List[Dict[str, Any]]
     ) -> None:
         attempt = await AssessmentService._load_student_attempt(db, attempt_id, student_id)
+        # 违规次数已超限时在此收口：绕过前端自动交卷继续保存也拦得住
+        attempt = await AssessmentService._enforce_violation_limit(db, attempt)
         if attempt.status != "in_progress":
             raise ValidationError("已交卷，无法继续保存")
         await AssessmentService._upsert_answers(db, attempt, answers)
         await db.commit()
+
+    @staticmethod
+    async def _finalize_attempt(db: AsyncSession, attempt: AssessmentAttempt) -> AssessmentAttempt:
+        """按已落库的答案结算一次作答：算总分并定状态。"""
+        answered = await db.execute(
+            select(AssessmentAnswer).where(
+                AssessmentAnswer.attempt_id == attempt.id,
+                AssessmentAnswer.question_id.in_(
+                    select(AssessmentQuestion.id).where(AssessmentQuestion.paper_id == attempt.paper_id)
+                ),
+            )
+        )
+        attempt.score = sum(a.score or 0.0 for a in answered.scalars().all())
+
+        pending = await db.execute(
+            select(func.count(AssessmentAnswer.id)).where(
+                AssessmentAnswer.attempt_id == attempt.id,
+                AssessmentAnswer.graded.is_(False),
+            )
+        )
+        # 存在未批改的主观题时不直接定分，等教师批改后再落最终分
+        attempt.status = "pending_review" if (pending.scalar() or 0) > 0 else "submitted"
+        attempt.submitted_at = datetime.now(timezone.utc)
+        if attempt.started_at:
+            attempt.duration_seconds = max(
+                0, int((attempt.submitted_at - attempt.started_at).total_seconds())
+            )
+        await db.commit()
+        await db.refresh(attempt)
+        return attempt
+
+    @staticmethod
+    async def _enforce_violation_limit(
+        db: AsyncSession, attempt: AssessmentAttempt
+    ) -> AssessmentAttempt:
+        """退出全屏达到上限时由服务端强制交卷。
+
+        前端计数只存在内存 ref 里，刷新页面即可清零；不在这里兜底的话，
+        「连续退出全屏自动交卷」形同虚设。
+        """
+        if attempt.status != "in_progress":
+            return attempt
+        count = await db.execute(
+            select(func.count(BehaviorEvent.id)).where(
+                BehaviorEvent.attempt_id == attempt.id,
+                BehaviorEvent.event_type == "fullscreen_exit",
+            )
+        )
+        if (count.scalar() or 0) < AssessmentService.FULLSCREEN_EXIT_LIMIT:
+            return attempt
+        logger.info("Attempt %s exceeded fullscreen-exit limit; force submitting", attempt.id)
+        return await AssessmentService._finalize_attempt(db, attempt)
 
     @staticmethod
     async def submit_attempt(
@@ -719,27 +843,132 @@ class AssessmentService:
             raise ValidationError("已交卷，不能重复提交")
 
         await AssessmentService._upsert_answers(db, attempt, answers)
+        return await AssessmentService._finalize_attempt(db, attempt)
 
-        answered = await db.execute(
-            select(AssessmentAnswer).where(
-                AssessmentAnswer.attempt_id == attempt.id,
-                AssessmentAnswer.question_id.in_(
-                    select(AssessmentQuestion.id).where(AssessmentQuestion.paper_id == attempt.paper_id)
-                ),
-            )
+    @staticmethod
+    async def get_student_answers(
+        db: AsyncSession, paper_id: UUID, student_id: UUID
+    ) -> Dict[str, Any]:
+        """学生回读自己已保存的作答。
+
+        过期后仍允许读取（只是不能再改），否则学生刷新页面就会看到空白卷面，
+        而已保存的答案仍在库里参与判分。
+        """
+        await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
+        attempt = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
+        if not attempt:
+            return {"attempt_id": None, "status": None, "answers": []}
+        rows = await db.execute(
+            select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id)
         )
-        total = sum(a.score or 0.0 for a in answered.scalars().all())
+        return {
+            "attempt_id": attempt.id,
+            "status": attempt.status,
+            "answers": [
+                {"question_id": a.question_id, "answer": a.answer}
+                for a in rows.scalars().all()
+            ],
+        }
 
-        attempt.score = total
-        attempt.status = "submitted"
-        attempt.submitted_at = datetime.now(timezone.utc)
-        if attempt.started_at:
-            attempt.duration_seconds = max(
-                0, int((attempt.submitted_at - attempt.started_at).total_seconds())
+    @staticmethod
+    async def grade_attempt(
+        db: AsyncSession,
+        attempt_id: UUID,
+        teacher_id: UUID,
+        grades: List[Dict[str, Any]],
+        finalize: bool = True,
+    ) -> AssessmentAttempt:
+        """教师批改主观题：逐题给分，全部批完后重算总分并置为已交卷。"""
+        attempt = (
+            await db.execute(
+                select(AssessmentAttempt).where(AssessmentAttempt.id == attempt_id)
             )
+        ).scalars().first()
+        if not attempt:
+            raise NotFoundError("作答记录不存在")
+        await AssessmentService.get_paper(db, attempt.paper_id, teacher_id)
+
+        rows = (
+            await db.execute(
+                select(AssessmentAnswer, AssessmentQuestion)
+                .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
+                .where(AssessmentAnswer.attempt_id == attempt_id)
+            )
+        ).all()
+        by_question = {q.id: (a, q) for a, q in rows}
+
+        for g in grades:
+            try:
+                qid = UUID(str(g.get("question_id")))
+            except (ValueError, TypeError):
+                continue
+            pair = by_question.get(qid)
+            if not pair:
+                continue
+            answer_row, question = pair
+            if question.question_type not in ("short", "essay", "fill"):
+                continue
+            raw = AssessmentService._to_float_safe(g.get("score"), 0.0)
+            answer_row.score = max(0.0, min(float(question.score or 0.0), raw))
+            answer_row.graded = True
+            answer_row.is_correct = None
+
+        if finalize:
+            answered = await db.execute(
+                select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt_id)
+            )
+            attempt.score = sum(a.score or 0.0 for a in answered.scalars().all())
+            # 仍有未给分的主观题时必须停在待批改，否则剩余题目会被永久锁成 0 分。
+            still_pending = await db.execute(
+                select(func.count(AssessmentAnswer.id)).where(
+                    AssessmentAnswer.attempt_id == attempt_id,
+                    AssessmentAnswer.graded.is_(False),
+                )
+            )
+            attempt.status = "pending_review" if (still_pending.scalar() or 0) > 0 else "submitted"
+
         await db.commit()
         await db.refresh(attempt)
         return attempt
+
+    @staticmethod
+    async def list_attempt_answers(
+        db: AsyncSession, attempt_id: UUID, teacher_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """教师查看某次作答的逐题答案，用于批改。"""
+        attempt = (
+            await db.execute(
+                select(AssessmentAttempt).where(AssessmentAttempt.id == attempt_id)
+            )
+        ).scalars().first()
+        if not attempt:
+            raise NotFoundError("作答记录不存在")
+        await AssessmentService.get_paper(db, attempt.paper_id, teacher_id)
+
+        rows = (
+            await db.execute(
+                select(AssessmentAnswer, AssessmentQuestion)
+                .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
+                .where(AssessmentAnswer.attempt_id == attempt_id)
+                .order_by(AssessmentQuestion.order_index.asc())
+            )
+        ).all()
+        return [
+            {
+                "question_id": q.id,
+                "order_index": q.order_index,
+                "question_type": q.question_type,
+                "stem": q.stem,
+                "options": q.options,
+                "reference_answer": q.answer,
+                "max_score": q.score,
+                "answer": a.answer,
+                "score": a.score,
+                "graded": a.graded,
+                "is_correct": a.is_correct,
+            }
+            for a, q in rows
+        ]
 
     @staticmethod
     async def batch_save_behavior(

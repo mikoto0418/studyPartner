@@ -2,10 +2,14 @@ import { onBeforeUnmount, ref } from 'vue'
 import type { BehaviorEventPayload } from '../api/modules/assessment'
 
 export interface AntiCheatCallbacks {
-  reportEvents: (events: BehaviorEventPayload[]) => void
+  // 允许返回 Promise，失败时可把事件放回队列重投
+  reportEvents: (events: BehaviorEventPayload[]) => void | Promise<void>
   onFullscreenExit?: (count: number) => void
   onMaxViolations?: () => void
 }
+
+// 离线时事件会积压在内存里，设上限避免无限增长
+const MAX_QUEUE_SIZE = 500
 
 interface FocusState {
   startedAt: number
@@ -45,16 +49,26 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   const iso = () => new Date().toISOString()
 
   const push = (event_type: string, payload: Record<string, any> = {}) => {
+    if (queue.length >= MAX_QUEUE_SIZE) queue.shift()
     queue.push({ event_type, payload, occurred_at: iso() })
   }
 
   const flush = () => {
     if (!queue.length) return
     const batch = queue.splice(0, queue.length)
+    // 上报失败就把这批事件放回队首，等下一次 flush 重投；
+    // 否则一次网络抖动就会让这段作答永久没有行为证据。
+    const requeue = () => {
+      if (queue.length + batch.length > MAX_QUEUE_SIZE) return
+      queue.unshift(...batch)
+    }
     try {
-      reportEvents(batch)
+      const res = reportEvents(batch)
+      if (res && typeof (res as Promise<void>).catch === 'function') {
+        ;(res as Promise<void>).catch(requeue)
+      }
     } catch (err) {
-      // 上报失败不阻断作答
+      requeue()
     }
   }
 

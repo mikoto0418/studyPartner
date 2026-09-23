@@ -21,14 +21,24 @@ const loadPapers = async () => {
   }
 }
 
+// 主观题未批完时后端返回 pending_review，此时分数只是客观题小计，不能当最终成绩展示
 const statusMeta = (paper: StudentPaper) => {
   if (paper.attempt_status === 'submitted') {
     return { label: `已交卷 · 得分 ${paper.attempt_score ?? 0}`, tone: 'green' }
+  }
+  if (paper.attempt_status === 'pending_review') {
+    return { label: '已交卷 · 待老师批改', tone: 'amber' }
   }
   if (paper.attempt_status === 'in_progress') {
     return { label: '继续作答', tone: 'blue' }
   }
   return { label: '开始作答', tone: 'blue' }
+}
+
+const toneClass: Record<string, string> = {
+  green: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400',
+  amber: 'bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-400',
+  blue: 'bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400'
 }
 
 const formatDate = (iso?: string | null) => {
@@ -40,6 +50,10 @@ const formatDate = (iso?: string | null) => {
 const startPaper = (paper: StudentPaper) => {
   if (paper.attempt_status === 'submitted') {
     ElMessage.info('该试卷已交卷，无法重复作答')
+    return
+  }
+  if (paper.attempt_status === 'pending_review') {
+    ElMessage.info('该试卷已交卷，等待老师批改')
     return
   }
   router.push(`/student/assessment/${paper.id}`)
@@ -78,11 +92,9 @@ onMounted(loadPapers)
           </div>
           <span
             class="flex-shrink-0 rounded px-2 py-1 text-[10px] font-semibold"
-            :class="paper.attempt_status === 'submitted'
-              ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400'
-              : paper.attempt_status === 'in_progress'
-                ? 'bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400'
-                : 'bg-gray-100 text-gray-500 dark:bg-zinc-800 dark:text-zinc-400'"
+            :class="paper.attempt_status
+              ? toneClass[statusMeta(paper).tone]
+              : 'bg-gray-100 text-gray-500 dark:bg-zinc-800 dark:text-zinc-400'"
           >
             {{ statusMeta(paper).label }}
           </span>

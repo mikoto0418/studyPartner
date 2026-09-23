@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ShieldAlert, Eye, Clock, FileText } from 'lucide-vue-next'
+import { ElMessage } from 'element-plus'
+import { ShieldAlert, Eye, Clock, FileText, PenLine } from 'lucide-vue-next'
 import {
   assessmentApi,
   type AssessmentPaper,
   type AttemptMonitor,
+  type AttemptAnswer,
   type BehaviorEventOut
 } from '../../api/modules/assessment'
+import RichStem from '../../components/assessment/RichStem.vue'
+import MathText from '../../components/common/MathText.vue'
 
 const route = useRoute()
 
@@ -22,6 +26,13 @@ const behaviorLoading = ref(false)
 const behaviorEvents = ref<BehaviorEventOut[]>([])
 const currentAttempt = ref<AttemptMonitor | null>(null)
 const questionMap = ref<Record<string, number>>({})
+
+const gradeDrawer = ref(false)
+const gradeLoading = ref(false)
+const gradeSubmitting = ref(false)
+const gradeAnswers = ref<AttemptAnswer[]>([])
+const gradeScores = ref<Record<string, number>>({})
+const gradingAttempt = ref<AttemptMonitor | null>(null)
 
 const EVENT_LABELS: Record<string, string> = {
   session_start: '开始作答',
@@ -98,9 +109,38 @@ const statusLabel = (s: string) => {
   const map: Record<string, string> = {
     in_progress: '作答中',
     submitted: '已交卷',
+    pending_review: '待批改',
     expired: '已过期'
   }
   return map[s] || s
+}
+
+const statusToneClass = (s: string) => {
+  if (s === 'submitted') return 'bg-green-50 text-green-600 dark:bg-green-950/30 dark:text-green-400'
+  if (s === 'pending_review') return 'bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-400'
+  return 'bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400'
+}
+
+const typeLabel = (t: string) => {
+  const map: Record<string, string> = {
+    single: '单选题',
+    multiple: '多选题',
+    judge: '判断题',
+    fill: '填空题',
+    short: '简答题',
+    essay: '论述题'
+  }
+  return map[t] || '题目'
+}
+
+// 主观题与填空题允许教师给分；客观题由后端自动判分，此处只读展示
+const isManualType = (t: string) => t === 'short' || t === 'essay' || t === 'fill'
+
+const formatAnswer = (v: any) => {
+  if (v == null || v === '') return '（未作答）'
+  if (Array.isArray(v)) return v.length ? v.join('、') : '（未作答）'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
 }
 
 const TARGET_LABELS: Record<string, string> = {
@@ -219,6 +259,49 @@ const openBehavior = async (attempt: AttemptMonitor) => {
   }
 }
 
+const openGrading = async (attempt: AttemptMonitor) => {
+  gradingAttempt.value = attempt
+  gradeDrawer.value = true
+  gradeLoading.value = true
+  gradeAnswers.value = []
+  gradeScores.value = {}
+  try {
+    const res = await assessmentApi.listAttemptAnswers(attempt.id)
+    const items: AttemptAnswer[] = res.data || []
+    gradeAnswers.value = items
+    const scores: Record<string, number> = {}
+    items.forEach((a) => {
+      if (isManualType(a.question_type)) {
+        scores[a.question_id] = Number(a.score ?? 0)
+      }
+    })
+    gradeScores.value = scores
+  } catch {
+    gradeAnswers.value = []
+  } finally {
+    gradeLoading.value = false
+  }
+}
+
+const submitGrades = async () => {
+  if (!gradingAttempt.value) return
+  const grades = Object.entries(gradeScores.value).map(([question_id, score]) => ({
+    question_id,
+    score: Number(score) || 0
+  }))
+  gradeSubmitting.value = true
+  try {
+    await assessmentApi.gradeAttempt(gradingAttempt.value.id, grades, true)
+    ElMessage.success('批改已保存')
+    gradeDrawer.value = false
+    await loadAttempts()
+  } catch {
+    // 错误已由拦截器提示
+  } finally {
+    gradeSubmitting.value = false
+  }
+}
+
 onMounted(loadPapers)
 </script>
 
@@ -278,9 +361,7 @@ onMounted(loadPapers)
           <template #default="{ row }">
             <span
               class="rounded px-2 py-0.5 text-[11px]"
-              :class="row.status === 'submitted'
-                ? 'bg-green-50 text-green-600 dark:bg-green-950/30 dark:text-green-400'
-                : 'bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400'"
+              :class="statusToneClass(row.status)"
             >{{ statusLabel(row.status) }}</span>
           </template>
         </el-table-column>
@@ -315,8 +396,18 @@ onMounted(loadPapers)
         <el-table-column label="提交时间" width="160">
           <template #default="{ row }">{{ formatTime(row.submitted_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="170" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="row.pending_grade_count > 0"
+              size="small"
+              text
+              type="warning"
+              :icon="PenLine"
+              @click="openGrading(row)"
+            >
+              批改 ({{ row.pending_grade_count }})
+            </el-button>
             <el-button size="small" text type="primary" :icon="Eye" @click="openBehavior(row)">
               行为明细
             </el-button>
@@ -359,6 +450,103 @@ onMounted(loadPapers)
           暂无行为记录
         </div>
       </div>
+    </el-drawer>
+
+    <el-drawer
+      v-model="gradeDrawer"
+      :title="gradingAttempt ? `批改 · ${gradingAttempt.student_name}` : '批改'"
+      size="620px"
+    >
+      <div v-loading="gradeLoading" class="space-y-3 px-1">
+        <div
+          v-for="a in gradeAnswers"
+          :key="a.question_id"
+          class="rounded-lg border border-gray-100 px-3 py-3 dark:border-zinc-800"
+        >
+          <div class="mb-2 flex items-center gap-2">
+            <span class="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+              第 {{ a.order_index + 1 }} 题
+            </span>
+            <span class="rounded bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">
+              {{ typeLabel(a.question_type) }} · 满分 {{ a.max_score }}
+            </span>
+            <span
+              v-if="a.graded"
+              class="rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400"
+            >
+              已批 {{ a.score }} 分
+            </span>
+            <span
+              v-else
+              class="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-600 dark:bg-amber-950/30 dark:text-amber-400"
+            >
+              待批改
+            </span>
+          </div>
+
+          <RichStem :stem="a.stem" class="text-sm leading-relaxed text-gray-800 dark:text-zinc-100" />
+
+          <div v-if="a.options && a.options.length" class="mt-2 space-y-1">
+            <div
+              v-for="opt in a.options"
+              :key="opt.key"
+              class="rounded border border-gray-100 px-2 py-1 text-xs text-gray-600 dark:border-zinc-800 dark:text-zinc-300"
+            >
+              <span class="font-semibold">{{ opt.key }}.</span>
+              <MathText :text="opt.text" class="ml-1" />
+            </div>
+          </div>
+
+          <div class="mt-3 rounded bg-gray-50 px-3 py-2 dark:bg-zinc-900/60">
+            <p class="text-[11px] font-semibold text-gray-400">学生作答</p>
+            <p class="mt-1 whitespace-pre-wrap text-sm text-gray-800 dark:text-zinc-100">
+              {{ formatAnswer(a.answer) }}
+            </p>
+          </div>
+
+          <div
+            v-if="a.reference_answer != null && a.reference_answer !== ''"
+            class="mt-2 rounded bg-emerald-50/60 px-3 py-2 dark:bg-emerald-950/20"
+          >
+            <p class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">参考答案</p>
+            <p class="mt-1 whitespace-pre-wrap text-sm text-emerald-800 dark:text-emerald-200">
+              {{ formatAnswer(a.reference_answer) }}
+            </p>
+          </div>
+
+          <div v-if="isManualType(a.question_type)" class="mt-3 flex items-center gap-2">
+            <span class="text-xs text-gray-500 dark:text-zinc-400">给分</span>
+            <el-input-number
+              v-model="gradeScores[a.question_id]"
+              :min="0"
+              :max="a.max_score"
+              :step="1"
+              size="small"
+              controls-position="right"
+              class="w-28"
+            />
+            <span class="text-xs text-gray-400">/ {{ a.max_score }}</span>
+          </div>
+        </div>
+
+        <div v-if="!gradeAnswers.length && !gradeLoading" class="py-12 text-center text-sm text-gray-400">
+          暂无作答内容
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <el-button @click="gradeDrawer = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="gradeSubmitting"
+            :disabled="!gradeAnswers.length"
+            @click="submitGrades"
+          >
+            保存批改
+          </el-button>
+        </div>
+      </template>
     </el-drawer>
   </div>
 </template>

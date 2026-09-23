@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.module import FeatureModule
@@ -34,22 +35,42 @@ class ModuleService:
     async def sync_modules(db: AsyncSession) -> None:
         result = await db.execute(select(FeatureModule))
         existing = {m.code: m for m in result.unique().scalars().all()}
+
+        missing = [
+            {
+                "code": item["code"],
+                "name": item["name"],
+                "description": item.get("description"),
+                "roles": item["roles"],
+                "enabled": True,
+                "visible": True,
+            }
+            for item in MODULE_REGISTRY
+            if item["code"] not in existing
+        ]
+        dirty = False
         for item in MODULE_REGISTRY:
             m = existing.get(item["code"])
             if m is None:
-                db.add(
-                    FeatureModule(
-                        code=item["code"],
-                        name=item["name"],
-                        description=item.get("description"),
-                        roles=item["roles"],
-                    )
-                )
                 continue
             if m.name != item["name"]:
                 m.name = item["name"]
+                dirty = True
             if m.roles != item["roles"]:
                 m.roles = item["roles"]
+                dirty = True
+
+        if not missing and not dirty:
+            # 读路径无写入，避免 GET 触发写事务与并发唯一约束冲突
+            return
+
+        if missing:
+            # 并发下另一个请求可能已插入同样的 code，交给 ON CONFLICT 兜底
+            await db.execute(
+                pg_insert(FeatureModule).values(missing).on_conflict_do_nothing(
+                    index_elements=["code"]
+                )
+            )
         await db.commit()
 
     @staticmethod
