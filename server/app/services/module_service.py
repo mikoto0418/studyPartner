@@ -59,6 +59,9 @@ class ModuleService:
             if m.roles != item["roles"]:
                 m.roles = item["roles"]
                 dirty = True
+            if (m.description or None) != (item.get("description") or None):
+                m.description = item.get("description")
+                dirty = True
 
         if not missing and not dirty:
             # 读路径无写入，避免 GET 触发写事务与并发唯一约束冲突

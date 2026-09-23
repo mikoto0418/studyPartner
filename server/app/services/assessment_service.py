@@ -917,10 +917,12 @@ class AssessmentService:
         ).scalars().first()
         if not attempt:
             raise NotFoundError("作答记录不存在")
+        # 先做所有权校验再判状态：反过来的话，非本人试卷的 in_progress 作答
+        # 会返回 400「尚未交卷」而非 404，成了可枚举的探测预言机。
+        await AssessmentService.get_paper(db, attempt.paper_id, teacher_id)
         # 未交卷的作答不能批：批完会把状态改成已交卷，学生会被锁死在考试中
         if attempt.status == "in_progress":
             raise ValidationError("该作答尚未交卷，无法批改")
-        await AssessmentService.get_paper(db, attempt.paper_id, teacher_id)
 
         rows = (
             await db.execute(

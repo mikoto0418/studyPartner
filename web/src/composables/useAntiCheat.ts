@@ -59,7 +59,11 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     // 上报失败就把这批事件放回队首，等下一次 flush 重投；
     // 否则一次网络抖动就会让这段作答永久没有行为证据。
     const requeue = () => {
-      if (queue.length + batch.length > MAX_QUEUE_SIZE) return
+      if (queue.length + batch.length > MAX_QUEUE_SIZE) {
+        // 队列已满，这批只能丢弃；留个痕迹，否则行为证据会无声消失。
+        console.warn(`[anti-cheat] 行为事件队列已满，丢弃 ${batch.length} 条事件`)
+        return
+      }
       queue.unshift(...batch)
     }
     try {

@@ -34,6 +34,7 @@ let sessionId = ''
 let timer: number | undefined
 let autosaveTimer: number | undefined
 let countdownTimer: number | undefined
+let unmounted = false
 // 自动交卷只触发一次：失败后交给学生手动交卷，避免每秒刷屏重试
 let expirySubmitTriggered = false
 let violationSubmitTriggered = false
@@ -114,6 +115,9 @@ const submit = async (auto = false) => {
     ElMessage.success(auto ? '已自动交卷' : '交卷成功')
     return true
   } catch (err) {
+    // 竞态：autosave 的服务端强制交卷先落地时，再交卷会撞「不能重复提交」。
+    // 此时本地已被 autosave 的分支切到已交卷态，不该报错，也不该复位状态。
+    if (submitted.value && result.value) return true
     submitted.value = false
     ElMessage.error(auto ? '自动交卷失败，请手动点击交卷' : '交卷失败，请重试')
     return false
@@ -305,6 +309,8 @@ const load = async () => {
 
 onMounted(async () => {
   await load()
+  // load 期间可能已经切走；此时 onUnmounted 早已跑完，再建 interval 就没人清了。
+  if (unmounted) return
   if (!submitted.value) tickCountdown()
   timer = window.setInterval(() => {
     if (!submitted.value && started.value) elapsedSeconds.value += 1
@@ -313,6 +319,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  unmounted = true
   if (timer) clearInterval(timer)
   if (countdownTimer) clearInterval(countdownTimer)
   if (autosaveTimer) clearTimeout(autosaveTimer)
