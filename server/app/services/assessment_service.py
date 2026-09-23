@@ -328,9 +328,11 @@ class AssessmentService:
         if attempt_ids:
             pending_rows = await db.execute(
                 select(AssessmentAnswer.attempt_id, func.count(AssessmentAnswer.id))
+                .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
                 .where(
                     AssessmentAnswer.attempt_id.in_(attempt_ids),
                     AssessmentAnswer.graded.is_(False),
+                    AssessmentQuestion.paper_id == paper_id,
                 )
                 .group_by(AssessmentAnswer.attempt_id)
             )
@@ -771,18 +773,33 @@ class AssessmentService:
     @staticmethod
     async def save_answers(
         db: AsyncSession, attempt_id: UUID, student_id: UUID, answers: List[Dict[str, Any]]
-    ) -> None:
+    ) -> Optional[AssessmentAttempt]:
+        """保存草稿。
+
+        返回非 None 表示本次保存触发了服务端强制交卷（违规超限），
+        调用方需要把该 attempt 回给学生，让前端同步切到已交卷态。
+        """
         attempt = await AssessmentService._load_student_attempt(db, attempt_id, student_id)
-        # 违规次数已超限时在此收口：绕过前端自动交卷继续保存也拦得住
-        attempt = await AssessmentService._enforce_violation_limit(db, attempt)
         if attempt.status != "in_progress":
             raise ValidationError("已交卷，无法继续保存")
+
+        # 先把答案落库再判定是否强制交卷：反过来的话，学生最后一次输入会丢。
         await AssessmentService._upsert_answers(db, attempt, answers)
-        await db.commit()
+        await db.flush()
+
+        if not await AssessmentService._violation_limit_reached(db, attempt):
+            await db.commit()
+            return None
+
+        logger.info("Attempt %s exceeded fullscreen-exit limit on save; force submitting", attempt.id)
+        return await AssessmentService._finalize_attempt(db, attempt)
 
     @staticmethod
     async def _finalize_attempt(db: AsyncSession, attempt: AssessmentAttempt) -> AssessmentAttempt:
         """按已落库的答案结算一次作答：算总分并定状态。"""
+        # 会话是 autoflush=False，刚 db.add() 的答案行对下面的 SELECT 不可见，
+        # 必须先 flush，否则新作答不计入总分、pending 也统计不到（主观题会被锁成 0 分）。
+        await db.flush()
         answered = await db.execute(
             select(AssessmentAnswer).where(
                 AssessmentAnswer.attempt_id == attempt.id,
@@ -797,6 +814,9 @@ class AssessmentService:
             select(func.count(AssessmentAnswer.id)).where(
                 AssessmentAnswer.attempt_id == attempt.id,
                 AssessmentAnswer.graded.is_(False),
+                AssessmentAnswer.question_id.in_(
+                    select(AssessmentQuestion.id).where(AssessmentQuestion.paper_id == attempt.paper_id)
+                ),
             )
         )
         # 存在未批改的主观题时不直接定分，等教师批改后再落最终分
@@ -811,26 +831,30 @@ class AssessmentService:
         return attempt
 
     @staticmethod
-    async def _enforce_violation_limit(
-        db: AsyncSession, attempt: AssessmentAttempt
-    ) -> AssessmentAttempt:
-        """退出全屏达到上限时由服务端强制交卷。
+    async def _violation_limit_reached(db: AsyncSession, attempt: AssessmentAttempt) -> bool:
+        """退出全屏次数是否已达上限。
 
-        前端计数只存在内存 ref 里，刷新页面即可清零；不在这里兜底的话，
-        「连续退出全屏自动交卷」形同虚设。
+        前端计数只存在内存 ref 里，刷新即清零，必须由服务端按 behavior_events 独立判定。
         """
         if attempt.status != "in_progress":
-            return attempt
+            return False
         count = await db.execute(
             select(func.count(BehaviorEvent.id)).where(
                 BehaviorEvent.attempt_id == attempt.id,
                 BehaviorEvent.event_type == "fullscreen_exit",
             )
         )
-        if (count.scalar() or 0) < AssessmentService.FULLSCREEN_EXIT_LIMIT:
-            return attempt
-        logger.info("Attempt %s exceeded fullscreen-exit limit; force submitting", attempt.id)
-        return await AssessmentService._finalize_attempt(db, attempt)
+        return (count.scalar() or 0) >= AssessmentService.FULLSCREEN_EXIT_LIMIT
+
+    @staticmethod
+    async def _enforce_violation_limit(
+        db: AsyncSession, attempt: AssessmentAttempt
+    ) -> AssessmentAttempt:
+        """违规超限时由服务端强制交卷（进入作答时兜底）。"""
+        if await AssessmentService._violation_limit_reached(db, attempt):
+            logger.info("Attempt %s exceeded fullscreen-exit limit; force submitting", attempt.id)
+            return await AssessmentService._finalize_attempt(db, attempt)
+        return attempt
 
     @staticmethod
     async def submit_attempt(
@@ -859,7 +883,12 @@ class AssessmentService:
         if not attempt:
             return {"attempt_id": None, "status": None, "answers": []}
         rows = await db.execute(
-            select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id)
+            select(AssessmentAnswer).where(
+                AssessmentAnswer.attempt_id == attempt.id,
+                AssessmentAnswer.question_id.in_(
+                    select(AssessmentQuestion.id).where(AssessmentQuestion.paper_id == paper_id)
+                ),
+            )
         )
         return {
             "attempt_id": attempt.id,
@@ -886,13 +915,19 @@ class AssessmentService:
         ).scalars().first()
         if not attempt:
             raise NotFoundError("作答记录不存在")
+        # 未交卷的作答不能批：批完会把状态改成已交卷，学生会被锁死在考试中
+        if attempt.status == "in_progress":
+            raise ValidationError("该作答尚未交卷，无法批改")
         await AssessmentService.get_paper(db, attempt.paper_id, teacher_id)
 
         rows = (
             await db.execute(
                 select(AssessmentAnswer, AssessmentQuestion)
                 .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
-                .where(AssessmentAnswer.attempt_id == attempt_id)
+                .where(
+                    AssessmentAnswer.attempt_id == attempt_id,
+                    AssessmentQuestion.paper_id == attempt.paper_id,
+                )
             )
         ).all()
         by_question = {q.id: (a, q) for a, q in rows}
@@ -906,7 +941,8 @@ class AssessmentService:
             if not pair:
                 continue
             answer_row, question = pair
-            if question.question_type not in ("short", "essay", "fill"):
+            # fill 由 _judge 自动判分（见 _upsert_answers），此处只处理主观题
+            if question.question_type not in ("short", "essay"):
                 continue
             raw = AssessmentService._to_float_safe(g.get("score"), 0.0)
             answer_row.score = max(0.0, min(float(question.score or 0.0), raw))
@@ -914,8 +950,17 @@ class AssessmentService:
             answer_row.is_correct = None
 
         if finalize:
+            # autoflush=False：上面刚改的 graded/score 只在内存里，
+            # 不 flush 的话下面的统计读不到，状态会永远停在 pending_review。
+            await db.flush()
+            in_paper = select(AssessmentQuestion.id).where(
+                AssessmentQuestion.paper_id == attempt.paper_id
+            )
             answered = await db.execute(
-                select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt_id)
+                select(AssessmentAnswer).where(
+                    AssessmentAnswer.attempt_id == attempt_id,
+                    AssessmentAnswer.question_id.in_(in_paper),
+                )
             )
             attempt.score = sum(a.score or 0.0 for a in answered.scalars().all())
             # 仍有未给分的主观题时必须停在待批改，否则剩余题目会被永久锁成 0 分。
@@ -923,6 +968,7 @@ class AssessmentService:
                 select(func.count(AssessmentAnswer.id)).where(
                     AssessmentAnswer.attempt_id == attempt_id,
                     AssessmentAnswer.graded.is_(False),
+                    AssessmentAnswer.question_id.in_(in_paper),
                 )
             )
             attempt.status = "pending_review" if (still_pending.scalar() or 0) > 0 else "submitted"
@@ -949,7 +995,10 @@ class AssessmentService:
             await db.execute(
                 select(AssessmentAnswer, AssessmentQuestion)
                 .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
-                .where(AssessmentAnswer.attempt_id == attempt_id)
+                .where(
+                    AssessmentAnswer.attempt_id == attempt_id,
+                    AssessmentQuestion.paper_id == attempt.paper_id,
+                )
                 .order_by(AssessmentQuestion.order_index.asc())
             )
         ).all()

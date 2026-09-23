@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Path
@@ -253,7 +253,7 @@ async def student_start_attempt(
 
 @router.put(
     "/student/attempts/{attempt_id}/answers",
-    response_model=BaseResponse,
+    response_model=BaseResponse[Optional[StudentAttemptOut]],
     summary="学生作答草稿自动保存",
 )
 async def student_save_answers(
@@ -263,7 +263,13 @@ async def student_save_answers(
     db: AsyncSession = Depends(get_db),
 ):
     answers = [{"question_id": a.question_id, "answer": a.answer} for a in req.answers]
-    await AssessmentService.save_answers(db, attempt_id, current_user.id, answers)
+    forced = await AssessmentService.save_answers(db, attempt_id, current_user.id, answers)
+    if forced is not None:
+        # 违规超限触发了服务端强制交卷，把结果回给前端让它切到已交卷态
+        return BaseResponse.success(
+            data=StudentAttemptOut.model_validate(forced),
+            message="已保存并自动交卷",
+        )
     return BaseResponse.success(message="已保存")
 
 

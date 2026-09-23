@@ -198,6 +198,7 @@ export const assessmentApi = {
   },
 
   saveAnswers(attemptId: string, answers: StudentAnswerIn[]) {
+    // 违规超限时后端会强制交卷，并在 data 里回传 attempt，前端据此切到已交卷态
     return request.put(`/assessment/student/attempts/${attemptId}/answers`, { answers })
   },
 

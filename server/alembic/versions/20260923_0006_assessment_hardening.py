@@ -26,15 +26,28 @@ def upgrade() -> None:
     if "uq_assessment_attempts_paper_student" in existing:
         return
 
-    # 清理历史重复：同一 (paper_id, student_id) 只保留最早一条，
-    # 其后的作答记录连带答案一并删除，避免约束创建失败。
+    # 旧代码的 get_or_create_attempt 没有唯一约束也没有行锁，并发下会为同一个
+    # (paper_id, student_id) 建出多条 attempt。建约束前必须先收敛历史数据。
+    #
+    # 保留规则：答案最多的那条优先（前端只会往拿到的那条 attempt 上写答案，
+    # 所以有答案的才是学生真正在用的）；同样多时留最早的；再同样时按 id 定序，
+    # 保证 created_at 完全相同的并列行也能收敛，否则唯一约束会创建失败。
     op.execute(
         """
-        DELETE FROM assessment_attempts a
-        USING assessment_attempts b
-        WHERE a.paper_id = b.paper_id
-          AND a.student_id = b.student_id
-          AND a.created_at > b.created_at
+        WITH ranked AS (
+            SELECT a.id,
+                   row_number() OVER (
+                       PARTITION BY a.paper_id, a.student_id
+                       ORDER BY (
+                           SELECT count(*) FROM assessment_answers x WHERE x.attempt_id = a.id
+                       ) DESC,
+                       a.created_at ASC NULLS LAST,
+                       a.id ASC
+                   ) AS rn
+            FROM assessment_attempts a
+        )
+        DELETE FROM assessment_attempts
+        WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
         """
     )
     op.create_unique_constraint(

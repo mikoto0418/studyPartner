@@ -105,6 +105,9 @@ const submit = async (auto = false) => {
     }))
     const res = await assessmentApi.submitAttempt(attempt.value.id, answerList)
     result.value = res.data
+    // 含主观题时后端返回 pending_review，此时分数只是客观题小计，
+    // 不标记的话结果面板会把它当最终成绩展示。
+    pendingReview.value = res.data?.status === 'pending_review'
     started.value = false
     antiCheat.stopTracking()
     await antiCheat.exitFullscreen()
@@ -139,7 +142,19 @@ const autosave = async () => {
   }))
   if (!answerList.length) return
   try {
-    await assessmentApi.saveAnswers(attempt.value.id, answerList)
+    const res = await assessmentApi.saveAnswers(attempt.value.id, answerList)
+    const forced = res.data
+    if (forced) {
+      // 服务端因违规超限强制交卷：必须同步切到已交卷态，
+      // 否则界面卡在作答中，而之后所有保存/交卷请求都会被拒。
+      result.value = forced
+      pendingReview.value = forced.status === 'pending_review'
+      submitted.value = true
+      started.value = false
+      antiCheat.stopTracking()
+      await antiCheat.exitFullscreen()
+      ElMessage.warning('已超出全屏退出次数上限，本次作答已被强制交卷')
+    }
   } catch (err) {
     // 草稿保存失败静默处理
   }

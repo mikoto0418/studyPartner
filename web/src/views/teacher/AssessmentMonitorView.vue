@@ -133,8 +133,9 @@ const typeLabel = (t: string) => {
   return map[t] || '题目'
 }
 
-// 主观题与填空题允许教师给分；客观题由后端自动判分，此处只读展示
-const isManualType = (t: string) => t === 'short' || t === 'essay' || t === 'fill'
+// 只有主观题由教师给分：单选/多选/判断/填空都走 _judge 自动判分，
+// 后端 grade_attempt 也只接受 short/essay，这里必须保持一致。
+const isManualType = (t: string) => t === 'short' || t === 'essay'
 
 const formatAnswer = (v: any) => {
   if (v == null || v === '') return '（未作答）'
