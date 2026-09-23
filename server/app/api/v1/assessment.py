@@ -198,9 +198,7 @@ async def grade_attempt(
     db: AsyncSession = Depends(get_db),
 ):
     grades = [{"question_id": g.question_id, "score": g.score} for g in req.grades]
-    attempt = await AssessmentService.grade_attempt(
-        db, attempt_id, current_user.id, grades, finalize=req.finalize
-    )
+    attempt = await AssessmentService.grade_attempt(db, attempt_id, current_user.id, grades)
     return BaseResponse.success(data=StudentAttemptOut.model_validate(attempt), message="批改已保存")
 
 

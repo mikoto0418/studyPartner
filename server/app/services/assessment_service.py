@@ -129,8 +129,14 @@ class AssessmentService:
         questions: List[Dict[str, Any]],
     ) -> AssessmentPaper:
         paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
+        # 整表重建会级联删除 assessment_answers，因此只允许在尚未发布的状态下重建。
+        # 注意：发布是不可逆的（没有撤回接口），错误信息不要指向不存在的操作。
+        if paper.parse_status == "published":
+            raise ValidationError("该试卷已发布，发布后不可再修改题目")
+        if paper.parse_status == "parsing":
+            raise ValidationError("试卷正在解析中，请等待解析完成后再校对")
         if paper.parse_status not in ("awaiting_review", "publish_failed", "failed"):
-            raise ValidationError("当前状态不可保存题目：已发布的试卷请先撤回，解析中的试卷请等待完成")
+            raise ValidationError(f"当前状态（{paper.parse_status}）不可保存题目")
 
         # 整表重建会级联删除 assessment_answers（question_id 为 ON DELETE CASCADE），
         # 已有作答时禁止重建，避免静默清空学生答案。
@@ -215,16 +221,33 @@ class AssessmentService:
             if subset:
                 target["student_ids"] = subset
 
-            if str(target.get("type") or "").strip() == "student":
+            ttype = str(target.get("type") or "").strip()
+            if ttype == "student":
                 resolved_ids = await AssessmentService._resolve_student_identifiers(
                     db, target.get("ids") or [], teacher_id
                 )
                 if not resolved_ids:
                     raise ValidationError("未匹配到任何有效学生，请检查学号 / 用户名 / 学生 ID")
                 target["ids"] = resolved_ids
-            elif str(target.get("type") or "").strip() == "class":
-                if not (target.get("ids") or []):
+            elif ttype == "class":
+                raw_class_ids = AssessmentService._to_uuid_list(target.get("ids") or [])
+                if not raw_class_ids:
                     raise ValidationError("请至少选择一个班级")
+                # 只允许发布到自己名下的班级：否则可把试卷投给其他教师班级的学生
+                owned = await db.execute(
+                    select(ClassGroup.id).where(
+                        ClassGroup.id.in_(raw_class_ids),
+                        ClassGroup.teacher_id == teacher_id,
+                    )
+                )
+                owned_ids = {str(cid) for cid in owned.scalars().all()}
+                if len(owned_ids) != len({str(c) for c in raw_class_ids}):
+                    raise ValidationError("选择的班级不属于当前教师")
+                target["ids"] = [str(c) for c in raw_class_ids]
+            else:
+                # 后端只有 class / student 两种发布对象；未知类型必须拒绝，
+                # 否则会「发布成功」但没有任何学生能命中（_is_targeted 不认）。
+                raise ValidationError(f"不支持的发布对象类型：{ttype or '空'}")
         except ValidationError as e:
             paper.publish_target = raw_target
             paper.publish_at = publish_at
@@ -907,7 +930,6 @@ class AssessmentService:
         attempt_id: UUID,
         teacher_id: UUID,
         grades: List[Dict[str, Any]],
-        finalize: bool = True,
     ) -> AssessmentAttempt:
         """教师批改主观题：逐题给分，全部批完后重算总分并置为已交卷。"""
         attempt = (
@@ -953,29 +975,30 @@ class AssessmentService:
             answer_row.graded = True
             answer_row.is_correct = None
 
-        if finalize:
-            # autoflush=False：上面刚改的 graded/score 只在内存里，
-            # 不 flush 的话下面的统计读不到，状态会永远停在 pending_review。
-            await db.flush()
-            in_paper = select(AssessmentQuestion.id).where(
-                AssessmentQuestion.paper_id == attempt.paper_id
+        # 每次都重算总分并定状态：保留「只存分数不结算」的分支会让
+        # attempt.score 与 answer.score 静默不一致，而没有任何调用方需要它。
+        # autoflush=False：上面刚改的 graded/score 只在内存里，
+        # 不 flush 的话下面的统计读不到，状态会永远停在 pending_review。
+        await db.flush()
+        in_paper = select(AssessmentQuestion.id).where(
+            AssessmentQuestion.paper_id == attempt.paper_id
+        )
+        answered = await db.execute(
+            select(AssessmentAnswer).where(
+                AssessmentAnswer.attempt_id == attempt_id,
+                AssessmentAnswer.question_id.in_(in_paper),
             )
-            answered = await db.execute(
-                select(AssessmentAnswer).where(
-                    AssessmentAnswer.attempt_id == attempt_id,
-                    AssessmentAnswer.question_id.in_(in_paper),
-                )
+        )
+        attempt.score = sum(a.score or 0.0 for a in answered.scalars().all())
+        # 仍有未给分的主观题时必须停在待批改，否则剩余题目会被永久锁成 0 分。
+        still_pending = await db.execute(
+            select(func.count(AssessmentAnswer.id)).where(
+                AssessmentAnswer.attempt_id == attempt_id,
+                AssessmentAnswer.graded.is_(False),
+                AssessmentAnswer.question_id.in_(in_paper),
             )
-            attempt.score = sum(a.score or 0.0 for a in answered.scalars().all())
-            # 仍有未给分的主观题时必须停在待批改，否则剩余题目会被永久锁成 0 分。
-            still_pending = await db.execute(
-                select(func.count(AssessmentAnswer.id)).where(
-                    AssessmentAnswer.attempt_id == attempt_id,
-                    AssessmentAnswer.graded.is_(False),
-                    AssessmentAnswer.question_id.in_(in_paper),
-                )
-            )
-            attempt.status = "pending_review" if (still_pending.scalar() or 0) > 0 else "submitted"
+        )
+        attempt.status = "pending_review" if (still_pending.scalar() or 0) > 0 else "submitted"
 
         await db.commit()
         await db.refresh(attempt)

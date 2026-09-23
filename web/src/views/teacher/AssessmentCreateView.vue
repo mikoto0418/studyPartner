@@ -531,12 +531,15 @@ function resumeDraft() {
 }
 
 async function openPaper(paper: any) {
-  if (paper.parse_status === 'awaiting_review') {
+  // awaiting_review 继续校对；failed 允许手工出题——否则解析失败后这份试卷
+  // 在校对页没有任何入口，只能废弃重传。
+  if (paper.parse_status === 'awaiting_review' || paper.parse_status === 'failed') {
     reset()
     viewMode.value = 'create'
     activeStep.value = 2
     paperId.value = paper.id
     title.value = paper.title
+    parseError.value = paper.parse_error || ''
     await loadQuestions()
     return
   }
@@ -571,6 +574,10 @@ async function resendPaper(paper: any) {
   if (t.blacklist && t.blacklist.length) {
     blacklistIds.value = t.blacklist.join(', ')
   }
+  // class 与 student 类型都可能带白名单；只回填 else 分支会让重发时静默丢弃它
+  if (t.whitelist && t.whitelist.length) {
+    whitelistIds.value = t.whitelist.join(', ')
+  }
 
   if (t.type === 'class') {
     selectedClassId.value = t.ids && t.ids.length ? t.ids[0] : ''
@@ -583,7 +590,6 @@ async function resendPaper(paper: any) {
     }
   } else {
     if (t.ids && t.ids.length) targetIds.value = t.ids.join(', ')
-    if (t.whitelist && t.whitelist.length) whitelistIds.value = t.whitelist.join(', ')
   }
 
   if (paper.publish_at) publishAt.value = new Date(paper.publish_at)
@@ -640,6 +646,7 @@ onUnmounted(() => {
           <template #default="{ row }">
             <el-button v-if="row.parse_status === 'awaiting_review'" size="small" type="primary" @click="openPaper(row)">继续校对</el-button>
             <el-button v-else-if="row.parse_status === 'publish_failed'" size="small" type="primary" @click="resendPaper(row)">重新发送</el-button>
+            <el-button v-else-if="row.parse_status === 'failed'" size="small" type="primary" @click="openPaper(row)">手工出题</el-button>
             <el-button v-else-if="row.question_count" size="small" @click="openPaper(row)">查看题目</el-button>
             <span v-else class="text-xs text-gray-400">无题</span>
           </template>
@@ -736,7 +743,6 @@ onUnmounted(() => {
           <el-select v-model="publishType" class="w-full">
             <el-option label="按班级" value="class" />
             <el-option label="按指导学生" value="mentor" />
-            <el-option label="按小组（手填 ID）" value="group" />
             <el-option label="按学生（手填 ID）" value="student" />
           </el-select>
         </div>
@@ -780,8 +786,8 @@ onUnmounted(() => {
 
         <template v-else>
           <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">{{ publishType === 'student' ? '学生（学号 / 用户名 / UUID）' : '对象 ID' }}</label>
-            <el-input v-model="targetIds" :placeholder="publishType === 'student' ? '学号 / 用户名 / UUID，多个用逗号分隔' : '小组 ID，多个用逗号分隔'" />
+            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">学生（学号 / 用户名 / UUID）</label>
+            <el-input v-model="targetIds" placeholder="学号 / 用户名 / UUID，多个用逗号分隔" />
           </div>
           <div>
             <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">白名单（追加，可选）</label>

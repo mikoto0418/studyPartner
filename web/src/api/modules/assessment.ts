@@ -226,7 +226,7 @@ export const assessmentApi = {
     return request.get(`/assessment/attempts/${attemptId}/answers`)
   },
 
-  gradeAttempt(attemptId: string, grades: { question_id: string; score: number }[], finalize = true) {
-    return request.post(`/assessment/attempts/${attemptId}/grade`, { grades, finalize })
+  gradeAttempt(attemptId: string, grades: { question_id: string; score: number }[]) {
+    return request.post(`/assessment/attempts/${attemptId}/grade`, { grades })
   }
 }

@@ -190,7 +190,6 @@ class GradeItemIn(BaseModel):
 
 class GradeAttemptReq(BaseModel):
     grades: List[GradeItemIn] = Field(default_factory=list)
-    finalize: bool = True
 
 
 class AttemptMonitorOut(BaseModel):

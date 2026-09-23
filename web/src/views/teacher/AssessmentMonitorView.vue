@@ -270,9 +270,12 @@ const openGrading = async (attempt: AttemptMonitor) => {
     const res = await assessmentApi.listAttemptAnswers(attempt.id)
     const items: AttemptAnswer[] = res.data || []
     gradeAnswers.value = items
+    // 只预填「已批改」的分数；未批改的留空。
+    // 若把未批改的一律填 0 并全量提交，教师只批一道题就会把其余主观题
+    // 静默锁成「已批 0 分」，且 graded=True 后无法再回到待批状态。
     const scores: Record<string, number> = {}
     items.forEach((a) => {
-      if (isManualType(a.question_type)) {
+      if (isManualType(a.question_type) && a.graded) {
         scores[a.question_id] = Number(a.score ?? 0)
       }
     })
@@ -286,13 +289,20 @@ const openGrading = async (attempt: AttemptMonitor) => {
 
 const submitGrades = async () => {
   if (!gradingAttempt.value) return
-  const grades = Object.entries(gradeScores.value).map(([question_id, score]) => ({
-    question_id,
-    score: Number(score) || 0
-  }))
+  // 只提交教师真正给过分的题目；空值代表「还没批」，不能当成 0 分发出去。
+  const grades = Object.entries(gradeScores.value)
+    .filter(([, score]) => score !== undefined && score !== null && !Number.isNaN(Number(score)))
+    .map(([question_id, score]) => ({
+      question_id,
+      score: Number(score) || 0
+    }))
+  if (!grades.length) {
+    ElMessage.warning('请先给至少一道题打分')
+    return
+  }
   gradeSubmitting.value = true
   try {
-    await assessmentApi.gradeAttempt(gradingAttempt.value.id, grades, true)
+    await assessmentApi.gradeAttempt(gradingAttempt.value.id, grades)
     ElMessage.success('批改已保存')
     gradeDrawer.value = false
     await loadAttempts()

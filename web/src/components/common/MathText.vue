@@ -11,15 +11,21 @@ type Seg =
   | { type: 'text'; text: string }
   | { type: 'math'; html: string; display: boolean }
 
-// 单 $ 行内公式的识别规则：含 LaTeX 特征字符一律接受；此外接受不含空格、
-// 带字母的短片段（如 $a$、$x1$），否则 "$100 ... $200" 这类金额文本会被
-// 当成公式吞掉并渲染成红色错误信息，而纯数字片段同时被排除。
+// 单 $ 行内公式的识别规则。不能要求「必须含字母」——$0.5$、$3$、$1:2$
+// 是数学卷面的常见形态，误拒会让学生看到带 $ 的裸文本。真正的误判来自
+// "$100 到 $200" 这类跨文本匹配：靠「含空格」和「含中日韩文字/全角标点」
+// 两条排除，两者覆盖了绝大多数非公式场景。
 const INLINE_DOLLAR_RE = /\$([^$\n]*?)\$/g
+
+// 中日韩文字与全角标点（CJK 统一表意文字、CJK 标点、全角字符）
+const CJK_RE = /[一-鿿　-〿＀-￯]/
 
 function looksLikeInlineMath(inner: string): boolean {
   if (/[\\^_{}]/.test(inner)) return true
   if (/\s/.test(inner)) return false
-  return inner.length > 0 && inner.length <= 32 && /[A-Za-z]/.test(inner)
+  if (!inner.length || inner.length > 32) return false
+  if (CJK_RE.test(inner)) return false
+  return true
 }
 
 const MATH_RE = /\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$/g
