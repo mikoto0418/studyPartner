@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,8 @@ from app.services import question_parser as question_parser_module
 from app.utils.parser import extract_images, parse_document
 
 IMG_RE = re.compile(r"\[\[IMG:(\d+)\]\]")
+
+logger = logging.getLogger(__name__)
 
 
 class AssessmentService:
@@ -61,6 +64,8 @@ class AssessmentService:
         ).scalars().first()
         if not file:
             raise NotFoundError("上传文件不存在")
+        if file.uploader_id != teacher_id:
+            raise PermissionDenied("无权使用该文件创建试卷")
 
         paper = AssessmentPaper(
             creator_id=teacher_id,
@@ -120,6 +125,20 @@ class AssessmentService:
         questions: List[Dict[str, Any]],
     ) -> AssessmentPaper:
         paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
+        if paper.parse_status not in ("awaiting_review", "publish_failed", "failed"):
+            raise ValidationError("当前状态不可保存题目：已发布的试卷请先撤回，解析中的试卷请等待完成")
+
+        # 整表重建会级联删除 assessment_answers（question_id 为 ON DELETE CASCADE），
+        # 已有作答时禁止重建，避免静默清空学生答案。
+        answered = await db.execute(
+            select(func.count(AssessmentAnswer.id)).where(
+                AssessmentAnswer.question_id.in_(
+                    select(AssessmentQuestion.id).where(AssessmentQuestion.paper_id == paper_id)
+                )
+            )
+        )
+        if (answered.scalar() or 0) > 0:
+            raise ValidationError("该试卷已有学生作答，禁止重建题目")
 
         await db.execute(delete(AssessmentQuestion).where(AssessmentQuestion.paper_id == paper_id))
 
@@ -191,6 +210,9 @@ class AssessmentService:
                 if not resolved_ids:
                     raise ValidationError("未匹配到任何有效学生，请检查学号 / 用户名 / 学生 ID")
                 target["ids"] = resolved_ids
+            elif str(target.get("type") or "").strip() == "class":
+                if not (target.get("ids") or []):
+                    raise ValidationError("请至少选择一个班级")
         except ValidationError as e:
             paper.publish_target = raw_target
             paper.publish_at = publish_at
@@ -220,12 +242,14 @@ class AssessmentService:
     async def publish_due_papers(db: AsyncSession) -> int:
         now = datetime.now(timezone.utc)
         result = await db.execute(
-            select(AssessmentPaper).where(
+            select(AssessmentPaper)
+            .where(
                 AssessmentPaper.parse_status == "awaiting_review",
                 AssessmentPaper.publish_at.is_not(None),
                 AssessmentPaper.publish_at <= now,
                 AssessmentPaper.deleted_at.is_(None),
             )
+            .with_for_update(skip_locked=True)
         )
         papers = result.scalars().all()
         for paper in papers:
@@ -477,6 +501,25 @@ class AssessmentService:
         return result.scalars().first() is not None
 
     @staticmethod
+    def _due_at_of(paper: AssessmentPaper) -> Optional[datetime]:
+        raw = (paper.publish_target or {}).get("due_at")
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    @staticmethod
+    def _ensure_not_expired(paper: AssessmentPaper) -> None:
+        due_at = AssessmentService._due_at_of(paper)
+        if due_at is not None and datetime.now(timezone.utc) > due_at:
+            raise ValidationError("已超过截止时间，无法继续作答")
+
+    @staticmethod
     async def _get_latest_attempt(
         db: AsyncSession, paper_id: UUID, student_id: UUID
     ) -> Optional[AssessmentAttempt]:
@@ -559,11 +602,12 @@ class AssessmentService:
     async def get_or_create_attempt(
         db: AsyncSession, paper_id: UUID, student_id: UUID
     ) -> AssessmentAttempt:
-        await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
+        paper = await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
         attempt = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
         if attempt:
             return attempt
 
+        AssessmentService._ensure_not_expired(paper)
         attempt = AssessmentAttempt(
             paper_id=paper_id,
             student_id=student_id,
@@ -582,7 +626,10 @@ class AssessmentService:
         question_ids = AssessmentService._to_uuid_list([a.get("question_id") for a in answers])
         if question_ids:
             q_result = await db.execute(
-                select(AssessmentQuestion).where(AssessmentQuestion.id.in_(question_ids))
+                select(AssessmentQuestion).where(
+                    AssessmentQuestion.id.in_(question_ids),
+                    AssessmentQuestion.paper_id == attempt.paper_id,
+                )
             )
         else:
             q_result = None
@@ -623,9 +670,14 @@ class AssessmentService:
                 )
 
     @staticmethod
-    async def save_answers(
-        db: AsyncSession, attempt_id: UUID, student_id: UUID, answers: List[Dict[str, Any]]
-    ) -> None:
+    async def _load_student_attempt(
+        db: AsyncSession, attempt_id: UUID, student_id: UUID, enforce_due: bool = True
+    ) -> AssessmentAttempt:
+        """按 attempt_id + student_id 取作答。
+
+        enforce_due 仅用于「继续答题」类操作；交卷是收尾动作，过期后仍必须放行，
+        否则到点自动交卷会被服务端拒绝，学生反而交不了卷。
+        """
         result = await db.execute(
             select(AssessmentAttempt).where(
                 AssessmentAttempt.id == attempt_id, AssessmentAttempt.student_id == student_id
@@ -634,7 +686,24 @@ class AssessmentService:
         attempt = result.scalars().first()
         if not attempt:
             raise NotFoundError("作答记录不存在")
-        if attempt.status == "submitted":
+
+        paper = (
+            await db.execute(
+                select(AssessmentPaper).where(AssessmentPaper.id == attempt.paper_id)
+            )
+        ).scalars().first()
+        if not paper:
+            raise NotFoundError("试卷不存在")
+        if enforce_due:
+            AssessmentService._ensure_not_expired(paper)
+        return attempt
+
+    @staticmethod
+    async def save_answers(
+        db: AsyncSession, attempt_id: UUID, student_id: UUID, answers: List[Dict[str, Any]]
+    ) -> None:
+        attempt = await AssessmentService._load_student_attempt(db, attempt_id, student_id)
+        if attempt.status != "in_progress":
             raise ValidationError("已交卷，无法继续保存")
         await AssessmentService._upsert_answers(db, attempt, answers)
         await db.commit()
@@ -643,15 +712,10 @@ class AssessmentService:
     async def submit_attempt(
         db: AsyncSession, attempt_id: UUID, student_id: UUID, answers: List[Dict[str, Any]]
     ) -> AssessmentAttempt:
-        result = await db.execute(
-            select(AssessmentAttempt).where(
-                AssessmentAttempt.id == attempt_id, AssessmentAttempt.student_id == student_id
-            )
+        attempt = await AssessmentService._load_student_attempt(
+            db, attempt_id, student_id, enforce_due=False
         )
-        attempt = result.scalars().first()
-        if not attempt:
-            raise NotFoundError("作答记录不存在")
-        if attempt.status == "submitted":
+        if attempt.status != "in_progress":
             raise ValidationError("已交卷，不能重复提交")
 
         await AssessmentService._upsert_answers(db, attempt, answers)
@@ -685,6 +749,17 @@ class AssessmentService:
         events: List[Dict[str, Any]],
         attempt_id: Optional[UUID] = None,
     ) -> int:
+        # 只允许把行为事件挂到自己的作答上，否则可伪造他人 attempt_id 栽赃违规记录。
+        if attempt_id is not None:
+            owned = await db.execute(
+                select(AssessmentAttempt.id).where(
+                    AssessmentAttempt.id == attempt_id,
+                    AssessmentAttempt.student_id == student_id,
+                )
+            )
+            if owned.scalars().first() is None:
+                raise PermissionDenied("作答记录不存在或不属于当前用户")
+
         now = datetime.now(timezone.utc)
         for e in events:
             db.add(
@@ -779,6 +854,13 @@ class AssessmentService:
             questions = await question_parser_module.parse_text_to_questions(raw_text, on_progress=on_progress)
             for q in questions:
                 q["stem_images"] = AssessmentService._attach_stem_images(q.get("stem") or "", doc_images)
+
+            # 解析期间教师可能已手工校对并保存，若状态已变则放弃写入，避免覆盖人工编辑
+            # （同时也避免重建题目级联删除学生作答）。
+            await db.refresh(paper)
+            if paper.parse_status != "parsing":
+                logger.info("Paper %s status changed to %s during parse; skip overwrite", paper_id, paper.parse_status)
+                return
 
             await db.execute(delete(AssessmentQuestion).where(AssessmentQuestion.paper_id == paper_id))
 

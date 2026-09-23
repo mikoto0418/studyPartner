@@ -35,6 +35,7 @@ from app.models.assessment import (
     AssessmentAnswer,
     BehaviorEvent,
 )
+from app.models.module import FeatureModule
 
 # Explicitly export so metadata registers them
 __all__ = [

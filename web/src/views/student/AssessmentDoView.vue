@@ -18,6 +18,10 @@ const router = useRouter()
 
 const paperId = String(route.params.id || '')
 const loading = ref(false)
+const starting = ref(false)
+const started = ref(false)
+const dueAt = ref<string | null>(null)
+const remainingSeconds = ref<number | null>(null)
 const questions = ref<StudentQuestion[]>([])
 const attempt = ref<StudentAttempt | null>(null)
 const answers = ref<Record<string, any>>({})
@@ -28,6 +32,7 @@ const elapsedSeconds = ref(0)
 let sessionId = ''
 let timer: number | undefined
 let autosaveTimer: number | undefined
+let countdownTimer: number | undefined
 
 const generateSessionId = () => {
   try {
@@ -40,8 +45,20 @@ const generateSessionId = () => {
 const antiCheat = useAntiCheat({ maxFullscreenExits: 3 })
 
 const showOverlay = computed(
-  () => !submitted.value && antiCheat.fullscreenExitCount.value > 0 && !antiCheat.fullscreenActive.value
+  () => started.value && !submitted.value && antiCheat.fullscreenExitCount.value > 0 && !antiCheat.fullscreenActive.value
 )
+
+const isExpired = computed(() => remainingSeconds.value !== null && remainingSeconds.value <= 0)
+
+const formattedRemaining = computed(() => {
+  if (remainingSeconds.value === null) return ''
+  const total = Math.max(0, remainingSeconds.value)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const sec = total % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`
+})
 
 const formattedElapsed = computed(() => {
   const h = Math.floor(elapsedSeconds.value / 3600)
@@ -83,22 +100,23 @@ const submit = async (auto = false) => {
     }))
     const res = await assessmentApi.submitAttempt(attempt.value.id, answerList)
     result.value = res.data
+    started.value = false
     antiCheat.stopTracking()
     await antiCheat.exitFullscreen()
-    ElMessage.success(auto ? '检测到多次退出全屏，已自动交卷' : '交卷成功')
+    ElMessage.success(auto ? '已自动交卷' : '交卷成功')
     return true
   } catch (err) {
     submitted.value = false
-    if (!auto) ElMessage.error('交卷失败，请重试')
+    ElMessage.error(auto ? '自动交卷失败，请手动点击交卷' : '交卷失败，请重试')
     return false
   }
 }
 
-const handleAutoSubmit = () => {
+const handleAutoSubmit = async () => {
   ElMessageBox.alert('你已连续多次退出全屏，本次作答将自动交卷。', '防作弊提醒', {
     confirmButtonText: '知道了'
   })
-  submit(true)
+  await submit(true)
 }
 
 const handleRestoreFullscreen = () => {
@@ -159,7 +177,45 @@ const scheduleAutosave = () => {
   autosaveTimer = window.setTimeout(autosave, 1500)
 }
 
-const start = async () => {
+const syncRemaining = () => {
+  if (!dueAt.value) {
+    remainingSeconds.value = null
+    return
+  }
+  const target = new Date(dueAt.value).getTime()
+  if (Number.isNaN(target)) {
+    remainingSeconds.value = null
+    return
+  }
+  remainingSeconds.value = Math.max(0, Math.floor((target - Date.now()) / 1000))
+}
+
+const tickCountdown = () => {
+  if (remainingSeconds.value === null || submitted.value) return
+  syncRemaining()
+  if (remainingSeconds.value <= 0) {
+    ElMessage.warning('已到截止时间，正在自动交卷')
+    submit(true)
+  }
+}
+
+// 必须由用户手势同步触发，否则 requestFullscreen 会被浏览器拒绝
+const beginAnswering = () => {
+  if (starting.value || started.value) return
+  starting.value = true
+  antiCheat.enterFullscreen()
+  started.value = true
+  antiCheat.startTracking(sessionId, attempt.value?.id ?? null, {
+    reportEvents,
+    onFullscreenExit: (count) => {
+      ElMessage.warning(`已退出全屏 ${count} 次，请立即恢复全屏`)
+    },
+    onMaxViolations: handleAutoSubmit
+  })
+  starting.value = false
+}
+
+const load = async () => {
   loading.value = true
   sessionId = generateSessionId()
   try {
@@ -193,13 +249,15 @@ const start = async () => {
     // 已存在的草稿答案通过重新请求无法获取，这里仅初始化空答案
     answers.value = prefill(questions.value)
 
-    antiCheat.startTracking(sessionId, attempt.value?.id ?? null, {
-      reportEvents,
-      onFullscreenExit: (count) => {
-        ElMessage.warning(`已退出全屏 ${count} 次，请立即恢复全屏`)
-      },
-      onMaxViolations: handleAutoSubmit
-    })
+    // 截止时间仅用于前端提示，真正的拦截在后端
+    try {
+      const listRes = await assessmentApi.listStudentPapers()
+      const meta = (listRes.data || []).find((item: any) => String(item.id) === paperId)
+      dueAt.value = meta?.due_at ?? null
+    } catch {
+      dueAt.value = null
+    }
+    syncRemaining()
   } catch (err) {
     ElMessage.error('加载试卷失败')
   } finally {
@@ -207,15 +265,18 @@ const start = async () => {
   }
 }
 
-onMounted(() => {
-  start()
+onMounted(async () => {
+  await load()
+  if (!submitted.value) tickCountdown()
   timer = window.setInterval(() => {
-    if (!submitted.value) elapsedSeconds.value += 1
+    if (!submitted.value && started.value) elapsedSeconds.value += 1
   }, 1000)
+  countdownTimer = window.setInterval(tickCountdown, 1000)
 })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (countdownTimer) clearInterval(countdownTimer)
   if (autosaveTimer) clearTimeout(autosaveTimer)
   antiCheat.stopTracking()
 })
@@ -230,16 +291,21 @@ onUnmounted(() => {
         </div>
         <div>
           <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">在线作答</p>
-          <p class="text-[11px] text-gray-400">已用时 {{ formattedElapsed }}</p>
+          <p class="text-[11px] text-gray-400">
+            已用时 {{ formattedElapsed }}
+            <span v-if="remainingSeconds !== null" :class="isExpired ? 'text-red-500' : 'text-amber-500'">
+              · 剩余 {{ formattedRemaining }}
+            </span>
+          </p>
         </div>
       </div>
 
       <div class="flex items-center gap-2">
-        <button class="ui-button-secondary" @click="autosave">
+        <button class="ui-button-secondary" :disabled="!started || submitted" @click="autosave">
           <Save class="h-3.5 w-3.5" />
           <span>保存草稿</span>
         </button>
-        <button class="ui-button-primary" :disabled="submitted" @click="confirmSubmit">
+        <button class="ui-button-primary" :disabled="!started || submitted" @click="confirmSubmit">
           <Send class="h-3.5 w-3.5" />
           <span>{{ submitted ? '已交卷' : '交卷' }}</span>
         </button>
@@ -250,6 +316,33 @@ onUnmounted(() => {
       <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">本次作答已提交</p>
       <p class="mt-2 text-xs text-gray-400">得分 {{ result.score ?? 0 }} 分 · 用时 {{ result.duration_seconds ?? 0 }} 秒</p>
       <button class="ui-button-primary mt-4" @click="router.push('/student/assessment')">返回试卷列表</button>
+    </div>
+
+    <div v-else-if="isExpired" class="surface-panel p-8 text-center">
+      <p class="text-sm font-semibold text-red-500">已超过截止时间</p>
+      <p class="mt-2 text-xs text-gray-400">该试卷已无法继续作答，如有疑问请联系任课教师。</p>
+      <button class="ui-button-secondary mt-4" @click="router.push('/student/assessment')">返回试卷列表</button>
+    </div>
+
+    <div v-else-if="!started" class="surface-panel p-8 text-center">
+      <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+        <AlertTriangle class="h-7 w-7" />
+      </div>
+      <h3 class="text-base font-semibold text-gray-900 dark:text-zinc-50">开始前请确认</h3>
+      <ul class="mx-auto mt-4 max-w-md space-y-1.5 text-left text-xs text-gray-500 dark:text-zinc-400">
+        <li>· 点击下方按钮后将进入全屏作答，中途退出全屏会被记录</li>
+        <li>· 作答期间禁止复制、粘贴、右键与切换窗口</li>
+        <li>· 连续退出全屏 3 次将自动交卷</li>
+        <li v-if="remainingSeconds !== null">· 剩余作答时间 {{ formattedRemaining }}，到时自动交卷</li>
+      </ul>
+      <button
+        class="ui-button-primary mt-6 inline-flex items-center gap-2"
+        :disabled="starting"
+        @click="beginAnswering"
+      >
+        <Maximize2 class="h-4 w-4" />
+        进入全屏并开始作答
+      </button>
     </div>
 
     <div v-else class="space-y-5">

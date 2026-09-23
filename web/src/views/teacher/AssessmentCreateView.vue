@@ -7,6 +7,7 @@ import RichStem from '../../components/assessment/RichStem.vue'
 import { assessmentApi } from '../../api/modules/assessment'
 import { learningPathApi } from '../../api/modules/learning_path'
 import { userApi } from '../../api/modules/user'
+import { useAuthStore } from '../../stores/auth'
 
 const activeStep = ref(0)
 const title = ref('')
@@ -58,7 +59,9 @@ const questionTypeLabels = {
 
 let pollTimer: number | null = null
 
-const DRAFT_KEY = 'assessment_workbench_draft'
+// 草稿含标准答案，key 必须绑定当前账号，避免同一浏览器换账号后读到他人草稿
+const authStore = useAuthStore()
+const DRAFT_KEY = computed(() => `assessment_workbench_draft:${authStore.username || 'anonymous'}`)
 const hasDraft = ref(false)
 
 function hasMeaningfulDraft(): boolean {
@@ -108,10 +111,10 @@ const draftJson = computed(() => (hasMeaningfulDraft() ? JSON.stringify(buildDra
 function persistNow() {
   try {
     if (draftJson.value) {
-      localStorage.setItem(DRAFT_KEY, draftJson.value)
+      localStorage.setItem(DRAFT_KEY.value, draftJson.value)
       hasDraft.value = true
     } else {
-      localStorage.removeItem(DRAFT_KEY)
+      localStorage.removeItem(DRAFT_KEY.value)
       hasDraft.value = false
     }
   } catch {
@@ -127,7 +130,7 @@ function onPageHide() {
 
 function loadDraft(): any | null {
   try {
-    const raw = localStorage.getItem(DRAFT_KEY)
+    const raw = localStorage.getItem(DRAFT_KEY.value)
     return raw ? JSON.parse(raw) : null
   } catch {
     return null
@@ -161,7 +164,7 @@ function restoreDraft() {
   const d = loadDraft()
   if (!d || d.published) {
     try {
-      localStorage.removeItem(DRAFT_KEY)
+      localStorage.removeItem(DRAFT_KEY.value)
     } catch {}
     hasDraft.value = false
     viewMode.value = 'list'

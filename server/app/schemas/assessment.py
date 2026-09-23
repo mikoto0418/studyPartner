@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AssessmentPaperCreateReq(BaseModel):
@@ -96,6 +96,20 @@ class StudentQuestionOut(BaseModel):
     class Config:
         from_attributes = True
 
+    @field_validator("options", mode="before")
+    @classmethod
+    def _strip_answer_marks(cls, value):
+        """只放行 key/text，防止教师校对时写入的答案标记随题目下发。"""
+        if not value:
+            return value
+        out = []
+        for opt in value:
+            if isinstance(opt, dict):
+                out.append({k: opt[k] for k in ("key", "text") if k in opt})
+            else:
+                out.append(opt)
+        return out
+
 
 class StudentPaperOut(BaseModel):
     id: UUID
@@ -139,9 +153,9 @@ class BehaviorEventIn(BaseModel):
 
 
 class BehaviorBatchReq(BaseModel):
-    session_id: str
+    session_id: str = Field(..., max_length=64)
     attempt_id: Optional[UUID] = None
-    events: List[BehaviorEventIn] = Field(default_factory=list)
+    events: List[BehaviorEventIn] = Field(default_factory=list, max_length=200)
 
 
 class AttemptMonitorOut(BaseModel):
