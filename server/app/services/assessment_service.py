@@ -326,31 +326,47 @@ class AssessmentService:
         """
         now = datetime.now(timezone.utc)
 
-        # due_at 存在 publish_target JSON 里，是带时区偏移的 ISO 字符串，
-        # 用 SQL 直接比文本不可靠（"2026-01-01T00:00:00+08:00" 与 UTC 的字典序
-        # 和时间序不一致）。先把「确实已过期」的试卷挑出来，让 limit 只作用于
+        # due_at 存在 publish_target JSON 里，是带时区偏移的 ISO 字符串，用 SQL
+        # 直接比文本不可靠（"2026-01-01T00:00:00+08:00" 与 UTC 的字典序和时间序
+        # 不一致），所以先在 Python 里挑出「确实已过期」的试卷，让 limit 只作用于
         # 这些试卷下的 attempt —— 否则「没有 due_at」（合法状态）或还没到期的
-        # in_progress 记录会永久占住 limit 名额，真正到期的永远排不进来，
-        # 收卷会整体静默失效。
-        paper_rows = await db.execute(
-            select(AssessmentPaper)
-            .join(AssessmentAttempt, AssessmentAttempt.paper_id == AssessmentPaper.id)
+        # in_progress 记录会永久占住 limit 名额，真正到期的永远排不进来。
+        #
+        # 这里用 EXISTS 而不是 join：一份试卷可能有多条 in_progress 作答，join 会把
+        # 它重复成多行（原代码靠 DISTINCT 收敛，而 DISTINCT 要把 JSONB 列纳入等值
+        # 比较）；EXISTS 天然不产生重复，且只取两列，不必整行载入 parse_progress /
+        # parse_error 这些大 JSONB。
+        has_in_progress_attempt = (
+            select(AssessmentAttempt.id)
             .where(
+                AssessmentAttempt.paper_id == AssessmentPaper.id,
+                AssessmentAttempt.status == "in_progress",
+            )
+            .exists()
+        )
+        paper_rows = await db.execute(
+            select(AssessmentPaper.id, AssessmentPaper.publish_target).where(
                 AssessmentPaper.parse_status == "published",
                 AssessmentPaper.deleted_at.is_(None),
                 AssessmentPaper.publish_target.is_not(None),
-                # 只关心确实还有作答未结算的试卷，避免每次 tick 全量扫已发布试卷
-                AssessmentAttempt.status == "in_progress",
+                has_in_progress_attempt,
             )
-            .distinct()
         )
         expired_paper_ids: List[UUID] = []
-        for paper in paper_rows.scalars().all():
-            due_at = AssessmentService._due_at_of(paper)
+        for paper_id, publish_target in paper_rows.all():
+            due_at = AssessmentService._parse_due_at(
+                publish_target.get("due_at") if isinstance(publish_target, dict) else None
+            )
             if due_at is not None and due_at <= now:
-                expired_paper_ids.append(paper.id)
+                expired_paper_ids.append(paper_id)
         if not expired_paper_ids:
             return 0
+        # asyncpg 的绑定参数上限是 32767，in_() 每个 id 占一个参数。
+        # 截断不会漏收：本轮结算过的 attempt 会离开 in_progress，下一轮 tick
+        # 查到的就是剩下那批，cap 只是把单次工作量摊到多轮。
+        cap = 5000
+        if len(expired_paper_ids) > cap:
+            expired_paper_ids = expired_paper_ids[:cap]
 
         result = await db.execute(
             select(AssessmentAttempt)
@@ -703,8 +719,12 @@ class AssessmentService:
         return result.scalars().first() is not None
 
     @staticmethod
-    def _due_at_of(paper: AssessmentPaper) -> Optional[datetime]:
-        raw = (paper.publish_target or {}).get("due_at")
+    def _parse_due_at(raw: Any) -> Optional[datetime]:
+        """把 publish_target 里的 due_at 解析成带时区的 datetime。
+
+        脏数据（非字符串、非法 ISO、缺时区）一律返回 None 而不是抛出：
+        due_at 是可选字段，解析失败等同于「没有截止时间」，不能让整条链路崩。
+        """
         if not raw:
             return None
         try:
@@ -714,6 +734,15 @@ class AssessmentService:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed
+
+    @staticmethod
+    def _due_at_of(paper: AssessmentPaper) -> Optional[datetime]:
+        # publish_target 列虽是 JSONB，但历史脏数据可能是标量/数组，
+        # 直接 .get 会 AttributeError，这里先收敛成 dict 再取值。
+        target = paper.publish_target
+        if not isinstance(target, dict):
+            return None
+        return AssessmentService._parse_due_at(target.get("due_at"))
 
     @staticmethod
     def _ensure_not_expired(paper: AssessmentPaper) -> None:
@@ -763,13 +792,7 @@ class AssessmentService:
             if not await AssessmentService._is_targeted(db, student_id, target):
                 continue
 
-            due_at = None
-            due_raw = target.get("due_at")
-            if due_raw:
-                try:
-                    due_at = datetime.fromisoformat(str(due_raw).replace("Z", "+00:00"))
-                except (ValueError, TypeError):
-                    due_at = None
+            due_at = AssessmentService._parse_due_at(target.get("due_at"))
 
             attempt = await AssessmentService._get_latest_attempt(db, paper.id, student_id)
             out.append(
