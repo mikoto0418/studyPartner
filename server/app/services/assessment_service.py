@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 # 与前端 useAntiCheat({ maxFullscreenExits: 3 }) 保持一致
 FULLSCREEN_EXIT_LIMIT = 3
 
+# 截止时间后的宽限窗口：前端倒计时归零才触发自动交卷，而答案输入有 1.5s 防抖，
+# 客户端与服务端时钟也可能有偏差。留一点余量，避免卡点交卷的答案被整批丢弃。
+# 超过这个窗口还带新答案来的，只可能是绕过前端直接调接口，那时才真正忽略。
+SUBMIT_GRACE_SECONDS = 60
+
 
 class AssessmentService:
     @staticmethod
@@ -682,8 +687,17 @@ class AssessmentService:
         return resolved
 
     @staticmethod
+    def _as_target_dict(raw: Any) -> Dict[str, Any]:
+        """把 publish_target 收敛成 dict。
+
+        该列是自由 JSONB，旧版本写入时没有类型校验，历史脏数据可能是标量或
+        数组；直接 .get 会抛 AttributeError 冒到全局兜底，变成学生端 500。
+        """
+        return raw if isinstance(raw, dict) else {}
+
+    @staticmethod
     async def _is_targeted(db: AsyncSession, student_id: UUID, target: Dict[str, Any]) -> bool:
-        target = target or {}
+        target = AssessmentService._as_target_dict(target)
         ids = target.get("ids") or []
         whitelist = target.get("whitelist") or []
         blacklist = target.get("blacklist") or []
@@ -739,9 +753,7 @@ class AssessmentService:
     def _due_at_of(paper: AssessmentPaper) -> Optional[datetime]:
         # publish_target 列虽是 JSONB，但历史脏数据可能是标量/数组，
         # 直接 .get 会 AttributeError，这里先收敛成 dict 再取值。
-        target = paper.publish_target
-        if not isinstance(target, dict):
-            return None
+        target = AssessmentService._as_target_dict(paper.publish_target)
         return AssessmentService._parse_due_at(target.get("due_at"))
 
     @staticmethod
@@ -775,7 +787,7 @@ class AssessmentService:
         ).scalars().first()
         if not paper or paper.parse_status != "published":
             raise NotFoundError("试卷不存在或未发布")
-        if not await AssessmentService._is_targeted(db, student_id, paper.publish_target or {}):
+        if not await AssessmentService._is_targeted(db, student_id, paper.publish_target):
             raise PermissionDenied("你不在该试卷的发布范围内")
         return paper
 
@@ -788,7 +800,7 @@ class AssessmentService:
         )
         out: List[Dict[str, Any]] = []
         for paper in result.scalars().all():
-            target = paper.publish_target or {}
+            target = AssessmentService._as_target_dict(paper.publish_target)
             if not await AssessmentService._is_targeted(db, student_id, target):
                 continue
 
@@ -1029,18 +1041,27 @@ class AssessmentService:
         if attempt.status != "in_progress":
             raise ValidationError("已交卷，不能重复提交")
 
-        # 过期后仍要放行交卷（否则到点自动交卷会被服务端拒绝），但不能再接收新答案：
-        # 否则学生等到截止后照常作答、再调这个接口，答案就会被写库并计分，
-        # due_at 对答案内容等于没有约束力。
+        # 过期后仍要放行交卷（否则到点自动交卷会被服务端拒绝），但过了宽限期就
+        # 不能再接收新答案：否则学生等到截止后照常作答、再调这个接口，答案就会
+        # 被写库并计分，due_at 对答案内容等于没有约束力。
+        #
+        # 宽限期内必须落库：前端是倒计时归零才发这次交卷，而答案输入有 1.5s 防抖，
+        # 直接丢弃会把学生最后一段作答静默吞掉，前端还提示「交卷成功」。
         paper = (
             await db.execute(
                 select(AssessmentPaper).where(AssessmentPaper.id == attempt.paper_id)
             )
         ).scalars().first()
         due_at = AssessmentService._due_at_of(paper) if paper else None
-        if due_at is not None and datetime.now(timezone.utc) > due_at:
-            logger.info("Attempt %s submitted after due_at; ignoring client answers", attempt.id)
-            return await AssessmentService._finalize_attempt(db, attempt)
+        if due_at is not None:
+            overdue = (datetime.now(timezone.utc) - due_at).total_seconds()
+            if overdue > SUBMIT_GRACE_SECONDS:
+                logger.info(
+                    "Attempt %s submitted %.0fs after due_at; ignoring client answers",
+                    attempt.id,
+                    overdue,
+                )
+                return await AssessmentService._finalize_attempt(db, attempt)
 
         await AssessmentService._upsert_answers(db, attempt, answers)
         return await AssessmentService._finalize_attempt(db, attempt)

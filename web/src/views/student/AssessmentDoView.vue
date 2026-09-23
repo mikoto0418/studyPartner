@@ -97,7 +97,11 @@ const reportEvents = (events: BehaviorEventPayload[]) => {
 }
 
 const submit = async (auto = false) => {
-  if (submitted.value || !attempt.value) return false
+  if (submitted.value) return false
+  if (!attempt.value) {
+    ElMessage.warning('试卷未开始或已过期，无法交卷')
+    return false
+  }
   submitted.value = true
   try {
     const answerList = Object.entries(answers.value).map(([question_id, answer]) => ({
@@ -243,15 +247,32 @@ const beginAnswering = () => {
   starting.value = false
 }
 
+const isExpiredError = (err: any) => {
+  const msg = err?.response?.data?.message || err?.message || ''
+  return String(msg).includes('截止时间')
+}
+
 const load = async () => {
   loading.value = true
   sessionId = generateSessionId()
   try {
-    const [qRes, aRes] = await Promise.all([
-      assessmentApi.getStudentQuestions(paperId),
-      assessmentApi.startAttempt(paperId)
-    ])
+    // 先取题目。startAttempt 在截止后会对「从未开考」的试卷返回 400，
+    // 若与取题一起走 Promise.all，整页会停在「开始前请确认」：
+    // 题目为空、交卷按钮点了没反应，学生出不去这个页面。
+    const qRes = await assessmentApi.getStudentQuestions(paperId)
     questions.value = qRes.data || []
+
+    let aRes
+    try {
+      aRes = await assessmentApi.startAttempt(paperId)
+    } catch (err) {
+      if (isExpiredError(err)) {
+        // 走已有的 isExpired 分支，给出明确的「已超过截止时间」提示
+        remainingSeconds.value = 0
+        return
+      }
+      throw err
+    }
     attempt.value = aRes.data
 
     // pending_review：客观题已判分、主观题待批改，同样属于已交卷，不能再作答
