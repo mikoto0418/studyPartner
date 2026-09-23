@@ -72,14 +72,27 @@ class SiliconFlowProvider(LLMProvider):
 
         latency = (time.monotonic() - start_time) * 1000
 
-        message = data["choices"][0].get("message", {})
+        choices = data.get("choices") or []
+        if not choices:
+            error_detail = ""
+            err = data.get("error") if isinstance(data, dict) else None
+            if isinstance(err, dict):
+                error_detail = err.get("message") or json.dumps(err, ensure_ascii=False)
+            elif err:
+                error_detail = str(err)
+            raise LLMProviderError(
+                f"{self.provider_name} 模型响应缺少有效结果。{error_detail}".strip()
+            )
+
+        first = choices[0] or {}
+        message = first.get("message") or {}
 
         return ChatResponse(
-            content=message.get("content") or "",
+            content=message.get("content") or message.get("reasoning_content") or "",
             model=data.get("model", model),
             provider=self.provider_name,
             usage=data.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}),
-            finish_reason=data["choices"][0].get("finish_reason", "stop"),
+            finish_reason=first.get("finish_reason", "stop"),
             latency_ms=latency
         )
 

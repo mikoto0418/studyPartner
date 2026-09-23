@@ -1,0 +1,823 @@
+import asyncio
+import io
+import json
+import re
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from uuid import UUID
+
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.exceptions import NotFoundError, PermissionDenied, ValidationError
+from app.core.redis import redis_client
+from app.models.assessment import (
+    AssessmentAnswer,
+    AssessmentAttempt,
+    AssessmentPaper,
+    AssessmentQuestion,
+    BehaviorEvent,
+)
+from app.models.knowledge import FileModel
+from app.models.learning_path import ClassMember
+from app.models.user import StudentProfile, User
+from app.services.minio_service import MinioService
+from app.services import question_parser as question_parser_module
+from app.utils.parser import extract_images, parse_document
+
+IMG_RE = re.compile(r"\[\[IMG:(\d+)\]\]")
+
+
+class AssessmentService:
+    @staticmethod
+    def _progress_key(paper_id: UUID) -> str:
+        return f"assessment:parse:{paper_id}"
+
+    @staticmethod
+    async def set_parse_progress(paper_id: UUID, progress: Dict[str, Any]) -> None:
+        await redis_client.set(
+            AssessmentService._progress_key(paper_id),
+            json.dumps(progress, ensure_ascii=False),
+            ex=86400,
+        )
+
+    @staticmethod
+    async def get_parse_progress(paper_id: UUID) -> Optional[Dict[str, Any]]:
+        raw = await redis_client.get(AssessmentService._progress_key(paper_id))
+        return json.loads(raw) if raw else None
+
+    @staticmethod
+    async def create_paper(
+        db: AsyncSession,
+        teacher_id: UUID,
+        file_id: UUID,
+        title: str,
+        description: Optional[str] = None,
+    ) -> AssessmentPaper:
+        file = (
+            await db.execute(
+                select(FileModel).where(FileModel.id == file_id, FileModel.deleted_at.is_(None))
+            )
+        ).scalars().first()
+        if not file:
+            raise NotFoundError("上传文件不存在")
+
+        paper = AssessmentPaper(
+            creator_id=teacher_id,
+            title=title,
+            description=description,
+            source_file_id=file_id,
+            parse_status="pending",
+        )
+        db.add(paper)
+        await db.commit()
+        await db.refresh(paper)
+
+        from app.tasks.assessment_tasks import parse_assessment_paper_task
+
+        parse_assessment_paper_task.delay(str(paper.id))
+        await AssessmentService.set_parse_progress(paper.id, {"stage": "pending", "total": 0, "done": 0})
+        return paper
+
+    @staticmethod
+    async def get_paper(db: AsyncSession, paper_id: UUID, teacher_id: UUID) -> AssessmentPaper:
+        paper = (
+            await db.execute(
+                select(AssessmentPaper).where(
+                    AssessmentPaper.id == paper_id,
+                    AssessmentPaper.deleted_at.is_(None),
+                )
+            )
+        ).scalars().first()
+        if not paper or paper.creator_id != teacher_id:
+            raise NotFoundError("试卷不存在")
+        return paper
+
+    @staticmethod
+    async def list_papers(db: AsyncSession, teacher_id: UUID) -> List[AssessmentPaper]:
+        result = await db.execute(
+            select(AssessmentPaper)
+            .where(AssessmentPaper.creator_id == teacher_id, AssessmentPaper.deleted_at.is_(None))
+            .order_by(AssessmentPaper.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def list_questions(db: AsyncSession, paper_id: UUID, teacher_id: UUID) -> List[AssessmentQuestion]:
+        await AssessmentService.get_paper(db, paper_id, teacher_id)
+        result = await db.execute(
+            select(AssessmentQuestion)
+            .where(AssessmentQuestion.paper_id == paper_id)
+            .order_by(AssessmentQuestion.order_index.asc())
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def save_questions(
+        db: AsyncSession,
+        paper_id: UUID,
+        teacher_id: UUID,
+        questions: List[Dict[str, Any]],
+    ) -> AssessmentPaper:
+        paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
+
+        await db.execute(delete(AssessmentQuestion).where(AssessmentQuestion.paper_id == paper_id))
+
+        total_score = 0.0
+        for index, q in enumerate(questions):
+            question_type = q.get("question_type") or "short"
+            score = float(q.get("score") or 0.0)
+            total_score += score
+            db.add(
+                AssessmentQuestion(
+                    paper_id=paper_id,
+                    order_index=index,
+                    question_type=question_type,
+                    stem=(q.get("stem") or "").strip(),
+                    stem_images=q.get("stem_images") or None,
+                    options=q.get("options") or None,
+                    answer=q.get("answer"),
+                    analysis=q.get("analysis"),
+                    score=score,
+                    difficulty=q.get("difficulty"),
+                    tags=q.get("tags") or None,
+                    source_chunk=q.get("source_chunk"),
+                )
+            )
+
+        paper.question_count = len(questions)
+        paper.total_score = total_score
+        paper.parse_status = "awaiting_review"
+        await db.commit()
+        await db.refresh(paper)
+        return paper
+
+    @staticmethod
+    async def publish_paper(
+        db: AsyncSession,
+        paper_id: UUID,
+        teacher_id: UUID,
+        publish_target: Dict[str, Any],
+        publish_at: Optional[datetime] = None,
+        due_at: Optional[datetime] = None,
+    ) -> AssessmentPaper:
+        paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
+        if paper.parse_status not in ("awaiting_review", "publish_failed"):
+            raise ValidationError("仅完成人工校对的试卷可发布")
+
+        raw_target = dict(publish_target or {})
+        if not raw_target:
+            raise ValidationError("发布对象不能为空")
+
+        target = dict(raw_target)
+        try:
+            whitelist = await AssessmentService._resolve_student_identifiers(db, target.get("whitelist") or [])
+            blacklist = await AssessmentService._resolve_student_identifiers(db, target.get("blacklist") or [])
+            subset = await AssessmentService._resolve_student_identifiers(db, target.get("student_ids") or [])
+
+            if whitelist:
+                target["whitelist"] = whitelist
+            else:
+                target.pop("whitelist", None)
+            if blacklist:
+                target["blacklist"] = blacklist
+            else:
+                target.pop("blacklist", None)
+            if subset:
+                target["student_ids"] = subset
+
+            if str(target.get("type") or "").strip() == "student":
+                resolved_ids = await AssessmentService._resolve_student_identifiers(db, target.get("ids") or [])
+                if not resolved_ids:
+                    raise ValidationError("未匹配到任何有效学生，请检查学号 / 用户名 / 学生 ID")
+                target["ids"] = resolved_ids
+        except ValidationError as e:
+            paper.publish_target = raw_target
+            paper.publish_at = publish_at
+            paper.parse_status = "publish_failed"
+            paper.parse_error = e.message or "发布失败"
+            await db.commit()
+            await db.refresh(paper)
+            raise
+
+        if due_at is not None:
+            target["due_at"] = due_at.isoformat()
+
+        paper.publish_target = target
+        paper.publish_at = publish_at
+        paper.parse_error = None
+        if publish_at is None:
+            paper.published_at = datetime.now(timezone.utc)
+            paper.parse_status = "published"
+        else:
+            paper.parse_status = "awaiting_review"
+
+        await db.commit()
+        await db.refresh(paper)
+        return paper
+
+    @staticmethod
+    async def publish_due_papers(db: AsyncSession) -> int:
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(AssessmentPaper).where(
+                AssessmentPaper.parse_status == "awaiting_review",
+                AssessmentPaper.publish_at.is_not(None),
+                AssessmentPaper.publish_at <= now,
+                AssessmentPaper.deleted_at.is_(None),
+            )
+        )
+        papers = result.scalars().all()
+        for paper in papers:
+            paper.parse_status = "published"
+            paper.published_at = now
+        if papers:
+            await db.commit()
+        return len(papers)
+
+    BEHAVIOR_FLAG_TYPES = {
+        "fullscreen_exit",
+        "fullscreen_denied",
+        "blocked_paste",
+        "blocked_copy",
+        "blocked_cut",
+        "blocked_shortcut",
+        "blocked_insert",
+        "blocked_drop",
+        "blocked_contextmenu",
+        "blocked_selection",
+        "blocked_drag",
+        "blocked_exec",
+        "clipboard_read",
+        "devtools_open",
+        "focus_loss",
+        "visibility_hidden",
+    }
+
+    @staticmethod
+    async def list_paper_attempts(
+        db: AsyncSession, paper_id: UUID, teacher_id: UUID
+    ) -> List[Dict[str, Any]]:
+        await AssessmentService.get_paper(db, paper_id, teacher_id)
+
+        result = await db.execute(
+            select(AssessmentAttempt, User.nickname, User.username)
+            .join(User, User.id == AssessmentAttempt.student_id)
+            .where(AssessmentAttempt.paper_id == paper_id)
+            .order_by(AssessmentAttempt.created_at.desc())
+        )
+        rows = result.all()
+        attempt_ids = [a.id for a, _, _ in rows]
+
+        stats: Dict[UUID, Dict[str, int]] = {
+            aid: {"total": 0, "flagged": 0} for aid in attempt_ids
+        }
+        if attempt_ids:
+            event_rows = await db.execute(
+                select(
+                    BehaviorEvent.attempt_id,
+                    BehaviorEvent.event_type,
+                    func.count(BehaviorEvent.id),
+                )
+                .where(BehaviorEvent.attempt_id.in_(attempt_ids))
+                .group_by(BehaviorEvent.attempt_id, BehaviorEvent.event_type)
+            )
+            for aid, event_type, cnt in event_rows.all():
+                if aid not in stats:
+                    continue
+                stats[aid]["total"] += cnt
+                if event_type in AssessmentService.BEHAVIOR_FLAG_TYPES:
+                    stats[aid]["flagged"] += cnt
+
+        out: List[Dict[str, Any]] = []
+        for attempt, nickname, username in rows:
+            s = stats.get(attempt.id, {"total": 0, "flagged": 0})
+            out.append(
+                {
+                    "id": attempt.id,
+                    "student_id": attempt.student_id,
+                    "student_name": nickname or username,
+                    "username": username,
+                    "status": attempt.status,
+                    "started_at": attempt.started_at,
+                    "submitted_at": attempt.submitted_at,
+                    "duration_seconds": attempt.duration_seconds,
+                    "score": attempt.score,
+                    "suspicious": bool(attempt.suspicious or s["flagged"] > 0),
+                    "event_count": s["total"],
+                    "flagged_count": s["flagged"],
+                }
+            )
+        return out
+
+    @staticmethod
+    async def list_attempt_behavior(
+        db: AsyncSession, attempt_id: UUID, teacher_id: UUID
+    ) -> List[Dict[str, Any]]:
+        result = await db.execute(
+            select(AssessmentAttempt).where(AssessmentAttempt.id == attempt_id)
+        )
+        attempt = result.scalars().first()
+        if not attempt:
+            raise NotFoundError("作答记录不存在")
+
+        paper_result = await db.execute(
+            select(AssessmentPaper).where(AssessmentPaper.id == attempt.paper_id)
+        )
+        paper = paper_result.scalars().first()
+        if not paper or paper.creator_id != teacher_id:
+            raise NotFoundError("试卷不存在")
+
+        event_result = await db.execute(
+            select(BehaviorEvent)
+            .where(BehaviorEvent.attempt_id == attempt_id)
+            .order_by(BehaviorEvent.created_at.asc())
+        )
+        events = event_result.scalars().all()
+        return [
+            {
+                "id": e.id,
+                "event_type": e.event_type,
+                "payload": e.payload,
+                "occurred_at": e.occurred_at,
+            }
+            for e in events
+        ]
+
+    @staticmethod
+    def _to_uuid_list(items: List[Any]) -> List[UUID]:
+        out: List[UUID] = []
+        for it in items or []:
+            try:
+                out.append(UUID(str(it)))
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    @staticmethod
+    def _norm(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return str(value).strip().lower()
+
+    @staticmethod
+    def _to_list(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(v).strip().lower() for v in value]
+        if isinstance(value, str):
+            parts = [
+                p.strip().lower()
+                for p in value.replace("、", ",").replace(";", ",").replace("；", ",").split(",")
+            ]
+            return [p for p in parts if p]
+        return [str(value).strip().lower()]
+
+    @staticmethod
+    def _judge(question: AssessmentQuestion, answer: Any) -> Optional[bool]:
+        qtype = question.question_type
+        if qtype not in ("single", "multiple", "judge", "fill"):
+            return None
+        if qtype == "multiple":
+            a_set = set(AssessmentService._to_list(answer))
+            r_set = set(AssessmentService._to_list(question.answer))
+            return bool(a_set) and a_set == r_set
+        if qtype == "judge":
+            truthy = {"对", "true", "正确", "t", "是", "yes", "1", "√"}
+            falsy = {"错", "false", "错误", "f", "否", "no", "0", "×"}
+
+            def to_bool(value: Any) -> Optional[bool]:
+                n = AssessmentService._norm(value)
+                if n in truthy:
+                    return True
+                if n in falsy:
+                    return False
+                return None
+
+            a_bool = to_bool(answer)
+            r_bool = to_bool(question.answer)
+            return a_bool is not None and a_bool == r_bool
+        return AssessmentService._norm(answer) == AssessmentService._norm(question.answer)
+
+    @staticmethod
+    async def _resolve_student_identifiers(db: AsyncSession, values: List[Any]) -> List[str]:
+        if isinstance(values, str):
+            values = [values]
+        if not values:
+            return []
+        resolved: List[str] = []
+        seen = set()
+        for v in values:
+            raw = str(v).strip()
+            if not raw:
+                continue
+            match = None
+            try:
+                uid = UUID(raw)
+                result = await db.execute(
+                    select(User).where(User.id == uid, User.deleted_at.is_(None))
+                )
+                match = result.scalars().first()
+            except (ValueError, TypeError):
+                result = await db.execute(
+                    select(User)
+                    .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
+                    .where(
+                        or_(
+                            func.lower(User.username) == raw.lower(),
+                            StudentProfile.student_id == raw,
+                        ),
+                        User.deleted_at.is_(None),
+                    )
+                )
+                match = result.scalars().first()
+            if match and str(match.id) not in seen:
+                seen.add(str(match.id))
+                resolved.append(str(match.id))
+        return resolved
+
+    @staticmethod
+    async def _is_targeted(db: AsyncSession, student_id: UUID, target: Dict[str, Any]) -> bool:
+        target = target or {}
+        ids = target.get("ids") or []
+        whitelist = target.get("whitelist") or []
+        blacklist = target.get("blacklist") or []
+        student_str = str(student_id)
+
+        if student_str in [str(i) for i in blacklist]:
+            return False
+
+        ttype = str(target.get("type") or "").strip()
+        if ttype == "student":
+            return student_str in [str(i) for i in ids] or student_str in [str(i) for i in whitelist]
+
+        if student_str in [str(i) for i in whitelist]:
+            return True
+
+        class_ids = AssessmentService._to_uuid_list(ids)
+        if not class_ids:
+            return False
+
+        subset_ids = target.get("student_ids") or []
+        subset_str = [str(i) for i in subset_ids]
+        if subset_str:
+            return student_str in subset_str
+
+        result = await db.execute(
+            select(ClassMember).where(
+                ClassMember.user_id == student_id,
+                ClassMember.class_id.in_(class_ids),
+                ClassMember.status == "active",
+                ClassMember.deleted_at.is_(None),
+            )
+        )
+        return result.scalars().first() is not None
+
+    @staticmethod
+    async def _get_latest_attempt(
+        db: AsyncSession, paper_id: UUID, student_id: UUID
+    ) -> Optional[AssessmentAttempt]:
+        result = await db.execute(
+            select(AssessmentAttempt)
+            .where(AssessmentAttempt.paper_id == paper_id, AssessmentAttempt.student_id == student_id)
+            .order_by(AssessmentAttempt.created_at.desc())
+        )
+        return result.scalars().first()
+
+    @staticmethod
+    async def _get_published_paper_for_student(
+        db: AsyncSession, paper_id: UUID, student_id: UUID
+    ) -> AssessmentPaper:
+        paper = (
+            await db.execute(
+                select(AssessmentPaper).where(
+                    AssessmentPaper.id == paper_id,
+                    AssessmentPaper.deleted_at.is_(None),
+                )
+            )
+        ).scalars().first()
+        if not paper or paper.parse_status != "published":
+            raise NotFoundError("试卷不存在或未发布")
+        if not await AssessmentService._is_targeted(db, student_id, paper.publish_target or {}):
+            raise PermissionDenied("你不在该试卷的发布范围内")
+        return paper
+
+    @staticmethod
+    async def list_student_papers(db: AsyncSession, student_id: UUID) -> List[Dict[str, Any]]:
+        result = await db.execute(
+            select(AssessmentPaper)
+            .where(AssessmentPaper.parse_status == "published", AssessmentPaper.deleted_at.is_(None))
+            .order_by(AssessmentPaper.published_at.desc())
+        )
+        out: List[Dict[str, Any]] = []
+        for paper in result.scalars().all():
+            target = paper.publish_target or {}
+            if not await AssessmentService._is_targeted(db, student_id, target):
+                continue
+
+            due_at = None
+            due_raw = target.get("due_at")
+            if due_raw:
+                try:
+                    due_at = datetime.fromisoformat(str(due_raw).replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    due_at = None
+
+            attempt = await AssessmentService._get_latest_attempt(db, paper.id, student_id)
+            out.append(
+                {
+                    "id": paper.id,
+                    "title": paper.title,
+                    "description": paper.description,
+                    "question_count": paper.question_count,
+                    "total_score": paper.total_score,
+                    "published_at": paper.published_at,
+                    "due_at": due_at,
+                    "attempt_id": attempt.id if attempt else None,
+                    "attempt_status": attempt.status if attempt else None,
+                    "attempt_score": attempt.score if attempt else None,
+                }
+            )
+        return out
+
+    @staticmethod
+    async def get_student_questions(
+        db: AsyncSession, paper_id: UUID, student_id: UUID
+    ) -> List[AssessmentQuestion]:
+        await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
+        result = await db.execute(
+            select(AssessmentQuestion)
+            .where(AssessmentQuestion.paper_id == paper_id)
+            .order_by(AssessmentQuestion.order_index.asc())
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def get_or_create_attempt(
+        db: AsyncSession, paper_id: UUID, student_id: UUID
+    ) -> AssessmentAttempt:
+        await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
+        attempt = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
+        if attempt:
+            return attempt
+
+        attempt = AssessmentAttempt(
+            paper_id=paper_id,
+            student_id=student_id,
+            status="in_progress",
+            started_at=datetime.now(timezone.utc),
+        )
+        db.add(attempt)
+        await db.commit()
+        await db.refresh(attempt)
+        return attempt
+
+    @staticmethod
+    async def _upsert_answers(
+        db: AsyncSession, attempt: AssessmentAttempt, answers: List[Dict[str, Any]]
+    ) -> None:
+        question_ids = AssessmentService._to_uuid_list([a.get("question_id") for a in answers])
+        if question_ids:
+            q_result = await db.execute(
+                select(AssessmentQuestion).where(AssessmentQuestion.id.in_(question_ids))
+            )
+        else:
+            q_result = None
+
+        qmap = {q.id: q for q in (q_result.scalars().all() if q_result else [])}
+
+        existing_result = await db.execute(
+            select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id)
+        )
+        existing = {a.question_id: a for a in existing_result.scalars().all()}
+
+        for a in answers:
+            try:
+                qid = UUID(str(a.get("question_id")))
+            except (ValueError, TypeError):
+                continue
+            q = qmap.get(qid)
+            if not q:
+                continue
+            correct = AssessmentService._judge(q, a.get("answer"))
+            graded = q.question_type in ("single", "multiple", "judge", "fill")
+            row = existing.get(qid)
+            if row:
+                row.answer = a.get("answer")
+                row.is_correct = correct
+                row.score = q.score if correct else 0.0
+                row.graded = graded
+            else:
+                db.add(
+                    AssessmentAnswer(
+                        attempt_id=attempt.id,
+                        question_id=qid,
+                        answer=a.get("answer"),
+                        is_correct=correct,
+                        score=q.score if correct else 0.0,
+                        graded=graded,
+                    )
+                )
+
+    @staticmethod
+    async def save_answers(
+        db: AsyncSession, attempt_id: UUID, student_id: UUID, answers: List[Dict[str, Any]]
+    ) -> None:
+        result = await db.execute(
+            select(AssessmentAttempt).where(
+                AssessmentAttempt.id == attempt_id, AssessmentAttempt.student_id == student_id
+            )
+        )
+        attempt = result.scalars().first()
+        if not attempt:
+            raise NotFoundError("作答记录不存在")
+        if attempt.status == "submitted":
+            raise ValidationError("已交卷，无法继续保存")
+        await AssessmentService._upsert_answers(db, attempt, answers)
+        await db.commit()
+
+    @staticmethod
+    async def submit_attempt(
+        db: AsyncSession, attempt_id: UUID, student_id: UUID, answers: List[Dict[str, Any]]
+    ) -> AssessmentAttempt:
+        result = await db.execute(
+            select(AssessmentAttempt).where(
+                AssessmentAttempt.id == attempt_id, AssessmentAttempt.student_id == student_id
+            )
+        )
+        attempt = result.scalars().first()
+        if not attempt:
+            raise NotFoundError("作答记录不存在")
+        if attempt.status == "submitted":
+            raise ValidationError("已交卷，不能重复提交")
+
+        await AssessmentService._upsert_answers(db, attempt, answers)
+
+        answered = await db.execute(
+            select(AssessmentAnswer).where(
+                AssessmentAnswer.attempt_id == attempt.id,
+                AssessmentAnswer.question_id.in_(
+                    select(AssessmentQuestion.id).where(AssessmentQuestion.paper_id == attempt.paper_id)
+                ),
+            )
+        )
+        total = sum(a.score or 0.0 for a in answered.scalars().all())
+
+        attempt.score = total
+        attempt.status = "submitted"
+        attempt.submitted_at = datetime.now(timezone.utc)
+        if attempt.started_at:
+            attempt.duration_seconds = max(
+                0, int((attempt.submitted_at - attempt.started_at).total_seconds())
+            )
+        await db.commit()
+        await db.refresh(attempt)
+        return attempt
+
+    @staticmethod
+    async def batch_save_behavior(
+        db: AsyncSession,
+        student_id: UUID,
+        session_id: str,
+        events: List[Dict[str, Any]],
+        attempt_id: Optional[UUID] = None,
+    ) -> int:
+        now = datetime.now(timezone.utc)
+        for e in events:
+            db.add(
+                BehaviorEvent(
+                    user_id=student_id,
+                    session_id=session_id,
+                    attempt_id=attempt_id,
+                    event_type=str(e.get("event_type") or "custom"),
+                    payload=e.get("payload"),
+                    occurred_at=e.get("occurred_at") or now,
+                )
+            )
+        await db.commit()
+        return len(events)
+
+    @staticmethod
+    def _attach_stem_images(stem: str, doc_images: List[dict]) -> Optional[List[dict]]:
+        if not stem or not doc_images:
+            return None
+        indices = {int(n) for n in IMG_RE.findall(stem)}
+        matched = [
+            {"index": img["index"], "url": img["url"]}
+            for img in doc_images
+            if img["index"] in indices
+        ]
+        return matched or None
+
+    @staticmethod
+    async def run_parse(db: AsyncSession, paper_id: UUID) -> None:
+        paper = (
+            await db.execute(
+                select(AssessmentPaper).where(AssessmentPaper.id == paper_id)
+            )
+        ).scalars().first()
+        if not paper:
+            raise NotFoundError("试卷不存在")
+
+        try:
+            paper.parse_status = "parsing"
+            paper.parse_error = None
+            await db.commit()
+            await AssessmentService.set_parse_progress(paper_id, {"stage": "downloading", "total": 0, "done": 0})
+
+            file = (
+                await db.execute(
+                    select(FileModel).where(FileModel.id == paper.source_file_id)
+                )
+            ).scalars().first()
+            if not file:
+                raise ValidationError("源文件已不存在")
+
+            file_bytes = await asyncio.to_thread(MinioService.download_file, file.storage_path)
+            raw_text = parse_document(file_bytes, file.original_name)
+            if not raw_text.strip():
+                raise ValidationError("文档解析为空，无有效可提取文本")
+
+            extracted_images = await asyncio.to_thread(extract_images, file_bytes, file.original_name)
+            doc_images: List[dict] = []
+            for idx, im in enumerate(extracted_images, start=1):
+                ext = im.get("ext") or "png"
+                object_name = f"assessment/images/{paper_id}/img_{idx}.{ext}"
+                data = im.get("data") or b""
+                if not data:
+                    continue
+                await asyncio.to_thread(
+                    MinioService.upload_file,
+                    object_name,
+                    io.BytesIO(data),
+                    len(data),
+                    f"image/{ext}",
+                )
+                url = await asyncio.to_thread(MinioService.get_download_url, object_name, 7 * 24 * 3600)
+                doc_images.append({"index": idx, "object_name": object_name, "url": url})
+
+            progress_state = {"total": 0, "done": 0}
+
+            async def on_progress(stage: str, value: int) -> None:
+                if stage == "mechanical":
+                    progress_state["total"] = value
+                    progress_state["done"] = 0
+                else:
+                    progress_state["done"] = value
+                await AssessmentService.set_parse_progress(
+                    paper_id,
+                    {
+                        "stage": "extracting",
+                        "total": progress_state["total"],
+                        "done": progress_state["done"],
+                    },
+                )
+
+            questions = await question_parser_module.parse_text_to_questions(raw_text, on_progress=on_progress)
+            for q in questions:
+                q["stem_images"] = AssessmentService._attach_stem_images(q.get("stem") or "", doc_images)
+
+            await db.execute(delete(AssessmentQuestion).where(AssessmentQuestion.paper_id == paper_id))
+
+            total_score = 0.0
+            for q in questions:
+                score = float(q.get("score") or 0.0)
+                total_score += score
+                db.add(
+                    AssessmentQuestion(
+                        paper_id=paper_id,
+                        order_index=q["order_index"],
+                        question_type=q["question_type"],
+                        stem=q["stem"],
+                        stem_images=q.get("stem_images") or None,
+                        options=q.get("options") or None,
+                        answer=q.get("answer"),
+                        analysis=q.get("analysis"),
+                        score=score,
+                        difficulty=q.get("difficulty"),
+                        tags=q.get("tags") or None,
+                        source_chunk=q.get("source_chunk"),
+                    )
+                )
+
+            paper.question_count = len(questions)
+            paper.total_score = total_score
+            paper.parse_status = "awaiting_review"
+            paper.parse_error = None
+            await db.commit()
+            await AssessmentService.set_parse_progress(
+                paper_id,
+                {"stage": "done", "total": len(questions), "done": len(questions)},
+            )
+        except Exception as exc:
+            paper.parse_status = "failed"
+            paper.parse_error = str(exc)[:1000]
+            await db.commit()
+            await AssessmentService.set_parse_progress(
+                paper_id,
+                {"stage": "failed", "error": str(exc)[:200]},
+            )
+            raise

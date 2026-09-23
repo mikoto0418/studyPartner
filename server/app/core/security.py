@@ -2,13 +2,11 @@ import base64
 import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any, Union
+
+import bcrypt
 from cryptography.fernet import Fernet, InvalidToken
 from jose import jwt, JWTError
-from passlib.context import CryptContext
 from app.config import settings
-
-# Password hashing configuration
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def _fernet() -> Fernet:
     digest = hashlib.sha256(settings.JWT_SECRET_KEY.encode("utf-8")).digest()
@@ -29,11 +27,20 @@ def decrypt_secret(value: str) -> str:
     except InvalidToken:
         return ""
 
+def _bcrypt_encode(password: str) -> bytes:
+    # bcrypt 仅使用前 72 字节，超出会直接抛 ValueError；我们主动按字节截断。
+    return password.encode("utf-8")[:72]
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(_bcrypt_encode(plain_password), hashed_password.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(_bcrypt_encode(password), bcrypt.gensalt()).decode("utf-8")
 
 def create_access_token(subject: Union[str, Any], expires_delta: Union[timedelta, None] = None) -> str:
     if expires_delta:

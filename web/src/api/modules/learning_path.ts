@@ -248,6 +248,10 @@ export const learningPathApi = {
     return request.get('/learning-paths/classes/list')
   },
 
+  listClassStudents(classId: string) {
+    return request.get(`/learning-paths/classes/${classId}/students`)
+  },
+
   getClassOverview(classId: string) {
     return request.get(`/learning-paths/classes/${classId}/overview`)
   },

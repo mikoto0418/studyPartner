@@ -14,10 +14,14 @@ import BilibiliView from '../views/student/BilibiliView.vue'
 import StudentLearningPathsView from '../views/student/LearningPathsView.vue'
 import GrowthView from '../views/student/GrowthView.vue'
 import MemoryWikiView from '../views/student/MemoryWikiView.vue'
+import AssessmentListView from '../views/student/AssessmentListView.vue'
+import AssessmentDoView from '../views/student/AssessmentDoView.vue'
 
 import WorkbenchView from '../views/teacher/WorkbenchView.vue'
 import StudentsView from '../views/teacher/StudentsView.vue'
 import TasksView from '../views/teacher/TasksView.vue'
+import AssessmentCreateView from '../views/teacher/AssessmentCreateView.vue'
+import AssessmentMonitorView from '../views/teacher/AssessmentMonitorView.vue'
 import TeacherLearningPathsView from '../views/teacher/LearningPathsView.vue'
 import TeacherLearningPathCreateView from '../views/teacher/LearningPathCreateView.vue'
 import TeacherLearningPathStudentProgressView from '../views/teacher/LearningPathStudentProgressView.vue'
@@ -97,6 +101,18 @@ const routes: Array<RouteRecordRaw> = [
         name: 'StudentMemoryWiki',
         component: MemoryWikiView,
         meta: { title: '记忆 Wiki' }
+      },
+      {
+        path: 'assessment',
+        name: 'StudentAssessmentList',
+        component: AssessmentListView,
+        meta: { title: '我的作业与考试' }
+      },
+      {
+        path: 'assessment/:id',
+        name: 'StudentAssessmentDo',
+        component: AssessmentDoView,
+        meta: { title: '在线作答' }
       }
     ]
   },
@@ -122,6 +138,18 @@ const routes: Array<RouteRecordRaw> = [
         name: 'TeacherTasks',
         component: TasksView,
         meta: { title: '学习任务发布' }
+      },
+      {
+        path: 'assessment',
+        name: 'TeacherAssessment',
+        component: AssessmentCreateView,
+        meta: { title: '发题工作台' }
+      },
+      {
+        path: 'assessment-monitor',
+        name: 'TeacherAssessmentMonitor',
+        component: AssessmentMonitorView,
+        meta: { title: '监考中心' }
       },
       {
         path: 'learning-paths',

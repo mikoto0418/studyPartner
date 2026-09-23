@@ -12,17 +12,21 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  FileText,
   Users,
   Settings2,
   GitBranch,
   BarChart3,
   TrendingUp,
   Megaphone,
-  Brain
+  Brain,
+  ShieldAlert
 } from 'lucide-vue-next'
+import { useModuleStore } from '../../stores/module'
 
 const router = useRouter()
 const route = useRoute()
+const moduleStore = useModuleStore()
 
 const MOBILE_BREAKPOINT = 768
 const collapsed = ref(false)
@@ -44,31 +48,40 @@ const menuItems = computed(() => {
       { name: '管理概览', path: '/admin/overview', icon: LayoutDashboard },
       { name: '用户管理', path: '/admin/users', icon: Users },
       { name: '模型配置', path: '/admin/llm-configs', icon: Settings2 },
-      { name: '公告发布', path: '/admin/announcements', icon: Megaphone },
+      { name: '公告发布', path: '/admin/announcements', icon: Megaphone, module: 'announcements' },
       { name: '系统设置', path: '/admin/settings', icon: Settings }
     ]
   } else if (userRole.value === 'teacher') {
     return [
       { name: '工作台', path: '/teacher/workbench', icon: LayoutDashboard },
       { name: '学生列表', path: '/teacher/students', icon: Users },
-      { name: '任务管理', path: '/teacher/tasks', icon: ClipboardList },
-      { name: '路径任务', path: '/teacher/learning-paths', icon: GitBranch },
-      { name: '班级看板', path: '/teacher/classes', icon: BarChart3 },
-      { name: '公告发布', path: '/teacher/announcements', icon: Megaphone }
+      { name: '任务管理', path: '/teacher/tasks', icon: ClipboardList, module: 'tasks' },
+      { name: '发题工作台', path: '/teacher/assessment', icon: FileText, module: 'assessment' },
+      { name: '监考中心', path: '/teacher/assessment-monitor', icon: ShieldAlert, module: 'assessment' },
+      { name: '路径任务', path: '/teacher/learning-paths', icon: GitBranch, module: 'learning_path' },
+      { name: '班级看板', path: '/teacher/classes', icon: BarChart3, module: 'classes' },
+      { name: '公告发布', path: '/teacher/announcements', icon: Megaphone, module: 'announcements' }
     ]
   } else {
-    // Default student menu
     return [
       { name: '仪表盘', path: '/student/dashboard', icon: LayoutDashboard },
-      { name: 'AI伴学', path: '/student/ai-chat', icon: MessageSquare },
-      { name: '记忆 Wiki', path: '/student/memory-wiki', icon: Brain },
-      { name: '月历计划', path: '/student/calendar', icon: Calendar },
-      { name: '知识库', path: '/student/knowledge', icon: BookOpen },
-      { name: 'B站学习', path: '/student/bilibili', icon: Tv },
-      { name: '学习路径', path: '/student/learning-paths', icon: GitBranch },
-      { name: '成长全览', path: '/student/growth', icon: TrendingUp }
+      { name: '我的作业', path: '/student/assessment', icon: FileText, module: 'assessment' },
+      { name: 'AI伴学', path: '/student/ai-chat', icon: MessageSquare, module: 'ai_chat' },
+      { name: '记忆 Wiki', path: '/student/memory-wiki', icon: Brain, module: 'memory' },
+      { name: '月历计划', path: '/student/calendar', icon: Calendar, module: 'calendar' },
+      { name: '知识库', path: '/student/knowledge', icon: BookOpen, module: 'knowledge' },
+      { name: 'B站学习', path: '/student/bilibili', icon: Tv, module: 'bilibili' },
+      { name: '学习路径', path: '/student/learning-paths', icon: GitBranch, module: 'learning_path' },
+      { name: '成长全览', path: '/student/growth', icon: TrendingUp, module: 'growth' }
     ]
   }
+})
+
+const visibleMenuItems = computed(() => {
+  return menuItems.value.filter((item) => {
+    const mod = (item as any).module as string | undefined
+    return !mod || moduleStore.isVisible(mod)
+  })
 })
 
 const currentPath = computed(() => route.path)
@@ -94,15 +107,22 @@ const syncCollapsedForViewport = () => {
   }
 }
 
+const reloadModules = () => {
+  moduleStore.load()
+}
+
 onMounted(() => {
   syncCollapsedForViewport()
   window.addEventListener('resize', syncCollapsedForViewport)
   window.addEventListener('profile-updated', refreshIdentity)
+  window.addEventListener('focus', reloadModules)
+  moduleStore.load()
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', syncCollapsedForViewport)
   window.removeEventListener('profile-updated', refreshIdentity)
+  window.removeEventListener('focus', reloadModules)
 })
 </script>
 
@@ -152,7 +172,7 @@ onUnmounted(() => {
 
       <nav class="space-y-1">
         <router-link
-          v-for="item in menuItems"
+          v-for="item in visibleMenuItems"
           :key="item.path"
           :to="item.path"
           class="group relative flex items-center gap-3 rounded-md px-3 py-2.5 text-sm transition-all duration-200"

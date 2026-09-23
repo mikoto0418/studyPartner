@@ -1,0 +1,166 @@
+from datetime import datetime
+from typing import Any, List, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+
+class AssessmentPaperCreateReq(BaseModel):
+    file_id: UUID
+    title: str = Field(..., max_length=255)
+    description: Optional[str] = None
+
+
+class AssessmentQuestionIn(BaseModel):
+    order_index: int = 0
+    question_type: str
+    stem: str
+    stem_images: Optional[List[dict]] = None
+    options: Optional[List[dict]] = None
+    answer: Optional[Any] = None
+    analysis: Optional[str] = None
+    score: float = 0.0
+    difficulty: Optional[float] = None
+    tags: Optional[List[str]] = None
+    source_chunk: Optional[dict] = None
+
+
+class AssessmentQuestionOut(BaseModel):
+    id: UUID
+    paper_id: UUID
+    order_index: int
+    question_type: str
+    stem: str
+    stem_images: Optional[List[dict]] = None
+    options: Optional[List[dict]] = None
+    answer: Optional[Any] = None
+    analysis: Optional[str] = None
+    score: float
+    difficulty: Optional[float] = None
+    tags: Optional[List[str]] = None
+    source_chunk: Optional[dict] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class QuestionsSaveReq(BaseModel):
+    questions: List[AssessmentQuestionIn] = Field(default_factory=list)
+
+
+class AssessmentPublishReq(BaseModel):
+    publish_target: dict
+    publish_at: Optional[datetime] = None
+    due_at: Optional[datetime] = None
+
+
+class ParseStatusOut(BaseModel):
+    parse_status: str
+    parse_progress: Optional[dict] = None
+    parse_error: Optional[str] = None
+    question_count: int
+    total_score: float
+
+
+class AssessmentPaperOut(BaseModel):
+    id: UUID
+    title: str
+    description: Optional[str] = None
+    source_file_id: Optional[UUID] = None
+    parse_status: str
+    parse_progress: Optional[dict] = None
+    parse_error: Optional[str] = None
+    question_count: int
+    total_score: float
+    publish_target: Optional[dict] = None
+    publish_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StudentQuestionOut(BaseModel):
+    id: UUID
+    order_index: int
+    question_type: str
+    stem: str
+    stem_images: Optional[List[dict]] = None
+    options: Optional[List[dict]] = None
+    score: float
+
+    class Config:
+        from_attributes = True
+
+
+class StudentPaperOut(BaseModel):
+    id: UUID
+    title: str
+    description: Optional[str] = None
+    question_count: int
+    total_score: float
+    published_at: Optional[datetime] = None
+    due_at: Optional[datetime] = None
+    attempt_id: Optional[UUID] = None
+    attempt_status: Optional[str] = None
+    attempt_score: Optional[float] = None
+
+
+class StudentAttemptOut(BaseModel):
+    id: UUID
+    paper_id: UUID
+    status: str
+    started_at: Optional[datetime] = None
+    submitted_at: Optional[datetime] = None
+    score: Optional[float] = None
+    duration_seconds: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class StudentAnswerIn(BaseModel):
+    question_id: UUID
+    answer: Optional[Any] = None
+
+
+class StudentAnswersReq(BaseModel):
+    answers: List[StudentAnswerIn] = Field(default_factory=list)
+
+
+class BehaviorEventIn(BaseModel):
+    event_type: str
+    payload: Optional[dict] = None
+    occurred_at: Optional[datetime] = None
+
+
+class BehaviorBatchReq(BaseModel):
+    session_id: str
+    attempt_id: Optional[UUID] = None
+    events: List[BehaviorEventIn] = Field(default_factory=list)
+
+
+class AttemptMonitorOut(BaseModel):
+    id: UUID
+    student_id: UUID
+    student_name: str
+    username: str
+    status: str
+    started_at: Optional[datetime] = None
+    submitted_at: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
+    score: Optional[float] = None
+    suspicious: bool
+    event_count: int
+    flagged_count: int
+
+
+class BehaviorEventOut(BaseModel):
+    id: UUID
+    event_type: str
+    payload: Optional[dict] = None
+    occurred_at: Optional[datetime] = None

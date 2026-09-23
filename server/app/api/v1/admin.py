@@ -12,6 +12,7 @@ from app.core.database import get_db
 from app.core.exceptions import ValidationError
 from app.core.llm.base import ChatMessage
 from app.core.llm.providers.siliconflow import SiliconFlowProvider
+from app.core.llm.router import OPENAI_COMPATIBLE_PROVIDERS, PROVIDER_DEFAULT_BASE_URLS
 from app.core.security import encrypt_secret
 from app.models.knowledge import FileModel
 from app.models.llm import LLMProviderConfig, LLMUsageLog
@@ -28,7 +29,6 @@ from app.schemas.llm import (
 )
 
 router = APIRouter()
-OPENAI_COMPATIBLE_PROVIDERS = {"siliconflow", "xiaomi", "xiaomi_token_plan", "openai_compatible"}
 
 
 def _config_out(config: LLMProviderConfig) -> LLMProviderConfigOut:
@@ -99,6 +99,7 @@ async def upsert_llm_configs(
     chat_base_url = _normal_url(
         req.chat_base_url
         or req.base_url
+        or PROVIDER_DEFAULT_BASE_URLS.get(req.provider_name)
         or settings.SILICONFLOW_CHAT_BASE_URL
         or settings.SILICONFLOW_BASE_URL
     )
@@ -184,7 +185,7 @@ async def test_llm_connection(
     provider = SiliconFlowProvider({
         "provider_name": req.provider_name,
         "api_key": req.api_key,
-        "base_url": _normal_url(req.base_url),
+        "base_url": _normal_url(req.base_url) or PROVIDER_DEFAULT_BASE_URLS.get(req.provider_name),
     })
     started = time.monotonic()
     try:

@@ -111,6 +111,92 @@ class LearningPathService:
         return class_group
 
     @staticmethod
+    async def _class_member_user_ids(db: AsyncSession, class_id: UUID) -> List[UUID]:
+        result = await db.execute(
+            select(ClassMember.user_id).where(ClassMember.class_id == class_id)
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def _validate_student_ids(db: AsyncSession, student_ids: List[UUID]) -> None:
+        if not student_ids:
+            return
+        result = await db.execute(
+            select(User).where(User.id.in_(list(dict.fromkeys(student_ids))))
+        )
+        users = {u.id: u for u in result.unique().scalars().all()}
+        invalid = []
+        for sid in dict.fromkeys(student_ids):
+            user = users.get(sid)
+            if not user or "student" not in user.role_codes:
+                invalid.append(str(sid))
+        if invalid:
+            raise ValidationError(f"以下账号不是学生或不存在: {', '.join(invalid)}", code="INVALID_STUDENT_IDS")
+
+    @staticmethod
+    async def list_class_students(db: AsyncSession, class_id: UUID, teacher_id: UUID) -> List[Dict[str, Any]]:
+        await LearningPathService.get_class(db, class_id, teacher_id)
+        result = await db.execute(
+            select(ClassMember)
+            .options(selectinload(ClassMember.user).selectinload(User.student_profile))
+            .where(ClassMember.class_id == class_id)
+            .order_by(ClassMember.created_at)
+        )
+        members = result.scalars().all()
+        data = []
+        for member in members:
+            user = member.user
+            profile = user.student_profile if user else None
+            data.append({
+                "id": member.id,
+                "user_id": member.user_id,
+                "username": user.username if user else None,
+                "nickname": user.nickname if user else None,
+                "display_name": user_display_name(user.nickname) if user else "未设置姓名",
+                "student_id": profile.student_id if profile else None,
+                "grade": profile.grade if profile else None,
+                "major": profile.major if profile else None,
+                "status": member.status,
+                "joined_at": member.joined_at,
+            })
+        return data
+
+    @staticmethod
+    async def add_class_members(db: AsyncSession, class_id: UUID, teacher_id: UUID, student_ids: List[UUID]) -> ClassGroup:
+        await LearningPathService.get_class(db, class_id, teacher_id)
+        unique_ids = list(dict.fromkeys(student_ids))
+        await LearningPathService._validate_student_ids(db, unique_ids)
+
+        existing = set(await LearningPathService._class_member_user_ids(db, class_id))
+        now = datetime.now(timezone.utc)
+        for sid in unique_ids:
+            if sid in existing:
+                continue
+            db.add(ClassMember(
+                class_id=class_id,
+                user_id=sid,
+                role="student",
+                joined_at=now,
+                status="active",
+            ))
+            existing.add(sid)
+        await db.commit()
+        return await LearningPathService.get_class(db, class_id, teacher_id)
+
+    @staticmethod
+    async def remove_class_member(db: AsyncSession, class_id: UUID, teacher_id: UUID, student_id: UUID) -> ClassGroup:
+        await LearningPathService.get_class(db, class_id, teacher_id)
+        result = await db.execute(
+            select(ClassMember).where(and_(ClassMember.class_id == class_id, ClassMember.user_id == student_id))
+        )
+        member = result.scalars().first()
+        if not member:
+            raise NotFoundError("该学生不在班级中")
+        await db.delete(member)
+        await db.commit()
+        return await LearningPathService.get_class(db, class_id, teacher_id)
+
+    @staticmethod
     async def generate_plan(
         req_goal: str,
         planning_text: str,

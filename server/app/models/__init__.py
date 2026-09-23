@@ -27,6 +27,14 @@ from app.models.learning_path import (
     ClassMemorySnapshot,
     StudentGrowthReport,
 )
+from app.models.assessment import (
+    AssessmentPaper,
+    AssessmentQuestion,
+    AssessmentAssignment,
+    AssessmentAttempt,
+    AssessmentAnswer,
+    BehaviorEvent,
+)
 
 # Explicitly export so metadata registers them
 __all__ = [
@@ -44,4 +52,7 @@ __all__ = [
     "LearningPathTask", "LearningPathStage", "LearningPathNode", "LearningPathEdge",
     "LearningPathResource", "LearningPathAssignee", "LearningNodeProgress",
     "LearningNodeSubmission", "LearningInsight", "ClassMemorySnapshot", "StudentGrowthReport",
+    "AssessmentPaper", "AssessmentQuestion", "AssessmentAssignment",
+    "AssessmentAttempt", "AssessmentAnswer", "BehaviorEvent",
+    "FeatureModule",
 ]

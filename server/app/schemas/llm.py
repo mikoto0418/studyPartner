@@ -43,6 +43,7 @@ class LLMConfigUpsertReq(BaseModel):
         "knowledge_qa",
         "learning_path_generate",
         "document_summary",
+        "question_parsing",
     ])
     enabled: bool = True
     rpm_limit: Optional[int] = None

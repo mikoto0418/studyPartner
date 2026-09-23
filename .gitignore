@@ -57,6 +57,9 @@ logs/
 *.sqlite
 *.zip
 
+# Celery runtime
+server/celerybeat-schedule
+
 # Local submission artifacts
 PROJECT_SUBMISSION.md
 PROJECT_SUBMISSION.pdf

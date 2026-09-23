@@ -1,3 +1,4 @@
+import hashlib
 import io
 import logging
 from typing import List
@@ -51,3 +52,78 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]
         start += chunk_size - overlap
         
     return chunks
+
+
+def _guess_image_ext(data: bytes) -> str:
+    """Guesses image file extension from magic bytes."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:2] == b"BM":
+        return "bmp"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return ""
+
+
+def extract_images(file_bytes: bytes, filename: str) -> List[dict]:
+    """Extracts embedded images from PDF/docx files in document order.
+
+    Returns a list of dicts: [{"data": bytes, "ext": "png"}, ...]
+    """
+    ext = filename.split(".")[-1].lower()
+    images: List[dict] = []
+
+    if ext == "pdf":
+        import pypdf
+
+        try:
+            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+            seen = set()
+            for page in reader.pages:
+                try:
+                    page_images = page.images or []
+                except Exception:
+                    continue
+                for img in page_images:
+                    if img is None:
+                        continue
+                    try:
+                        data = getattr(img, "data", None)
+                    except Exception:
+                        data = None
+                    if not data:
+                        continue
+                    fmt = _guess_image_ext(data)
+                    if not fmt:
+                        continue
+                    digest = hashlib.sha256(data).hexdigest()
+                    if digest in seen:
+                        continue
+                    seen.add(digest)
+                    images.append({"data": data, "ext": fmt})
+        except Exception as e:
+            logger.warning(f"PDF image extraction failed: {e}")
+
+    elif ext in ["docx", "doc"]:
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                names = sorted(n for n in z.namelist() if n.startswith("word/media/"))
+                for n in names:
+                    try:
+                        data = z.read(n)
+                        fmt = n.rsplit(".", 1)[-1].lower()
+                        if fmt not in {"png", "jpg", "jpeg", "gif", "webp", "bmp"}:
+                            fmt = _guess_image_ext(data) or "png"
+                        images.append({"data": data, "ext": fmt})
+                    except Exception as e:
+                        logger.warning(f"DOCX image extract skipped {n}: {e}")
+        except Exception as e:
+            logger.warning(f"DOCX image extraction failed: {e}")
+
+    return images
