@@ -337,14 +337,46 @@ class AssessmentService:
             .limit(limit)
             .with_for_update(skip_locked=True, of=AssessmentAttempt)
         )
+
+        # 结算逻辑内联而不是逐行调 _finalize_attempt：后者每次都会 commit，
+        # 一提交就释放 with_for_update 的行锁，skip_locked 形同虚设，
+        # 并发 worker 会把同一行再结算一次（分数幂等，但 submitted_at 与
+        # duration_seconds 会被推后）。这里整批算完最后提交一次。
         finalized = 0
         for attempt, paper in result.all():
             due_at = AssessmentService._due_at_of(paper)
             if due_at is None or due_at > now:
                 continue
-            # 复用收尾逻辑：算总分，并按是否还有未批改的主观题定状态
-            await AssessmentService._finalize_attempt(db, attempt)
+
+            in_paper = select(AssessmentQuestion.id).where(
+                AssessmentQuestion.paper_id == attempt.paper_id
+            )
+            answered = await db.execute(
+                select(AssessmentAnswer).where(
+                    AssessmentAnswer.attempt_id == attempt.id,
+                    AssessmentAnswer.question_id.in_(in_paper),
+                )
+            )
+            attempt.score = sum(a.score or 0.0 for a in answered.scalars().all())
+
+            pending = await db.execute(
+                select(func.count(AssessmentAnswer.id)).where(
+                    AssessmentAnswer.attempt_id == attempt.id,
+                    AssessmentAnswer.graded.is_(False),
+                    AssessmentAnswer.question_id.in_(in_paper),
+                )
+            )
+            # 有未批改的主观题时停在待批改，等教师批完再落最终分
+            attempt.status = "pending_review" if (pending.scalar() or 0) > 0 else "submitted"
+            attempt.submitted_at = now
+            if attempt.started_at:
+                attempt.duration_seconds = max(
+                    0, int((attempt.submitted_at - attempt.started_at).total_seconds())
+                )
             finalized += 1
+
+        if finalized:
+            await db.commit()
         return finalized
 
     BEHAVIOR_FLAG_TYPES = {
