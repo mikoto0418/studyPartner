@@ -32,5 +32,10 @@ celery_app.conf.update(
             "task": "app.tasks.assessment_tasks.publish_scheduled_papers_task",
             "schedule": timedelta(minutes=1),
         },
+        # 到点收卷：学生中断作答且不再回来时，attempt 会永远停在 in_progress
+        "finalize-expired-assessment-attempts": {
+            "task": "app.tasks.assessment_tasks.finalize_expired_attempts_task",
+            "schedule": timedelta(minutes=5),
+        },
     }
 )

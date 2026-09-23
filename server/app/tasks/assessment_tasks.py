@@ -27,6 +27,23 @@ def parse_assessment_paper_task(paper_id: str):
 
 
 @celery_app.task
+def finalize_expired_attempts_task():
+    logger.info("Triggering expired assessment attempt finalization")
+
+    async def process():
+        async with SessionLocal() as db:
+            return await AssessmentService.finalize_expired_attempts(db)
+
+    try:
+        from app.tasks.celery_tasks import run_async
+
+        finalized = run_async(process())
+        logger.info(f"Finalized {finalized} expired attempt(s)")
+    except Exception as e:
+        logger.error(f"Failed to finalize expired attempts: {e}", exc_info=True)
+
+
+@celery_app.task
 def publish_scheduled_papers_task():
     logger.info("Triggering scheduled assessment paper publishing")
 

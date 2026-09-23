@@ -177,13 +177,13 @@ class AssessmentService:
         paper.question_count = len(questions)
         paper.total_score = total_score
         paper.parse_status = "awaiting_review"
-        # 回到「待发布」就必须清掉上一次的预约：否则 beat 会按残留的 publish_at
-        # 自动发布，而且失败时存的是未解析的 raw_target（可能含他人班级 id、
-        # 且没有 due_at），教师会拿到一份没点过发布、也没有截止时间的试卷。
+        # 回到「待发布」必须清掉预约时间：否则 beat 会按残留的 publish_at
+        # 自动发布，教师拿到一份没点过发布的试卷（失败时存的还是未解析的
+        # raw_target，里面没有 due_at，截止时间被静默丢弃）。
+        # publish_target / parse_error 保留：前端「重新发送」要靠它们回填
+        # 上次的发布对象与失败原因。
         paper.publish_at = None
-        paper.publish_target = None
         paper.published_at = None
-        paper.parse_error = None
         await db.commit()
         await db.refresh(paper)
         return paper
@@ -315,6 +315,37 @@ class AssessmentService:
         if papers:
             await db.commit()
         return len(papers)
+
+    @staticmethod
+    async def finalize_expired_attempts(db: AsyncSession, limit: int = 200) -> int:
+        """把已过截止时间、仍停在 in_progress 的作答按已存答案结算。
+
+        学生开考后直接关掉浏览器且不再回来时，attempt 永远停在 in_progress：
+        教师端看不到「待批改」，学生本人不重进页面也不会被结算，这份作答就
+        永久卡住。截止时间一过就必须由服务端收卷。
+        """
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(AssessmentAttempt, AssessmentPaper)
+            .join(AssessmentPaper, AssessmentPaper.id == AssessmentAttempt.paper_id)
+            .where(
+                AssessmentAttempt.status == "in_progress",
+                AssessmentPaper.parse_status == "published",
+                AssessmentPaper.deleted_at.is_(None),
+            )
+            .order_by(AssessmentAttempt.started_at.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True, of=AssessmentAttempt)
+        )
+        finalized = 0
+        for attempt, paper in result.all():
+            due_at = AssessmentService._due_at_of(paper)
+            if due_at is None or due_at > now:
+                continue
+            # 复用收尾逻辑：算总分，并按是否还有未批改的主观题定状态
+            await AssessmentService._finalize_attempt(db, attempt)
+            finalized += 1
+        return finalized
 
     BEHAVIOR_FLAG_TYPES = {
         "fullscreen_exit",
