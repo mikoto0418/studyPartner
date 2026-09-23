@@ -357,7 +357,9 @@ class AssessmentService:
                     "suspicious": bool(attempt.suspicious or s["flagged"] > 0),
                     "event_count": s["total"],
                     "flagged_count": s["flagged"],
-                    "pending_grade_count": s["pending"],
+                    # 仅已交卷的作答才有「待批改」语义：作答中的学生随时可能继续改答案，
+                    # 显示批改入口只会让教师点进去撞「尚未交卷」的报错。
+                    "pending_grade_count": s["pending"] if attempt.status != "in_progress" else 0,
                 }
             )
         return out
