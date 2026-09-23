@@ -325,17 +325,42 @@ class AssessmentService:
         永久卡住。截止时间一过就必须由服务端收卷。
         """
         now = datetime.now(timezone.utc)
-        result = await db.execute(
-            select(AssessmentAttempt, AssessmentPaper)
-            .join(AssessmentPaper, AssessmentPaper.id == AssessmentAttempt.paper_id)
+
+        # due_at 存在 publish_target JSON 里，是带时区偏移的 ISO 字符串，
+        # 用 SQL 直接比文本不可靠（"2026-01-01T00:00:00+08:00" 与 UTC 的字典序
+        # 和时间序不一致）。先把「确实已过期」的试卷挑出来，让 limit 只作用于
+        # 这些试卷下的 attempt —— 否则「没有 due_at」（合法状态）或还没到期的
+        # in_progress 记录会永久占住 limit 名额，真正到期的永远排不进来，
+        # 收卷会整体静默失效。
+        paper_rows = await db.execute(
+            select(AssessmentPaper)
+            .join(AssessmentAttempt, AssessmentAttempt.paper_id == AssessmentPaper.id)
             .where(
-                AssessmentAttempt.status == "in_progress",
                 AssessmentPaper.parse_status == "published",
                 AssessmentPaper.deleted_at.is_(None),
+                AssessmentPaper.publish_target.is_not(None),
+                # 只关心确实还有作答未结算的试卷，避免每次 tick 全量扫已发布试卷
+                AssessmentAttempt.status == "in_progress",
+            )
+            .distinct()
+        )
+        expired_paper_ids: List[UUID] = []
+        for paper in paper_rows.scalars().all():
+            due_at = AssessmentService._due_at_of(paper)
+            if due_at is not None and due_at <= now:
+                expired_paper_ids.append(paper.id)
+        if not expired_paper_ids:
+            return 0
+
+        result = await db.execute(
+            select(AssessmentAttempt)
+            .where(
+                AssessmentAttempt.status == "in_progress",
+                AssessmentAttempt.paper_id.in_(expired_paper_ids),
             )
             .order_by(AssessmentAttempt.started_at.asc())
             .limit(limit)
-            .with_for_update(skip_locked=True, of=AssessmentAttempt)
+            .with_for_update(skip_locked=True)
         )
 
         # 结算逻辑内联而不是逐行调 _finalize_attempt：后者每次都会 commit，
@@ -343,11 +368,7 @@ class AssessmentService:
         # 并发 worker 会把同一行再结算一次（分数幂等，但 submitted_at 与
         # duration_seconds 会被推后）。这里整批算完最后提交一次。
         finalized = 0
-        for attempt, paper in result.all():
-            due_at = AssessmentService._due_at_of(paper)
-            if due_at is None or due_at > now:
-                continue
-
+        for attempt in result.scalars().all():
             in_paper = select(AssessmentQuestion.id).where(
                 AssessmentQuestion.paper_id == attempt.paper_id
             )
