@@ -904,6 +904,11 @@ class AssessmentService:
         paper = await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
         attempt = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
         if attempt:
+            # 已存在的作答也要校验截止时间。否则学生刷新后会重新进入作答界面，
+            # 但每次 autosave 都被后端 400 拒绝，界面却没有任何过期提示。
+            # 已交卷的不受影响：这里只拦 in_progress。
+            if attempt.status == "in_progress":
+                AssessmentService._ensure_not_expired(paper)
             return await AssessmentService._enforce_violation_limit(db, attempt)
 
         AssessmentService._ensure_not_expired(paper)

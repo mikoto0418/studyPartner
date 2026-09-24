@@ -73,7 +73,7 @@ class AssessmentAttempt(BaseModel):
     paper_id = Column(UUID(as_uuid=True), ForeignKey("assessment_papers.id", ondelete="CASCADE"), nullable=False, index=True)
     student_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     assignment_id = Column(UUID(as_uuid=True), ForeignKey("assessment_assignments.id", ondelete="SET NULL"), nullable=True)
-    status = Column(String(30), default="in_progress", nullable=False)  # in_progress, submitted, expired
+    status = Column(String(30), default="in_progress", nullable=False)  # in_progress, submitted, pending_review
     started_at = Column(DateTime(timezone=True), nullable=True)
     submitted_at = Column(DateTime(timezone=True), nullable=True)
     score = Column(Float, nullable=True)

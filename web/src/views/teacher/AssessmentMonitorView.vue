@@ -109,8 +109,7 @@ const statusLabel = (s: string) => {
   const map: Record<string, string> = {
     in_progress: '作答中',
     submitted: '已交卷',
-    pending_review: '待批改',
-    expired: '已过期'
+    pending_review: '待批改'
   }
   return map[s] || s
 }

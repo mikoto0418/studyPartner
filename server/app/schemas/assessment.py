@@ -145,7 +145,8 @@ class StudentAnswerIn(BaseModel):
 
 
 class StudentAnswersReq(BaseModel):
-    answers: List[StudentAnswerIn] = Field(default_factory=list)
+    # 一次提交最多覆盖 500 道题，防止超大 body 放大单请求的查库成本
+    answers: List[StudentAnswerIn] = Field(default_factory=list, max_length=500)
 
 
 class StudentAnswerOut(BaseModel):
