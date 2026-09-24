@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     LLM_CHAT_TIMEOUT_SECONDS: float = 60.0
     LEARNING_PATH_LLM_TIMEOUT_SECONDS: float = 90.0
 
+    # ========== 拆题专用 LLM 配置 (OpenAI 兼容接口) ==========
+    QUESTION_PARSING_API_KEY: str = ""
+    QUESTION_PARSING_BASE_URL: str = ""
+    QUESTION_PARSING_MODEL: str = ""
+
     # ========== SMTP (Email) ==========
     SMTP_HOST: str = "smtp.qq.com"
     SMTP_PORT: int = 465

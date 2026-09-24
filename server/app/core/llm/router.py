@@ -9,7 +9,15 @@ from app.core.llm.base import LLMProvider, ChatMessage, ChatResponse, LLMProvide
 from app.core.security import decrypt_secret
 
 logger = logging.getLogger(__name__)
-OPENAI_COMPATIBLE_PROVIDERS = {"siliconflow", "xiaomi", "xiaomi_token_plan", "openai_compatible"}
+OPENAI_COMPATIBLE_PROVIDERS = {
+    "siliconflow", "xiaomi", "xiaomi_token_plan", "openai_compatible",
+    "modelscope", "dashscope",
+}
+
+PROVIDER_DEFAULT_BASE_URLS = {
+    "modelscope": "https://api-inference.modelscope.cn/v1",
+    "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+}
 
 class RateLimiter:
     """Simple rate limiter checking user daily quotas and model configuration rules"""
@@ -112,11 +120,22 @@ class LLMRouter:
             res = await db.execute(stmt)
             route_configs = res.scalars().all()
 
-        # 2. Use explicit environment configuration if no provider config exists in the database.
-        if not route_configs:
+        from app.config import settings
+
+        # 2. 拆题任务：优先使用 .env 中的专用模型配置，与数据库/管理端解耦，密钥集中管理。
+        if task_type == "question_parsing" and settings.QUESTION_PARSING_API_KEY and settings.QUESTION_PARSING_MODEL:
+            configs_to_try = [{
+                "provider_name": "openai_compatible",
+                "model_name": settings.QUESTION_PARSING_MODEL,
+                "temperature": 0.2,
+                "max_tokens": 8192,
+                "api_key": settings.QUESTION_PARSING_API_KEY,
+                "base_url": (settings.QUESTION_PARSING_BASE_URL or "").strip().rstrip("/"),
+            }]
+        # 3. Use explicit environment configuration if no provider config exists in the database.
+        elif not route_configs:
             if require_task_config:
                 raise RuntimeError(f"No task-specific LLM provider configured. Task: {task_type}")
-            from app.config import settings
             sf_key = settings.SILICONFLOW_CHAT_API_KEY or settings.SILICONFLOW_API_KEY
             if not sf_key:
                 raise RuntimeError(f"No available LLM provider configured. Task: {task_type}")
@@ -155,7 +174,7 @@ class LLMRouter:
                 # config changes and per-task endpoints take effect immediately.
                 from app.core.llm.providers.siliconflow import SiliconFlowProvider
                 api_key = route_config.get("api_key")
-                base_url = route_config.get("base_url")
+                base_url = route_config.get("base_url") or PROVIDER_DEFAULT_BASE_URLS.get(provider_name)
                 
                 # Use environment configuration when DB config does not carry credentials.
                 if not api_key:

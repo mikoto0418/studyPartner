@@ -46,7 +46,8 @@ const chatTasks = [
   { value: 'memory_update', label: '学情记忆更新' },
   { value: 'knowledge_qa', label: '知识库问答' },
   { value: 'learning_path_generate', label: '学习路径生成' },
-  { value: 'document_summary', label: '文档摘要' }
+  { value: 'document_summary', label: '文档摘要' },
+  { value: 'question_parsing', label: '题目拆题解析' }
 ]
 
 const taskTypes = [

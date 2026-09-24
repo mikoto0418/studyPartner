@@ -10,8 +10,10 @@ from app.models.user import User
 from app.schemas.common import BaseResponse
 from app.schemas.learning_path import (
     ClassCreate,
+    ClassMemberUpdateReq,
     ClassOut,
     ClassOverviewOut,
+    ClassStudentOut,
     LearningNodeReviewReq,
     LearningNodeSubmitReq,
     LearningInsightOut,
@@ -178,6 +180,38 @@ async def get_class_overview(
 ):
     overview = await LearningPathService.get_class_overview(db, class_id, current_user.id)
     return BaseResponse.success(data=ClassOverviewOut(**overview), message="获取成功")
+
+
+@router.post("/classes/{class_id}/members", response_model=BaseResponse[ClassOut], summary="教师批量添加学生到班级")
+async def add_class_members(
+    class_id: UUID = Path(...),
+    member_in: ClassMemberUpdateReq = Body(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    class_group = await LearningPathService.add_class_members(db, class_id, current_user.id, member_in.student_ids)
+    return BaseResponse.success(data=ClassOut(**LearningPathService._class_to_dict(class_group)), message="学生已添加")
+
+
+@router.delete("/classes/{class_id}/members/{user_id}", response_model=BaseResponse[ClassOut], summary="教师从班级移除学生")
+async def remove_class_member(
+    class_id: UUID = Path(...),
+    user_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    class_group = await LearningPathService.remove_class_member(db, class_id, current_user.id, user_id)
+    return BaseResponse.success(data=ClassOut(**LearningPathService._class_to_dict(class_group)), message="学生已移除")
+
+
+@router.get("/classes/{class_id}/students", response_model=BaseResponse[List[ClassStudentOut]], summary="按班级查询学生")
+async def list_class_students(
+    class_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    students = await LearningPathService.list_class_students(db, class_id, current_user.id)
+    return BaseResponse.success(data=[ClassStudentOut(**s) for s in students], message="获取成功")
 
 
 @router.patch("/insights/{insight_id}/status", response_model=BaseResponse[LearningInsightOut], summary="更新班级洞察状态")

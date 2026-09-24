@@ -25,6 +25,23 @@ class ClassMemberOut(BaseModel):
         from_attributes = True
 
 
+class ClassMemberUpdateReq(BaseModel):
+    student_ids: List[UUID] = Field(default_factory=list)
+
+
+class ClassStudentOut(BaseModel):
+    id: UUID
+    user_id: UUID
+    username: Optional[str] = None
+    nickname: Optional[str] = None
+    display_name: str = "未设置姓名"
+    student_id: Optional[str] = None
+    grade: Optional[str] = None
+    major: Optional[str] = None
+    status: str
+    joined_at: Optional[datetime] = None
+
+
 class ClassOut(BaseModel):
     id: UUID
     teacher_id: UUID
