@@ -74,6 +74,8 @@ export interface StudentAttempt {
   submitted_at?: string | null
   score?: number | null
   duration_seconds?: number | null
+  /** 交卷时超过截止宽限期，本次提交的答案未落库 */
+  answers_ignored?: boolean
 }
 
 export interface StudentAnswerIn {

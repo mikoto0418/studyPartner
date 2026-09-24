@@ -300,8 +300,13 @@ async def student_submit(
     db: AsyncSession = Depends(get_db),
 ):
     answers = [{"question_id": a.question_id, "answer": a.answer} for a in req.answers]
-    attempt = await AssessmentService.submit_attempt(db, attempt_id, current_user.id, answers)
-    return BaseResponse.success(data=StudentAttemptOut.model_validate(attempt), message="交卷成功")
+    attempt, answers_ignored = await AssessmentService.submit_attempt(
+        db, attempt_id, current_user.id, answers
+    )
+    out = StudentAttemptOut.model_validate(attempt)
+    out.answers_ignored = answers_ignored
+    message = "已交卷，但超过截止时间的作答未计入" if answers_ignored else "交卷成功"
+    return BaseResponse.success(data=out, message=message)
 
 
 @router.post(

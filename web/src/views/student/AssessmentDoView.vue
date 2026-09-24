@@ -121,7 +121,11 @@ const submit = async (auto = false) => {
     started.value = false
     antiCheat.stopTracking()
     await antiCheat.exitFullscreen()
-    ElMessage.success(auto ? '已自动交卷' : '交卷成功')
+    if (res.data?.answers_ignored) {
+      ElMessage.warning('已超过截止时间，本次提交的作答未计入成绩')
+    } else {
+      ElMessage.success(auto ? '已自动交卷' : '交卷成功')
+    }
     return true
   } catch (err) {
     // 竞态：autosave 的服务端强制交卷先落地时，再交卷会撞「不能重复提交」。

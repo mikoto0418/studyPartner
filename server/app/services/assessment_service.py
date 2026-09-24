@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select
@@ -1034,7 +1034,12 @@ class AssessmentService:
     @staticmethod
     async def submit_attempt(
         db: AsyncSession, attempt_id: UUID, student_id: UUID, answers: List[Dict[str, Any]]
-    ) -> AssessmentAttempt:
+    ) -> Tuple[AssessmentAttempt, bool]:
+        """交卷。返回 (attempt, answers_ignored)。
+
+        answers_ignored 为真表示这次提交的答案因为超过截止宽限期没有落库，
+        前端必须显式提示，否则学生会以为最后一段作答被计分了。
+        """
         attempt = await AssessmentService._load_student_attempt(
             db, attempt_id, student_id, enforce_due=False
         )
@@ -1061,10 +1066,12 @@ class AssessmentService:
                     attempt.id,
                     overdue,
                 )
-                return await AssessmentService._finalize_attempt(db, attempt)
+                finalized = await AssessmentService._finalize_attempt(db, attempt)
+                return finalized, True
 
         await AssessmentService._upsert_answers(db, attempt, answers)
-        return await AssessmentService._finalize_attempt(db, attempt)
+        finalized = await AssessmentService._finalize_attempt(db, attempt)
+        return finalized, False
 
     @staticmethod
     async def get_student_answers(

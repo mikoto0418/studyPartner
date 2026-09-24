@@ -132,6 +132,8 @@ class StudentAttemptOut(BaseModel):
     submitted_at: Optional[datetime] = None
     score: Optional[float] = None
     duration_seconds: Optional[int] = None
+    # 仅交卷响应会置位：超过截止宽限期时本次提交的答案未落库
+    answers_ignored: bool = False
 
     class Config:
         from_attributes = True
