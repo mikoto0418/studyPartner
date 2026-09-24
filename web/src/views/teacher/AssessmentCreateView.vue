@@ -560,6 +560,23 @@ async function openPaper(paper: any) {
   viewVisible.value = true
 }
 
+const reparsingId = ref<string | null>(null)
+
+async function reparsePaper(paper: any) {
+  // worker 被 OOM 杀掉时任务不会走 except，parse_status 会永久停在 parsing，
+  // 这份试卷此前只能废弃重传。
+  reparsingId.value = paper.id
+  try {
+    await assessmentApi.reparsePaper(paper.id)
+    ElMessage.success('已重新提交拆题')
+    await loadPapers()
+  } catch {
+    // 拦截器已提示错误
+  } finally {
+    reparsingId.value = null
+  }
+}
+
 async function resendPaper(paper: any) {
   reset()
   viewMode.value = 'create'
@@ -642,12 +659,22 @@ onUnmounted(() => {
         <el-table-column label="创建时间" width="170">
           <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.parse_status === 'awaiting_review'" size="small" type="primary" @click="openPaper(row)">继续校对</el-button>
             <el-button v-else-if="row.parse_status === 'publish_failed'" size="small" type="primary" @click="resendPaper(row)">重新发送</el-button>
-            <el-button v-else-if="row.parse_status === 'failed'" size="small" type="primary" @click="openPaper(row)">手工出题</el-button>
+            <template v-else-if="row.parse_status === 'failed'">
+              <el-button size="small" type="primary" @click="openPaper(row)">手工出题</el-button>
+              <el-button size="small" :loading="reparsingId === row.id" @click="reparsePaper(row)">重新拆题</el-button>
+            </template>
             <el-button v-else-if="row.question_count" size="small" @click="openPaper(row)">查看题目</el-button>
+            <el-button
+              v-else-if="row.parse_status === 'parsing' || row.parse_status === 'pending'"
+              size="small"
+              type="primary"
+              :loading="reparsingId === row.id"
+              @click="reparsePaper(row)"
+            >重新拆题</el-button>
             <span v-else class="text-xs text-gray-400">无题</span>
           </template>
         </el-table-column>

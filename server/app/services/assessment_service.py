@@ -94,6 +94,52 @@ class AssessmentService:
         return paper
 
     @staticmethod
+    async def reparse_paper(
+        db: AsyncSession, paper_id: UUID, teacher_id: UUID
+    ) -> AssessmentPaper:
+        """重新拆题。
+
+        用于 pending / parsing / failed 三种卡住的状态：worker 被 OOM 杀掉时
+        run_parse 的 except 没机会执行，parse_status 会永久停在 parsing，
+        前端此前没有任何入口能救回这份试卷。
+        """
+        paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
+        if paper.parse_status == "published":
+            raise ValidationError("该试卷已发布，不能重新拆题")
+        if paper.parse_status not in ("pending", "parsing", "failed"):
+            raise ValidationError(f"当前状态（{paper.parse_status}）无需重新拆题")
+        if not paper.source_file_id:
+            raise ValidationError("该试卷没有源文件，无法重新拆题")
+
+        # 重建题目会级联删除 assessment_answers，已有作答时禁止
+        answered = await db.execute(
+            select(func.count(AssessmentAnswer.id)).where(
+                AssessmentAnswer.question_id.in_(
+                    select(AssessmentQuestion.id).where(AssessmentQuestion.paper_id == paper_id)
+                )
+            )
+        )
+        if (answered.scalar() or 0) > 0:
+            raise ValidationError("该试卷已有学生作答，不能重新拆题")
+
+        await db.execute(delete(AssessmentQuestion).where(AssessmentQuestion.paper_id == paper_id))
+        paper.question_count = 0
+        paper.total_score = 0.0
+        paper.parse_status = "pending"
+        paper.parse_error = None
+        paper.publish_at = None
+        await db.commit()
+        await db.refresh(paper)
+
+        from app.tasks.assessment_tasks import parse_assessment_paper_task
+
+        parse_assessment_paper_task.delay(str(paper.id))
+        await AssessmentService.set_parse_progress(
+            paper.id, {"stage": "pending", "total": 0, "done": 0}
+        )
+        return paper
+
+    @staticmethod
     async def get_paper(db: AsyncSession, paper_id: UUID, teacher_id: UUID) -> AssessmentPaper:
         paper = (
             await db.execute(
@@ -169,7 +215,9 @@ class AssessmentService:
                     question_type=question_type,
                     stem=(q.get("stem") or "").strip(),
                     stem_images=q.get("stem_images") or None,
-                    options=q.get("options") or None,
+                    # 读侧 schema 是 List[dict]，教师端手填/历史数据可能是别的形状，
+                    # 落库前统一收敛，否则教师校对页与学生答题页会序列化失败 500。
+                    options=question_parser_module.normalize_options(q.get("options")),
                     answer=q.get("answer"),
                     analysis=q.get("analysis"),
                     score=score,
@@ -558,6 +606,21 @@ class AssessmentService:
             return default
 
     @staticmethod
+    def _to_str_list(items: Any) -> List[str]:
+        """把可能是标量的自由 JSONB 值收敛成字符串列表。
+
+        与 _to_uuid_list 同样的理由：publish_target 内层值不受 schema 约束，
+        直接迭代标量会抛 TypeError 变成 500。
+        """
+        if items is None:
+            return []
+        if isinstance(items, str):
+            return [items]
+        if not isinstance(items, (list, tuple, set)):
+            return [str(items)]
+        return [str(i) for i in items]
+
+    @staticmethod
     def _to_uuid_list(items: Any) -> List[UUID]:
         # publish_target 是自由 dict，内层值不受 schema 约束。标量（如 ids: 1）
         # 直接迭代会抛 TypeError 冒到全局兜底变成 500，这里统一收敛为「无有效值」。
@@ -698,27 +761,26 @@ class AssessmentService:
     @staticmethod
     async def _is_targeted(db: AsyncSession, student_id: UUID, target: Dict[str, Any]) -> bool:
         target = AssessmentService._as_target_dict(target)
-        ids = target.get("ids") or []
-        whitelist = target.get("whitelist") or []
-        blacklist = target.get("blacklist") or []
+        ids = AssessmentService._to_str_list(target.get("ids"))
+        whitelist = AssessmentService._to_str_list(target.get("whitelist"))
+        blacklist = AssessmentService._to_str_list(target.get("blacklist"))
         student_str = str(student_id)
 
-        if student_str in [str(i) for i in blacklist]:
+        if student_str in blacklist:
             return False
 
         ttype = str(target.get("type") or "").strip()
         if ttype == "student":
-            return student_str in [str(i) for i in ids] or student_str in [str(i) for i in whitelist]
+            return student_str in ids or student_str in whitelist
 
-        if student_str in [str(i) for i in whitelist]:
+        if student_str in whitelist:
             return True
 
         class_ids = AssessmentService._to_uuid_list(ids)
         if not class_ids:
             return False
 
-        subset_ids = target.get("student_ids") or []
-        subset_str = [str(i) for i in subset_ids]
+        subset_str = AssessmentService._to_str_list(target.get("student_ids"))
         if subset_str:
             return student_str in subset_str
 
@@ -1359,7 +1421,7 @@ class AssessmentService:
                         question_type=q["question_type"],
                         stem=q["stem"],
                         stem_images=q.get("stem_images") or None,
-                        options=q.get("options") or None,
+                        options=question_parser_module.normalize_options(q.get("options")),
                         answer=q.get("answer"),
                         analysis=q.get("analysis"),
                         score=score,

@@ -122,10 +122,55 @@ def normalize_ai_json(content: str) -> dict:
         return {}
 
 
+_OPTION_PREFIX_RE = re.compile(r"^\s*[（(]?([A-Za-z])[）).、．:：]\s*")
+
+
+def normalize_options(raw: Any) -> Optional[List[dict]]:
+    """把 LLM 返回的任意 options 形状收敛成 [{"key": "A", "text": "..."}]。
+
+    落库前必须收敛：读侧的 schema 是 List[dict]，形状不对会让教师校对页和
+    学生答题页在序列化时直接 500。LLM 常见几种形状都要兼容：
+    - [{"key": "A", "text": "甲"}]   标准
+    - ["A. 甲", "B. 乙"]             带前缀的字符串数组
+    - ["甲", "乙"]                   纯文本数组，按顺序补 A/B/C
+    - {"A": "甲", "B": "乙"}         字典
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        raw = list(raw.items())
+        items = [{"key": str(k), "text": v} for k, v in raw]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        return []
+
+    out: List[dict] = []
+    for index, item in enumerate(items):
+        fallback_key = chr(ord("A") + index) if index < 26 else str(index + 1)
+        if isinstance(item, dict):
+            key = str(item.get("key") or fallback_key).strip() or fallback_key
+            text = item.get("text")
+            if text is None:
+                text = item.get("value") or item.get("content") or ""
+            merged = dict(item)
+            merged["key"] = key
+            merged["text"] = str(text)
+            out.append(merged)
+            continue
+        text = str(item)
+        match = _OPTION_PREFIX_RE.match(text)
+        if match:
+            out.append({"key": match.group(1).upper(), "text": text[match.end():].strip()})
+        else:
+            out.append({"key": fallback_key, "text": text})
+    return out
+
+
 def _coerce_question(raw: dict, fallback_index: int) -> dict:
     qtype = str(raw.get("type") or "").strip()
     qtype = TYPE_ALIASES.get(qtype, qtype if qtype in ALLOWED_TYPES else "short")
-    options = raw.get("options")
+    options = normalize_options(raw.get("options"))
     answer = raw.get("answer")
     if options is None and qtype in {"single", "multiple", "judge"}:
         options = []

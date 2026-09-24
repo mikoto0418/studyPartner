@@ -41,6 +41,20 @@ async def create_paper(
     return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="拆题任务已提交")
 
 
+@router.post(
+    "/papers/{paper_id}/reparse",
+    response_model=BaseResponse[AssessmentPaperOut],
+    summary="重新拆题（pending / parsing / failed 卡住时）",
+)
+async def reparse_paper(
+    paper_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    paper = await AssessmentService.reparse_paper(db, paper_id, current_user.id)
+    return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="已重新提交拆题")
+
+
 @router.get("/papers", response_model=BaseResponse[List[AssessmentPaperOut]], summary="教师试卷列表")
 async def list_papers(
     current_user: User = Depends(require_staff),

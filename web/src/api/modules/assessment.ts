@@ -164,6 +164,10 @@ export const assessmentApi = {
     return request.get(`/assessment/papers/${id}/parse-status`)
   },
 
+  reparsePaper(id: string) {
+    return request.post(`/assessment/papers/${id}/reparse`)
+  },
+
   listQuestions(id: string) {
     return request.get(`/assessment/papers/${id}/questions`)
   },
