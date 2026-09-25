@@ -21,6 +21,8 @@ const loading = ref(false)
 const starting = ref(false)
 const started = ref(false)
 const dueAt = ref<string | null>(null)
+const answerDeadline = ref<string | null>(null)
+const timeLimitMinutes = ref<number | null>(null)
 const remainingSeconds = ref<number | null>(null)
 // 截止后「从未开考」的试卷：startAttempt 会 400，此时没有 attempt、拿不到
 // due_at，只能靠这个标志落到 isExpired 分支，否则页面停在空白卷面出不去。
@@ -227,11 +229,12 @@ const scheduleAutosave = () => {
 }
 
 const syncRemaining = () => {
-  if (!dueAt.value) {
+  const raw = answerDeadline.value || dueAt.value
+  if (!raw) {
     remainingSeconds.value = null
     return
   }
-  const target = new Date(dueAt.value).getTime()
+  const target = new Date(raw).getTime()
   if (Number.isNaN(target)) {
     remainingSeconds.value = null
     return
@@ -244,7 +247,7 @@ const tickCountdown = () => {
   syncRemaining()
   if (remainingSeconds.value <= 0 && !expirySubmitTriggered) {
     expirySubmitTriggered = true
-    ElMessage.warning('已到截止时间，正在自动交卷')
+    ElMessage.warning('作答时间已到，正在自动交卷')
     submit(true)
   }
 }
@@ -302,6 +305,7 @@ const load = async () => {
       throw err
     }
     attempt.value = aRes.data
+    answerDeadline.value = attempt.value?.answer_deadline ?? null
 
     // pending_review：客观题已判分、主观题待批改，同样属于已交卷，不能再作答
     if (attempt.value && (attempt.value.status === 'submitted' || attempt.value.status === 'pending_review')) {
@@ -345,6 +349,7 @@ const load = async () => {
       const listRes = await assessmentApi.listStudentPapers()
       const meta = (listRes.data || []).find((item: any) => String(item.id) === paperId)
       dueAt.value = meta?.due_at ?? null
+      timeLimitMinutes.value = meta?.time_limit_minutes ?? null
     } catch {
       dueAt.value = null
     }
@@ -413,6 +418,7 @@ onUnmounted(() => {
       </p>
       <p v-else class="mt-2 text-xs text-gray-400">得分 {{ result.score ?? 0 }} 分 · 用时 {{ result.duration_seconds ?? 0 }} 秒</p>
       <p v-if="pendingReview" class="mt-1 text-xs text-gray-400">用时 {{ result.duration_seconds ?? 0 }} 秒</p>
+      <button class="ui-button-secondary mt-4 mr-2" @click="router.push(`/student/assessment/${paperId}/review`)">查看逐题成绩</button>
       <button class="ui-button-primary mt-4" @click="router.push('/student/assessment')">返回试卷列表</button>
     </div>
 
@@ -431,6 +437,7 @@ onUnmounted(() => {
         <li>· 点击下方按钮后将进入全屏作答，中途退出全屏会被记录</li>
         <li>· 作答期间禁止复制、粘贴、右键与切换窗口</li>
         <li>· 连续退出全屏 3 次将自动交卷</li>
+        <li v-if="timeLimitMinutes">· 限时 {{ timeLimitMinutes }} 分钟，从进入试卷开始计时</li>
         <li v-if="remainingSeconds !== null">· 剩余作答时间 {{ formattedRemaining }}，到时自动交卷</li>
       </ul>
       <button

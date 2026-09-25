@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { ShieldAlert, Eye, Clock, FileText, PenLine } from 'lucide-vue-next'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ShieldAlert, Eye, Clock, FileText, PenLine, Sparkles, CheckCheck } from 'lucide-vue-next'
 import {
   assessmentApi,
   type AssessmentPaper,
   type AttemptMonitor,
   type AttemptAnswer,
   type BehaviorEventOut,
-  type AttemptInsights
+  type AttemptInsights,
+  type AIGradeResult
 } from '../../api/modules/assessment'
 import RichStem from '../../components/assessment/RichStem.vue'
 import MathText from '../../components/common/MathText.vue'
@@ -34,9 +35,23 @@ const questionMap = ref<Record<string, number>>({})
 const gradeDrawer = ref(false)
 const gradeLoading = ref(false)
 const gradeSubmitting = ref(false)
+const gradeAiRunning = ref(false)
 const gradeAnswers = ref<AttemptAnswer[]>([])
 const gradeScores = ref<Record<string, number>>({})
+const aiGradeErrors = ref<Record<string, string>>({})
 const gradingAttempt = ref<AttemptMonitor | null>(null)
+
+// 本卷的批阅倾向，AI 与人工批改共用同一份尺度提示
+const gradingPreferenceText = computed(() => {
+  const pref = selectedPaper.value?.grading_preference
+  const mode = pref?.mode || 'standard'
+  const label = mode === 'lenient' ? '宽松' : mode === 'strict' ? '严格' : '标准'
+  const extra = (pref?.extra || '').trim()
+  return extra ? `${label} · ${extra}` : label
+})
+
+const hasAiSuggestion = (a: AttemptAnswer) =>
+  a.ai_suggested_score != null || !!a.ai_comment
 
 const EVENT_LABELS: Record<string, string> = {
   session_start: '开始作答',
@@ -51,6 +66,7 @@ const EVENT_LABELS: Record<string, string> = {
   blocked_drop: '拦截拖拽',
   blocked_contextmenu: '拦截右键',
   blocked_insert: '拦截粘贴插入',
+  answer_edit: '答案编辑记录',
   blocked_selection: '拦截选中复制',
   blocked_drag: '拦截拖拽',
   blocked_exec: '拦截 execCommand',
@@ -184,6 +200,19 @@ const formatEventPayload = (e: BehaviorEventOut) => {
     if (p.duration_ms != null) parts.push(`停留 ${sec(p.duration_ms)}s`)
     return parts.join(' · ')
   }
+  if (e.event_type === 'answer_edit') {
+    const no = questionNo(p.question_id)
+    if (no) parts.push(no)
+    const method: Record<string, string> = {
+      typing: '键盘输入', ime: '输入法', non_key_input: '非键盘输入', delete: '删除'
+    }
+    const op: Record<string, string> = { insert: '新增', delete: '删除', replace: '替换' }
+    parts.push(method[p.input_method] || '编辑')
+    parts.push(op[p.operation] || '修改')
+    if (p.deleted_chars) parts.push(`删 ${p.deleted_chars} 字`)
+    if (p.inserted_chars) parts.push(`增 ${p.inserted_chars} 字`)
+    return parts.join(' · ')
+  }
 
   if (p.duration_ms != null) parts.push(`离开 ${sec(p.duration_ms)}s`)
   if (p.code) parts.push(`按键 ${p.code}`)
@@ -291,12 +320,33 @@ const insightRows = computed(() => {
   }))
 })
 
+// 原始 BehaviorEvent 仍完整保存在后端；在按题画像里按题筛出编辑历史，
+// 让教师可以展开查看精确的新增/删除内容，而不只看到字符数摘要。
+const answerEditsForQuestion = (questionId: string) =>
+  behaviorEvents.value.filter(
+    (event) => event.event_type === 'answer_edit' && String(event.payload?.question_id || '') === questionId
+  )
+
+const editMethodLabel: Record<string, string> = {
+  typing: '键盘输入',
+  ime: '输入法提交',
+  non_key_input: '非键盘输入',
+  delete: '删除'
+}
+const editOperationLabel: Record<string, string> = {
+  insert: '新增',
+  delete: '删除',
+  replace: '替换',
+  none: '无变化'
+}
+
 const openGrading = async (attempt: AttemptMonitor) => {
   gradingAttempt.value = attempt
   gradeDrawer.value = true
   gradeLoading.value = true
   gradeAnswers.value = []
   gradeScores.value = {}
+  aiGradeErrors.value = {}
   try {
     const res = await assessmentApi.listAttemptAnswers(attempt.id)
     const items: AttemptAnswer[] = res.data || []
@@ -304,6 +354,7 @@ const openGrading = async (attempt: AttemptMonitor) => {
     // 只预填「已批改」的分数；未批改的留空。
     // 若把未批改的一律填 0 并全量提交，教师只批一道题就会把其余主观题
     // 静默锁成「已批 0 分」，且 graded=True 后无法再回到待批状态。
+    // AI 建议分也不预填 —— 那是参考值，必须由教师点「采纳」才写入。
     const scores: Record<string, number> = {}
     items.forEach((a) => {
       if (isManualType(a.question_type) && a.graded) {
@@ -316,6 +367,69 @@ const openGrading = async (attempt: AttemptMonitor) => {
   } finally {
     gradeLoading.value = false
   }
+}
+
+const runAiGrade = async (overwrite = false) => {
+  if (!gradingAttempt.value) return
+  gradeAiRunning.value = true
+  try {
+    const res = await assessmentApi.aiGradeAttempt(gradingAttempt.value.id, { overwrite })
+    const result = res.data as AIGradeResult | undefined
+    const errors: Record<string, string> = {}
+    for (const item of result?.items || []) {
+      if (item.error) errors[String(item.question_id)] = item.error
+    }
+    aiGradeErrors.value = errors
+    const fresh = await assessmentApi.listAttemptAnswers(gradingAttempt.value.id)
+    gradeAnswers.value = fresh.data || []
+    const graded = result?.graded ?? 0
+    const failed = result?.failed ?? 0
+    const skipped = result?.skipped ?? 0
+    if (graded > 0 && failed === 0) {
+      ElMessage.success(`AI 已预批 ${graded} 题，待你确认采纳`)
+    } else if (graded > 0) {
+      ElMessage.warning(`AI 已预批 ${graded} 题，另有 ${failed} 题失败，原因标在题目下方`)
+    } else if (failed > 0) {
+      ElMessage.warning(`${failed} 题未能批阅，原因标在题目下方`)
+    } else if (skipped > 0) {
+      ElMessage.info('这些主观题已有建议或人工分。要重算建议分，用「重新生成」')
+    } else {
+      ElMessage.info('没有需要预批的主观题')
+    }
+  } catch {
+    // 错误已由拦截器提示
+  } finally {
+    gradeAiRunning.value = false
+  }
+}
+
+const regenerateAiGrade = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '将重新调用 AI，覆盖现有建议分。已经保存的人工分数不会被改动。',
+      '重新生成建议',
+      { type: 'warning', confirmButtonText: '重新生成', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  await runAiGrade(true)
+}
+
+// 采纳 AI 建议分：只是把它填进打分框，仍需教师点保存才生效
+const adoptAiScore = (a: AttemptAnswer) => {
+  if (a.ai_suggested_score == null) return
+  gradeScores.value = { ...gradeScores.value, [a.question_id]: Number(a.ai_suggested_score) }
+}
+
+const adoptAllAiScores = () => {
+  const next = { ...gradeScores.value }
+  gradeAnswers.value.forEach((a) => {
+    if (isManualType(a.question_type) && a.ai_suggested_score != null) {
+      next[a.question_id] = Number(a.ai_suggested_score)
+    }
+  })
+  gradeScores.value = next
 }
 
 const submitGrades = async () => {
@@ -524,9 +638,44 @@ onMounted(loadPapers)
                   </span>
                 </span>
                 <span v-if="q.paste_events > 0" class="font-semibold text-red-500">
-                  整段粘贴 {{ q.paste_events }} 次 · {{ q.paste_chars }} 字
+                  非键盘插入 {{ q.paste_events }} 次 · {{ q.paste_chars }} 字
                 </span>
               </div>
+
+              <div v-if="q.edit_count > 0" class="mt-1 text-[10px] text-gray-400 dark:text-zinc-500">
+                编辑 {{ q.edit_count }} 段 · 手敲 {{ q.typed_chars }} 字
+                <span v-if="q.ime_chars">· 输入法 {{ q.ime_chars }} 字</span>
+                <span v-if="q.non_key_input_chars">· 非键盘 {{ q.non_key_input_chars }} 字</span>
+                <span v-if="q.deleted_chars">· 删除 {{ q.deleted_chars }} 字</span>
+              </div>
+
+              <details v-if="answerEditsForQuestion(q.question_id).length" class="mt-2 rounded-md bg-gray-50 px-2.5 py-2 dark:bg-zinc-950/40">
+                <summary class="cursor-pointer text-[10px] font-semibold text-blue-600 dark:text-blue-300">
+                  查看新增 / 删除内容（{{ answerEditsForQuestion(q.question_id).length }} 段）
+                </summary>
+                <div class="mt-2 max-h-72 space-y-2 overflow-y-auto">
+                  <article
+                    v-for="edit in answerEditsForQuestion(q.question_id)"
+                    :key="edit.id"
+                    class="rounded border border-gray-100 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900"
+                  >
+                    <div class="mb-1 flex flex-wrap items-center gap-1.5 text-[9px] text-gray-400">
+                      <span>{{ formatTime(edit.occurred_at) }}</span>
+                      <span>{{ editMethodLabel[edit.payload?.input_method] || '编辑' }}</span>
+                      <span>{{ editOperationLabel[edit.payload?.operation] || '修改' }}</span>
+                      <span>位置 {{ edit.payload?.position ?? 0 }}</span>
+                    </div>
+                    <div v-if="edit.payload?.deleted_text" class="text-[10px] leading-relaxed">
+                      <span class="font-semibold text-red-500">删除：</span>
+                      <pre class="mt-0.5 whitespace-pre-wrap break-words rounded bg-red-50/70 p-1.5 text-red-700 dark:bg-red-950/20 dark:text-red-300">{{ edit.payload.deleted_text }}</pre>
+                    </div>
+                    <div v-if="edit.payload?.inserted_text" class="mt-1 text-[10px] leading-relaxed">
+                      <span class="font-semibold text-emerald-600">新增：</span>
+                      <pre class="mt-0.5 whitespace-pre-wrap break-words rounded bg-emerald-50/70 p-1.5 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300">{{ edit.payload.inserted_text }}</pre>
+                    </div>
+                  </article>
+                </div>
+              </details>
 
               <div
                 v-if="q.deviation"
@@ -583,6 +732,24 @@ onMounted(loadPapers)
       size="620px"
     >
       <div v-loading="gradeLoading" class="space-y-3 px-1">
+        <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2.5 dark:border-blue-900/40 dark:bg-blue-950/20">
+          <div class="min-w-0">
+            <p class="text-[11px] font-semibold text-blue-700 dark:text-blue-300">批阅尺度：{{ gradingPreferenceText }}</p>
+            <p class="mt-0.5 text-[10px] leading-relaxed text-blue-600/80 dark:text-blue-300/70">
+              先让 AI 预批出建议分，再逐题确认或采纳；采纳只是填入打分框，保存后才生效。
+            </p>
+          </div>
+          <el-button
+            size="small"
+            type="primary"
+            :loading="gradeAiRunning"
+            :disabled="!gradeAnswers.length"
+            @click="runAiGrade()"
+          >
+            <Sparkles class="mr-1 h-3.5 w-3.5" />
+            AI 预批阅
+          </el-button>
+        </div>
         <div
           v-for="a in gradeAnswers"
           :key="a.question_id"
@@ -641,6 +808,32 @@ onMounted(loadPapers)
             </p>
           </div>
 
+          <div
+            v-if="hasAiSuggestion(a)"
+            class="mt-2 rounded border border-violet-100 bg-violet-50/60 px-3 py-2 dark:border-violet-900/40 dark:bg-violet-950/20"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <p class="flex items-center gap-1 text-[11px] font-semibold text-violet-600 dark:text-violet-300">
+                <Sparkles class="h-3 w-3" />
+                AI 建议
+                <template v-if="a.ai_suggested_score != null">：{{ a.ai_suggested_score }} 分</template>
+              </p>
+              <button
+                v-if="a.ai_suggested_score != null && a.max_score != null"
+                class="rounded bg-violet-600 px-2 py-0.5 text-[10px] font-semibold text-white transition hover:bg-violet-500"
+                @click="adoptAiScore(a)"
+              >
+                采纳
+              </button>
+            </div>
+            <p v-if="a.ai_comment" class="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-violet-700/90 dark:text-violet-200/80">
+              {{ a.ai_comment }}
+            </p>
+          </div>
+          <p v-if="aiGradeErrors[a.question_id]" class="mt-2 text-[11px] leading-relaxed text-red-500">
+            未能预批：{{ aiGradeErrors[a.question_id] }}
+          </p>
+
           <div v-if="isManualType(a.question_type) || !a.graded" class="mt-3 flex items-center gap-2">
             <template v-if="a.max_score === null || a.max_score === undefined">
               <span class="text-xs text-amber-500">该题未设置分值，请先在校对页补填后再给分</span>
@@ -651,7 +844,8 @@ onMounted(loadPapers)
                 v-model="gradeScores[a.question_id]"
                 :min="0"
                 :max="a.max_score"
-                :step="1"
+                :step="0.5"
+                :precision="1"
                 size="small"
                 controls-position="right"
                 class="w-28"
@@ -669,6 +863,10 @@ onMounted(loadPapers)
       <template #footer>
         <div class="flex justify-end gap-2">
           <el-button @click="gradeDrawer = false">取消</el-button>
+          <el-button :disabled="gradeAiRunning || !gradeAnswers.length" @click="regenerateAiGrade">
+            重新生成建议
+          </el-button>
+          <el-button :icon="CheckCheck" @click="adoptAllAiScores">采纳全部建议分</el-button>
           <el-button
             type="primary"
             :loading="gradeSubmitting"

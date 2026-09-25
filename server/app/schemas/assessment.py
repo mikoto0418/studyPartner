@@ -55,6 +55,10 @@ class AssessmentPublishReq(BaseModel):
     publish_target: dict
     publish_at: Optional[datetime] = None
     due_at: Optional[datetime] = None
+    # 开考后限时，单位分钟。与 due_at 同时存在时，先到的那个收卷
+    time_limit_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    # 主观题批阅倾向，随发布一并保存；{mode: lenient/standard/strict, extra: str}
+    grading_preference: Optional[dict] = None
 
 
 class ParseStatusOut(BaseModel):
@@ -78,6 +82,7 @@ class AssessmentPaperOut(BaseModel):
     publish_target: Optional[dict] = None
     publish_at: Optional[datetime] = None
     published_at: Optional[datetime] = None
+    grading_preference: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
 
@@ -121,9 +126,34 @@ class StudentPaperOut(BaseModel):
     total_score: Optional[float] = None
     published_at: Optional[datetime] = None
     due_at: Optional[datetime] = None
+    time_limit_minutes: Optional[int] = None
     attempt_id: Optional[UUID] = None
     attempt_status: Optional[str] = None
     attempt_score: Optional[float] = None
+
+
+class StudentReviewQuestionOut(BaseModel):
+    question_id: UUID
+    order_index: int
+    question_type: str
+    stem: str
+    stem_images: Optional[List[dict]] = None
+    options: Optional[List[dict]] = None
+    max_score: Optional[float] = None
+    student_answer: Optional[Any] = None
+    score: Optional[float] = None
+    graded: bool = False
+    is_correct: Optional[bool] = None
+    reference_answer: Optional[Any] = None
+    analysis: Optional[str] = None
+
+
+class StudentReviewOut(BaseModel):
+    """交卷后的成绩回顾。score 仅在全部批完后才有；客观题小计始终给出。"""
+
+    paper: Dict[str, Any]
+    attempt: Dict[str, Any]
+    questions: List[StudentReviewQuestionOut] = Field(default_factory=list)
 
 
 class StudentAttemptOut(BaseModel):
@@ -134,6 +164,8 @@ class StudentAttemptOut(BaseModel):
     submitted_at: Optional[datetime] = None
     score: Optional[float] = None
     duration_seconds: Optional[int] = None
+    # 本次作答的实际截止时刻：整卷截止与开考限时中较早的那个
+    answer_deadline: Optional[datetime] = None
     # 仅交卷响应会置位：超过截止宽限期时本次提交的答案未落库
     answers_ignored: bool = False
 
@@ -187,6 +219,33 @@ class AttemptAnswerOut(BaseModel):
     score: float = 0.0
     graded: bool = False
     is_correct: Optional[bool] = None
+    # AI 预批阅建议：教师确认前只是参考值，不写进 score
+    ai_suggested_score: Optional[float] = None
+    ai_comment: Optional[str] = None
+    ai_graded_at: Optional[datetime] = None
+
+
+class AIGradeReq(BaseModel):
+    """AI 预批阅请求。question_ids 为空表示批本卷全部主观题。"""
+
+    question_ids: List[UUID] = Field(default_factory=list, max_length=200)
+    overwrite: bool = False
+
+
+class AIGradeItemOut(BaseModel):
+    question_id: UUID
+    suggested_score: Optional[float] = None
+    max_score: Optional[float] = None
+    comment: str = ""
+    error: Optional[str] = None
+
+
+class AIGradeOut(BaseModel):
+    graded: int = 0
+    failed: int = 0
+    # 已有人工分或已有建议、且本次未要求覆盖的题
+    skipped: int = 0
+    items: List[AIGradeItemOut] = Field(default_factory=list)
 
 
 class GradeItemIn(BaseModel):
@@ -237,6 +296,13 @@ class AttemptInsightsOut(BaseModel):
 
     attempt: Dict[str, Any]
     questions: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class StudentExamHistoryOut(BaseModel):
+    """某学生在当前教师名下的历次考试。"""
+
+    student: Dict[str, Any]
+    attempts: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ClassExamAnalyticsOut(BaseModel):

@@ -33,6 +33,7 @@ CHAT_TASK_TYPES: List[str] = [
     "learning_path_generate",
     "document_summary",
     "question_parsing",
+    "assessment_grading",
 ]
 EMBEDDING_TASK_TYPES: List[str] = ["knowledge_embedding"]
 

@@ -2,8 +2,9 @@ import asyncio
 import io
 import json
 import logging
+import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
@@ -66,6 +67,40 @@ class AssessmentService:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    # 批阅倾向只有这三档；AI 与教师看到的都是同一份定义。
+    GRADING_MODES = {
+        "lenient": "宽松：只要要点方向正确就给分，措辞与完整性不足不扣分",
+        "standard": "标准：按参考答案要点给分，表达不完整酌情扣分",
+        "strict": "严格：必须覆盖全部要点且表述准确才给满分，缺一项即扣对应分",
+    }
+
+    @staticmethod
+    def _normalize_grading_preference(raw: Any) -> Optional[Dict[str, Any]]:
+        """把前端传来的批阅倾向收敛成 {mode, extra}，非法值一律按「标准」。
+
+        自由 dict 不做校验的话，mode 可能是个任意字符串 —— AI 提示词里
+        就会插进一段不可控内容，且教师端展示会空白。
+        """
+        if not isinstance(raw, dict):
+            return None
+        mode = str(raw.get("mode") or "").strip()
+        if mode not in AssessmentService.GRADING_MODES:
+            mode = "standard"
+        extra = raw.get("extra")
+        extra = str(extra).strip()[:500] if extra else ""
+        if not extra and mode == "standard":
+            return None
+        return {"mode": mode, "extra": extra}
+
+    @staticmethod
+    def _grading_preference_text(raw: Any) -> str:
+        pref = AssessmentService._normalize_grading_preference(raw) or {"mode": "standard", "extra": ""}
+        desc = AssessmentService.GRADING_MODES.get(pref["mode"], AssessmentService.GRADING_MODES["standard"])
+        text = f"批阅尺度：{desc}。"
+        if pref["extra"]:
+            text += f" 教师补充要求：{pref['extra']}"
+        return text
 
     @staticmethod
     def _progress_key(paper_id: UUID) -> str:
@@ -318,6 +353,8 @@ class AssessmentService:
         publish_target: Dict[str, Any],
         publish_at: Optional[datetime] = None,
         due_at: Optional[datetime] = None,
+        grading_preference: Optional[Dict[str, Any]] = None,
+        time_limit_minutes: Optional[int] = None,
     ) -> AssessmentPaper:
         paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
         if paper.parse_status not in ("awaiting_review", "publish_failed"):
@@ -417,9 +454,17 @@ class AssessmentService:
 
         if due_at is not None:
             target["due_at"] = due_at.isoformat()
+        minutes = AssessmentService._normalize_time_limit(time_limit_minutes)
+        if minutes is not None:
+            target["time_limit_minutes"] = minutes
+        else:
+            target.pop("time_limit_minutes", None)
 
         paper.publish_target = target
         paper.publish_at = publish_at
+        paper.grading_preference = AssessmentService._normalize_grading_preference(
+            grading_preference
+        )
         paper.parse_error = None
         if publish_at is None:
             paper.published_at = datetime.now(timezone.utc)
@@ -480,35 +525,71 @@ class AssessmentService:
             )
             .exists()
         )
-        paper_rows = await db.execute(
-            select(AssessmentPaper.id, AssessmentPaper.publish_target).where(
-                AssessmentPaper.parse_status == "published",
-                AssessmentPaper.deleted_at.is_(None),
-                AssessmentPaper.publish_target.is_not(None),
-                has_in_progress_attempt,
+        paper_rows = (
+            await db.execute(
+                select(AssessmentPaper.id, AssessmentPaper.publish_target).where(
+                    AssessmentPaper.parse_status == "published",
+                    AssessmentPaper.deleted_at.is_(None),
+                    AssessmentPaper.publish_target.is_not(None),
+                    has_in_progress_attempt,
+                )
             )
-        )
+        ).all()
         expired_paper_ids: List[UUID] = []
-        for paper_id, publish_target in paper_rows.all():
+        for paper_id, publish_target in paper_rows:
             due_at = AssessmentService._parse_due_at(
                 publish_target.get("due_at") if isinstance(publish_target, dict) else None
             )
             if due_at is not None and due_at <= now:
                 expired_paper_ids.append(paper_id)
-        if not expired_paper_ids:
-            return 0
-        # asyncpg 的绑定参数上限是 32767，in_() 每个 id 占一个参数。
-        # 截断不会漏收：本轮结算过的 attempt 会离开 in_progress，下一轮 tick
-        # 查到的就是剩下那批，cap 只是把单次工作量摊到多轮。
         cap = 5000
         if len(expired_paper_ids) > cap:
             expired_paper_ids = expired_paper_ids[:cap]
 
+        # 限时是「开考后 N 分钟」，和整卷截止时间无关。只挑已经超时的作答，
+        # 不能先 limit 再在 Python 里过滤，否则未超时的行会一直占住名额。
+        timed_attempt_ids: List[UUID] = []
+        timed_papers: Dict[UUID, int] = {}
+        for paper_id, publish_target in paper_rows:
+            minutes = AssessmentService._coerce_time_limit(
+                publish_target.get("time_limit_minutes") if isinstance(publish_target, dict) else None
+            )
+            if minutes is not None:
+                timed_papers[paper_id] = minutes
+        if timed_papers:
+            started_rows = await db.execute(
+                select(
+                    AssessmentAttempt.id,
+                    AssessmentAttempt.paper_id,
+                    AssessmentAttempt.started_at,
+                ).where(
+                    AssessmentAttempt.status == "in_progress",
+                    AssessmentAttempt.paper_id.in_(list(timed_papers)),
+                )
+            )
+            for attempt_id, paper_id, started_at in started_rows.all():
+                if started_at is None:
+                    continue
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+                if started_at + timedelta(minutes=timed_papers[paper_id]) <= now:
+                    timed_attempt_ids.append(attempt_id)
+            if len(timed_attempt_ids) > cap:
+                timed_attempt_ids = timed_attempt_ids[:cap]
+
+        if not expired_paper_ids and not timed_attempt_ids:
+            return 0
+
+        expired_filter = []
+        if expired_paper_ids:
+            expired_filter.append(AssessmentAttempt.paper_id.in_(expired_paper_ids))
+        if timed_attempt_ids:
+            expired_filter.append(AssessmentAttempt.id.in_(timed_attempt_ids))
         result = await db.execute(
             select(AssessmentAttempt)
             .where(
                 AssessmentAttempt.status == "in_progress",
-                AssessmentAttempt.paper_id.in_(expired_paper_ids),
+                or_(*expired_filter),
             )
             .order_by(AssessmentAttempt.started_at.asc())
             .limit(limit)
@@ -961,6 +1042,12 @@ class AssessmentService:
                 "dwell_events": 0,
                 "paste_events": 0,
                 "paste_chars": 0,
+                "edit_count": 0,
+                "inserted_chars": 0,
+                "typed_chars": 0,
+                "ime_chars": 0,
+                "non_key_input_chars": 0,
+                "deleted_chars": 0,
                 "flag_count": 0,
                 "class_avg_dwell_seconds": None,
             }
@@ -987,6 +1074,24 @@ class AssessmentService:
                     stat["paste_chars"] += int(p.get("inserted") or 0)
                 except (TypeError, ValueError):
                     pass
+            elif e.event_type == "answer_edit":
+                # 逐次输入历史完整保存在 behavior_events；画像接口只回聚合数，
+                # 避免一篇长作文的所有文字差异被重复打包进同一响应。
+                stat["edit_count"] += 1
+                input_method = str(p.get("input_method") or "unknown")
+                try:
+                    inserted_chars = int(p.get("inserted_chars") or 0)
+                    deleted_chars = int(p.get("deleted_chars") or 0)
+                    stat["inserted_chars"] += inserted_chars
+                    stat["deleted_chars"] += deleted_chars
+                    if input_method == "typing":
+                        stat["typed_chars"] += inserted_chars
+                    elif input_method == "ime":
+                        stat["ime_chars"] += inserted_chars
+                    elif input_method == "non_key_input":
+                        stat["non_key_input_chars"] += inserted_chars
+                except (TypeError, ValueError):
+                    pass
             if e.event_type in AssessmentService.BEHAVIOR_FLAG_TYPES:
                 stat["flag_count"] += 1
 
@@ -1008,6 +1113,107 @@ class AssessmentService:
             },
             "questions": [per_q[str(q.id)] for q in questions],
         }
+
+    @staticmethod
+    async def answer_deadline(db: AsyncSession, attempt: AssessmentAttempt) -> Optional[datetime]:
+        paper = (
+            await db.execute(
+                select(AssessmentPaper).where(AssessmentPaper.id == attempt.paper_id)
+            )
+        ).scalars().first()
+        return AssessmentService._effective_deadline(paper, attempt)
+
+    @staticmethod
+    async def list_student_exam_history(
+        db: AsyncSession, class_id: UUID, student_id: UUID, teacher_id: UUID
+    ) -> Dict[str, Any]:
+        """某学生在该教师名下的历次考试。
+
+        只包含当前教师发布、且确实发到这个学生的试卷。学生必须是这个班的在读成员，
+        避免拿着任意用户 ID 去翻别的教师的成绩。
+        """
+        class_group = (
+            await db.execute(
+                select(ClassGroup).where(
+                    ClassGroup.id == class_id,
+                    ClassGroup.teacher_id == teacher_id,
+                    ClassGroup.deleted_at.is_(None),
+                )
+            )
+        ).scalars().first()
+        if not class_group:
+            raise NotFoundError("班级不存在")
+        member = (
+            await db.execute(
+                select(ClassMember.id).where(
+                    ClassMember.class_id == class_id,
+                    ClassMember.user_id == student_id,
+                    ClassMember.status == "active",
+                    ClassMember.deleted_at.is_(None),
+                )
+            )
+        ).scalars().first()
+        if member is None:
+            raise NotFoundError("学生不在该班级")
+
+        user = (
+            await db.execute(
+                select(User.nickname, User.username).where(User.id == student_id)
+            )
+        ).first()
+        name = (user.nickname or user.username) if user else "未命名"
+
+        papers = (
+            await db.execute(
+                select(AssessmentPaper)
+                .where(
+                    AssessmentPaper.creator_id == teacher_id,
+                    AssessmentPaper.parse_status == "published",
+                    AssessmentPaper.deleted_at.is_(None),
+                )
+                .order_by(AssessmentPaper.published_at.desc())
+            )
+        ).scalars().all()
+
+        targeted: List[AssessmentPaper] = []
+        for paper in papers:
+            if await AssessmentService._is_targeted(db, student_id, paper.publish_target):
+                targeted.append(paper)
+        if not targeted:
+            return {"student": {"id": str(student_id), "name": name}, "attempts": []}
+
+        paper_ids = [paper.id for paper in targeted]
+        attempt_rows = (
+            await db.execute(
+                select(AssessmentAttempt).where(
+                    AssessmentAttempt.student_id == student_id,
+                    AssessmentAttempt.paper_id.in_(paper_ids),
+                )
+            )
+        ).scalars().all()
+        by_paper = {row.paper_id: row for row in attempt_rows}
+
+        attempts = []
+        for paper in targeted:
+            attempt = by_paper.get(paper.id)
+            attempts.append(
+                {
+                    "paper_id": paper.id,
+                    "title": paper.title,
+                    "total_score": paper.total_score,
+                    "published_at": paper.published_at,
+                    "due_at": AssessmentService._due_at_of(paper),
+                    "time_limit_minutes": AssessmentService._time_limit_minutes_of(paper),
+                    "attempt_id": attempt.id if attempt else None,
+                    "status": attempt.status if attempt else None,
+                    "score": attempt.score if attempt else None,
+                    "started_at": attempt.started_at if attempt else None,
+                    "submitted_at": attempt.submitted_at if attempt else None,
+                    "duration_seconds": attempt.duration_seconds if attempt else None,
+                    "suspicious": bool(attempt.suspicious) if attempt else False,
+                }
+            )
+        return {"student": {"id": str(student_id), "name": name}, "attempts": attempts}
 
     @staticmethod
     async def get_class_exam_analytics(
@@ -1429,10 +1635,80 @@ class AssessmentService:
         return AssessmentService._parse_due_at(target.get("due_at"))
 
     @staticmethod
-    def _ensure_not_expired(paper: AssessmentPaper) -> None:
+    def _normalize_time_limit(raw: Any) -> Optional[int]:
+        """发布时校验限时。空表示不限时；非法值拒绝，避免 0 分钟被当成「马上收卷」。"""
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, bool):
+            raise ValidationError("限时必须是 1 到 1440 之间的整数分钟")
+        try:
+            minutes = int(raw)
+        except (TypeError, ValueError):
+            raise ValidationError("限时必须是 1 到 1440 之间的整数分钟")
+        if minutes < 1 or minutes > 24 * 60:
+            raise ValidationError("限时必须是 1 到 1440 之间的整数分钟")
+        return minutes
+
+    @staticmethod
+    def _coerce_time_limit(raw: Any) -> Optional[int]:
+        """读历史数据。脏值当成没设限时，不能让收卷任务崩掉。"""
+        if raw is None or raw == "" or isinstance(raw, bool):
+            return None
+        try:
+            minutes = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if minutes < 1 or minutes > 24 * 60:
+            return None
+        return minutes
+
+    @staticmethod
+    def _time_limit_minutes_of(paper: Optional[AssessmentPaper]) -> Optional[int]:
+        if paper is None:
+            return None
+        target = AssessmentService._as_target_dict(paper.publish_target)
+        return AssessmentService._coerce_time_limit(target.get("time_limit_minutes"))
+
+    @staticmethod
+    def _time_limit_end(paper: Optional[AssessmentPaper], attempt: Optional[AssessmentAttempt]) -> Optional[datetime]:
+        minutes = AssessmentService._time_limit_minutes_of(paper)
+        if minutes is None or attempt is None or attempt.started_at is None:
+            return None
+        started = attempt.started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return started + timedelta(minutes=minutes)
+
+    @staticmethod
+    def _effective_deadline(
+        paper: Optional[AssessmentPaper], attempt: Optional[AssessmentAttempt]
+    ) -> Optional[datetime]:
+        """截止时间和开考后限时同时存在时，先到的那个生效。"""
+        candidates = []
+        if paper is not None:
+            due_at = AssessmentService._due_at_of(paper)
+            if due_at is not None:
+                candidates.append(due_at)
+        limit_end = AssessmentService._time_limit_end(paper, attempt)
+        if limit_end is not None:
+            candidates.append(limit_end)
+        return min(candidates) if candidates else None
+
+    @staticmethod
+    def _ensure_not_expired(
+        paper: AssessmentPaper, attempt: Optional[AssessmentAttempt] = None
+    ) -> None:
+        now = datetime.now(timezone.utc)
         due_at = AssessmentService._due_at_of(paper)
-        if due_at is not None and datetime.now(timezone.utc) > due_at:
-            raise ValidationError("已超过截止时间，无法继续作答")
+        limit_end = AssessmentService._time_limit_end(paper, attempt)
+        past = []
+        if due_at is not None and now > due_at:
+            past.append((due_at, "已超过截止时间，无法继续作答"))
+        if limit_end is not None and now > limit_end:
+            past.append((limit_end, "已超过限时，无法继续作答"))
+        if past:
+            past.sort(key=lambda item: item[0])
+            raise ValidationError(past[0][1])
 
     @staticmethod
     async def _get_latest_attempt(
@@ -1488,6 +1764,7 @@ class AssessmentService:
                     "total_score": paper.total_score,
                     "published_at": paper.published_at,
                     "due_at": due_at,
+                    "time_limit_minutes": AssessmentService._time_limit_minutes_of(paper),
                     "attempt_id": attempt.id if attempt else None,
                     "attempt_status": attempt.status if attempt else None,
                     "attempt_score": attempt.score if attempt else None,
@@ -1518,7 +1795,9 @@ class AssessmentService:
             # 但每次 autosave 都被后端 400 拒绝，界面却没有任何过期提示。
             # 已交卷的不受影响：这里只拦 in_progress。
             if attempt.status == "in_progress":
-                AssessmentService._ensure_not_expired(paper)
+                deadline = AssessmentService._effective_deadline(paper, attempt)
+                if deadline is not None and datetime.now(timezone.utc) > deadline:
+                    return await AssessmentService._finalize_attempt(db, attempt)
             return await AssessmentService._enforce_violation_limit(db, attempt)
 
         AssessmentService._ensure_not_expired(paper)
@@ -1622,7 +1901,7 @@ class AssessmentService:
         if not paper:
             raise NotFoundError("试卷不存在")
         if enforce_due:
-            AssessmentService._ensure_not_expired(paper)
+            AssessmentService._ensure_not_expired(paper, attempt)
         return attempt
 
     @staticmethod
@@ -1737,7 +2016,7 @@ class AssessmentService:
                 select(AssessmentPaper).where(AssessmentPaper.id == attempt.paper_id)
             )
         ).scalars().first()
-        due_at = AssessmentService._due_at_of(paper) if paper else None
+        due_at = AssessmentService._effective_deadline(paper, attempt)
         if due_at is not None:
             overdue = (datetime.now(timezone.utc) - due_at).total_seconds()
             if overdue > SUBMIT_GRACE_SECONDS:
@@ -1781,6 +2060,88 @@ class AssessmentService:
                 {"question_id": a.question_id, "answer": a.answer}
                 for a in rows.scalars().all()
             ],
+        }
+
+    @staticmethod
+    def _public_options(raw: Any) -> Optional[List[dict]]:
+        """回顾页只留选项文字，去掉校对时可能写进 options 的答案标记。"""
+        if not isinstance(raw, list):
+            return None
+        out = []
+        for opt in raw:
+            if isinstance(opt, dict):
+                out.append({key: opt[key] for key in ("key", "text") if key in opt})
+            else:
+                out.append({"key": "", "text": str(opt)})
+        return out
+
+    @staticmethod
+    async def get_student_review(
+        db: AsyncSession, paper_id: UUID, student_id: UUID
+    ) -> Dict[str, Any]:
+        """交卷后的成绩回顾。作答中不开放，避免参考答案提前泄露。
+
+        不返回 AI 建议分和理由。pending_review 的总分还没定，只回客观题小计。
+        """
+        paper = await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
+        attempt = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
+        if not attempt or attempt.status == "in_progress":
+            raise ValidationError("交卷后才能查看成绩")
+
+        questions = (
+            await db.execute(
+                select(AssessmentQuestion)
+                .where(AssessmentQuestion.paper_id == paper_id)
+                .order_by(AssessmentQuestion.order_index.asc())
+            )
+        ).scalars().all()
+        answer_rows = (
+            await db.execute(
+                select(AssessmentAnswer).where(AssessmentAnswer.attempt_id == attempt.id)
+            )
+        ).scalars().all()
+        by_question = {row.question_id: row for row in answer_rows}
+
+        objective_score = 0.0
+        items = []
+        for question in questions:
+            row = by_question.get(question.id)
+            graded = bool(row and row.graded)
+            manual = question.question_type in ("short", "essay")
+            if graded and not manual:
+                objective_score += float(row.score or 0.0)
+            items.append(
+                {
+                    "question_id": question.id,
+                    "order_index": question.order_index,
+                    "question_type": question.question_type,
+                    "stem": question.stem,
+                    "stem_images": question.stem_images,
+                    "options": AssessmentService._public_options(question.options),
+                    "max_score": question.score,
+                    "student_answer": row.answer if row else None,
+                    "score": float(row.score) if graded else None,
+                    "graded": graded,
+                    "is_correct": row.is_correct if graded else None,
+                    "reference_answer": question.answer,
+                    "analysis": question.analysis,
+                }
+            )
+
+        finished = attempt.status == "submitted"
+        return {
+            "paper": {
+                "id": paper.id,
+                "title": paper.title,
+                "total_score": paper.total_score,
+            },
+            "attempt": {
+                "status": attempt.status,
+                "score": attempt.score if finished else None,
+                "objective_score": round(objective_score, 2),
+                "duration_seconds": attempt.duration_seconds,
+            },
+            "questions": items,
         }
 
     @staticmethod
@@ -1906,9 +2267,180 @@ class AssessmentService:
                 "score": a.score,
                 "graded": a.graded,
                 "is_correct": a.is_correct,
+                "ai_suggested_score": a.ai_suggested_score,
+                "ai_comment": a.ai_comment,
+                "ai_graded_at": a.ai_graded_at,
             }
             for a, q in rows
         ]
+
+    @staticmethod
+    def _parse_ai_grade_response(content: str, max_score: float) -> Tuple[float, str]:
+        """解析并校验模型给分，拒绝把坏响应静默降级成 0 分。"""
+        parsed = question_parser_module.normalize_ai_json(content)
+        if not parsed:
+            raise ValueError("AI 批阅未返回有效 JSON")
+        raw_score = parsed.get("score")
+        if isinstance(raw_score, bool):
+            raise ValueError("AI 批阅未返回有效分数")
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            raise ValueError("AI 批阅未返回有效分数") from None
+        if not math.isfinite(score):
+            raise ValueError("AI 批阅未返回有效分数")
+        score = max(0.0, min(float(max_score), score))
+        comment = str(parsed.get("comment") or "").strip()[:2000]
+        return score, comment
+
+    @staticmethod
+    def _answer_text(raw: Any) -> str:
+        """把 JSONB 里的答案渲染成可读文本，喂给批阅模型。"""
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            return raw.strip()
+        if isinstance(raw, (list, tuple)):
+            return "、".join(str(x) for x in raw if x not in (None, ""))
+        if isinstance(raw, dict):
+            return "; ".join(f"{k}={v}" for k, v in raw.items())
+        return str(raw)
+
+    @staticmethod
+    async def ai_grade_attempt(
+        db: AsyncSession,
+        attempt_id: UUID,
+        teacher_id: UUID,
+        question_ids: Optional[List[UUID]] = None,
+        overwrite: bool = False,
+    ) -> Dict[str, Any]:
+        """对某次作答的主观题做 AI 预批阅。
+
+        只写 ai_suggested_score / ai_comment，绝不改 score 或 graded ——
+        分数必须由教师确认后才生效，否则一次模型抖动就能改学生成绩。
+        """
+        from app.core.llm import ChatMessage, llm_router
+
+        attempt = (
+            await db.execute(
+                select(AssessmentAttempt).where(AssessmentAttempt.id == attempt_id)
+            )
+        ).scalars().first()
+        if not attempt:
+            raise NotFoundError("作答记录不存在")
+        paper = await AssessmentService.get_paper(db, attempt.paper_id, teacher_id)
+        if attempt.status == "in_progress":
+            raise ValidationError("该作答尚未交卷，无法批阅")
+
+        rows = (
+            await db.execute(
+                select(AssessmentAnswer, AssessmentQuestion)
+                .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
+                .where(
+                    AssessmentAnswer.attempt_id == attempt_id,
+                    AssessmentQuestion.paper_id == attempt.paper_id,
+                    AssessmentQuestion.question_type.in_(("short", "essay")),
+                )
+                .order_by(AssessmentQuestion.order_index.asc())
+            )
+        ).all()
+
+        wanted = {str(q) for q in question_ids} if question_ids else None
+        preference_text = AssessmentService._grading_preference_text(paper.grading_preference)
+
+        items: List[Dict[str, Any]] = []
+        graded = 0
+        failed = 0
+        skipped = 0
+        now = datetime.now(timezone.utc)
+        for answer_row, question in rows:
+            if wanted is not None and str(question.id) not in wanted:
+                continue
+            # 已人工给分，或已经有一份建议时，默认不再打模型。
+            # overwrite 只重算建议分，仍然不写 score / graded。
+            has_suggestion = (
+                answer_row.ai_suggested_score is not None or bool(answer_row.ai_comment)
+            )
+            if (answer_row.graded or has_suggestion) and not overwrite:
+                skipped += 1
+                continue
+
+            student_answer = AssessmentService._answer_text(answer_row.answer)
+            reference = AssessmentService._answer_text(question.answer)
+            max_score = question.score
+
+            if not student_answer:
+                answer_row.ai_suggested_score = 0.0
+                answer_row.ai_comment = "学生未作答，建议 0 分。"
+                answer_row.ai_graded_at = now
+                graded += 1
+                items.append({
+                    "question_id": question.id,
+                    "suggested_score": 0.0,
+                    "max_score": max_score,
+                    "comment": answer_row.ai_comment,
+                    "error": None,
+                })
+                continue
+
+            if max_score is None:
+                # 没满分就没法给一个有意义的分，交给教师补分值后再批
+                failed += 1
+                items.append({
+                    "question_id": question.id,
+                    "suggested_score": None,
+                    "max_score": None,
+                    "comment": "",
+                    "error": "该题未设置分值，请先补填分值再 AI 批阅",
+                })
+                continue
+
+            prompt = (
+                "你是一名严谨的阅卷老师，正在批改一道主观题。\n"
+                f"{preference_text}\n"
+                f"题目（{question.question_type}）：\n{question.stem}\n\n"
+                f"参考答案：\n{reference or '（未提供参考答案，请按题意合理给分）'}\n\n"
+                f"学生作答：\n{student_answer}\n\n"
+                f"该题满分 {max_score} 分。请只输出一个 JSON 对象，不要任何其他文字：\n"
+                '{"score": <0 到满分之间的数字>, "comment": "<给分理由，指出得分点与失分点>"}'
+            )
+            try:
+                response = await llm_router.route(
+                    task_type="assessment_grading",
+                    messages=[ChatMessage(role="user", content=prompt)],
+                    require_task_config=True,
+                    temperature=0.2,
+                    max_tokens=1024,
+                    timeout_seconds=120,
+                )
+                score, comment = AssessmentService._parse_ai_grade_response(
+                    response.content, float(max_score)
+                )
+                answer_row.ai_suggested_score = score
+                answer_row.ai_comment = comment
+                answer_row.ai_graded_at = now
+                graded += 1
+                items.append({
+                    "question_id": question.id,
+                    "suggested_score": score,
+                    "max_score": float(max_score),
+                    "comment": comment,
+                    "error": None,
+                })
+            except Exception as exc:
+                # 单题失败不能拖垮整批：把原因回给前端，其余题继续
+                logger.error("AI grading failed for question %s: %s", question.id, exc, exc_info=True)
+                failed += 1
+                items.append({
+                    "question_id": question.id,
+                    "suggested_score": None,
+                    "max_score": float(max_score),
+                    "comment": "",
+                    "error": str(exc)[:200],
+                })
+
+        await db.commit()
+        return {"graded": graded, "failed": failed, "skipped": skipped, "items": items}
 
     @staticmethod
     async def batch_save_behavior(
@@ -1931,13 +2463,20 @@ class AssessmentService:
 
         now = datetime.now(timezone.utc)
         for e in events:
+            payload = e.get("payload")
+            if str(e.get("event_type") or "") == "answer_edit" and isinstance(payload, dict):
+                payload = dict(payload)
+                for key in ("inserted_text", "deleted_text"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and len(value) > 4000:
+                        payload[key] = value[:4000]
             db.add(
                 BehaviorEvent(
                     user_id=student_id,
                     session_id=session_id,
                     attempt_id=attempt_id,
                     event_type=str(e.get("event_type") or "custom"),
-                    payload=e.get("payload"),
+                    payload=payload,
                     occurred_at=e.get("occurred_at") or now,
                 )
             )

@@ -19,12 +19,16 @@ from app.schemas.assessment import (
     QuestionsSaveReq,
     StudentAnswersReq,
     StudentAnswersOut,
+    StudentReviewOut,
     StudentAttemptOut,
     StudentPaperOut,
     AttemptAnswerOut,
     GradeAttemptReq,
+    AIGradeReq,
+    AIGradeOut,
     PaperAnalyticsOut,
     AttemptInsightsOut,
+    StudentExamHistoryOut,
     ClassExamAnalyticsOut,
     StudentQuestionOut,
 )
@@ -162,6 +166,8 @@ async def publish_paper(
         req.publish_target,
         req.publish_at,
         req.due_at,
+        req.grading_preference,
+        req.time_limit_minutes,
     )
     return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="发布成功")
 
@@ -215,6 +221,23 @@ async def get_class_exam_analytics(
 
 
 @router.get(
+    "/classes/{class_id}/students/{student_id}/exams",
+    response_model=BaseResponse[StudentExamHistoryOut],
+    summary="某学生在当前教师名下的历次考试",
+)
+async def get_student_exam_history(
+    class_id: UUID = Path(...),
+    student_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await AssessmentService.list_student_exam_history(
+        db, class_id, student_id, current_user.id
+    )
+    return BaseResponse.success(data=StudentExamHistoryOut(**data), message="获取成功")
+
+
+@router.get(
     "/attempts/{attempt_id}/insights",
     response_model=BaseResponse[AttemptInsightsOut],
     summary="某次作答的按题行为画像（逐题用时、粘贴、违规）",
@@ -261,6 +284,23 @@ async def grade_attempt(
     return BaseResponse.success(data=StudentAttemptOut.model_validate(attempt), message="批改已保存")
 
 
+@router.post(
+    "/attempts/{attempt_id}/ai-grade",
+    response_model=BaseResponse[AIGradeOut],
+    summary="AI 预批阅主观题（只写建议分，教师确认后生效）",
+)
+async def ai_grade_attempt(
+    attempt_id: UUID = Path(...),
+    req: AIGradeReq = Body(default_factory=AIGradeReq),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await AssessmentService.ai_grade_attempt(
+        db, attempt_id, current_user.id, req.question_ids, req.overwrite
+    )
+    return BaseResponse.success(data=AIGradeOut(**data), message=f"AI 已预批 {data['graded']} 题")
+
+
 @router.get(
     "/student/papers",
     response_model=BaseResponse[List[StudentPaperOut]],
@@ -305,7 +345,9 @@ async def student_start_attempt(
     db: AsyncSession = Depends(get_db),
 ):
     attempt = await AssessmentService.get_or_create_attempt(db, paper_id, current_user.id)
-    return BaseResponse.success(data=StudentAttemptOut.model_validate(attempt), message="获取成功")
+    out = StudentAttemptOut.model_validate(attempt)
+    out.answer_deadline = await AssessmentService.answer_deadline(db, attempt)
+    return BaseResponse.success(data=out, message="获取成功")
 
 
 @router.put(
@@ -347,6 +389,20 @@ async def student_get_answers(
     )
 
 
+@router.get(
+    "/student/papers/{paper_id}/review",
+    response_model=BaseResponse[StudentReviewOut],
+    summary="学生查看交卷后的逐题成绩（不含 AI 建议）",
+)
+async def student_review(
+    paper_id: UUID = Path(...),
+    current_user: User = Depends(require_student),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await AssessmentService.get_student_review(db, paper_id, current_user.id)
+    return BaseResponse.success(data=StudentReviewOut(**data), message="获取成功")
+
+
 @router.post(
     "/student/attempts/{attempt_id}/submit",
     response_model=BaseResponse[StudentAttemptOut],
@@ -364,6 +420,7 @@ async def student_submit(
     )
     out = StudentAttemptOut.model_validate(attempt)
     out.answers_ignored = answers_ignored
+    out.answer_deadline = await AssessmentService.answer_deadline(db, attempt)
     message = "已交卷，但超过截止时间的作答未计入" if answers_ignored else "交卷成功"
     return BaseResponse.success(data=out, message=message)
 

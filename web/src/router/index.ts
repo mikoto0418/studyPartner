@@ -17,6 +17,7 @@ import GrowthView from '../views/student/GrowthView.vue'
 import MemoryWikiView from '../views/student/MemoryWikiView.vue'
 import AssessmentListView from '../views/student/AssessmentListView.vue'
 import AssessmentDoView from '../views/student/AssessmentDoView.vue'
+import AssessmentReviewView from '../views/student/AssessmentReviewView.vue'
 
 import WorkbenchView from '../views/teacher/WorkbenchView.vue'
 import StudentsView from '../views/teacher/StudentsView.vue'
@@ -109,6 +110,12 @@ const routes: Array<RouteRecordRaw> = [
         name: 'StudentAssessmentList',
         component: AssessmentListView,
         meta: { title: '我的作业与考试', module: 'assessment' }
+      },
+      {
+        path: 'assessment/:id/review',
+        name: 'StudentAssessmentReview',
+        component: AssessmentReviewView,
+        meta: { title: '成绩回顾', module: 'assessment' }
       },
       {
         path: 'assessment/:id',

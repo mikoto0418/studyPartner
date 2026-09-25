@@ -48,6 +48,11 @@ const whitelistIds = ref('')
 const blacklistIds = ref('')
 const publishAt = ref<Date | null>(null)
 const dueAt = ref<Date | null>(null)
+const timeLimitMinutes = ref<number | null>(null)
+
+// 主观题批阅倾向：随发布保存，AI 预批阅和人工批改都按它执行
+const gradingMode = ref<'lenient' | 'standard' | 'strict'>('standard')
+const gradingExtra = ref('')
 
 const classList = ref<any[]>([])
 const selectedClassId = ref('')
@@ -106,6 +111,7 @@ function hasMeaningfulDraft(): boolean {
     targetIds.value.trim() ||
     whitelistIds.value.trim() ||
     blacklistIds.value.trim() ||
+    gradingExtra.value.trim() ||
     selectedClassId.value ||
     selectedStudentIds.value.length ||
     selectedGuidedStudentIds.value.length
@@ -130,6 +136,9 @@ function buildDraft() {
     blacklistIds: blacklistIds.value,
     publishAt: publishAt.value ? publishAt.value.toISOString() : null,
     dueAt: dueAt.value ? dueAt.value.toISOString() : null,
+    timeLimitMinutes: timeLimitMinutes.value,
+    gradingMode: gradingMode.value,
+    gradingExtra: gradingExtra.value,
     selectedClassId: selectedClassId.value,
     publishScope: publishScope.value,
     selectedStudentIds: selectedStudentIds.value,
@@ -189,6 +198,9 @@ function applyDraft(d: any) {
   selectedGuidedStudentIds.value = d.selectedGuidedStudentIds || []
   publishAt.value = d.publishAt ? new Date(d.publishAt) : null
   dueAt.value = d.dueAt ? new Date(d.dueAt) : null
+  timeLimitMinutes.value = d.timeLimitMinutes || null
+  gradingMode.value = d.gradingMode || 'standard'
+  gradingExtra.value = d.gradingExtra || ''
   hasDraft.value = true
 }
 
@@ -591,7 +603,12 @@ async function doPublish() {
     await assessmentApi.publishPaper(paperId.value, {
       publish_target: target,
       publish_at: publishAt.value ? publishAt.value.toISOString() : null,
-      due_at: dueAt.value ? dueAt.value.toISOString() : null
+      due_at: dueAt.value ? dueAt.value.toISOString() : null,
+      time_limit_minutes: timeLimitMinutes.value && timeLimitMinutes.value > 0 ? timeLimitMinutes.value : null,
+      grading_preference: {
+        mode: gradingMode.value,
+        extra: gradingExtra.value.trim()
+      }
     })
     published.value = true
     ElMessage.success('发布成功')
@@ -625,6 +642,9 @@ function reset() {
   selectedGuidedStudentIds.value = []
   publishAt.value = null
   dueAt.value = null
+  timeLimitMinutes.value = null
+  gradingMode.value = 'standard'
+  gradingExtra.value = ''
 }
 
 function fmtTime(s?: string) {
@@ -775,6 +795,11 @@ async function resendPaper(paper: any) {
 
   if (paper.publish_at) publishAt.value = new Date(paper.publish_at)
   if (t.due_at) dueAt.value = new Date(t.due_at)
+  timeLimitMinutes.value = t.time_limit_minutes || null
+  if (paper.grading_preference) {
+    gradingMode.value = paper.grading_preference.mode || 'standard'
+    gradingExtra.value = paper.grading_preference.extra || ''
+  }
 
   await loadQuestions()
 }
@@ -1250,7 +1275,7 @@ onUnmounted(() => {
               </div>
             </template>
 
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
               <div>
                 <label class="ui-field-label mb-1">预约发布时间（可选）</label>
                 <el-date-picker v-model="publishAt" type="datetime" class="w-full" placeholder="留空表示立即发布" />
@@ -1259,6 +1284,40 @@ onUnmounted(() => {
                 <label class="ui-field-label mb-1">截止时间（可选）</label>
                 <el-date-picker v-model="dueAt" type="datetime" class="w-full" placeholder="交卷截止时间" />
               </div>
+              <div>
+                <label class="ui-field-label mb-1">限时（分钟，可选）</label>
+                <input
+                  :value="timeLimitMinutes ?? ''"
+                  type="number"
+                  min="1"
+                  max="1440"
+                  class="ui-field"
+                  placeholder="不填则不限时，从进入试卷开始计时"
+                  @input="timeLimitMinutes = ($event.target as HTMLInputElement).value ? Number(($event.target as HTMLInputElement).value) : null"
+                />
+                <p class="mt-1 text-[11px] text-gray-400">和截止时间都填时，先到的那个收卷。</p>
+              </div>
+            </div>
+
+            <div class="rounded-lg border border-gray-100 p-4 dark:border-zinc-800">
+              <p class="text-xs font-semibold text-gray-900 dark:text-zinc-50">主观题批阅倾向</p>
+              <p class="mt-1 text-[11px] leading-relaxed text-gray-400">
+                决定 AI 预批阅与人工批改的松紧尺度，随本卷保存，批改时同样会提示阅卷老师。
+              </p>
+              <el-radio-group v-model="gradingMode" class="mt-3 flex flex-wrap gap-2">
+                <el-radio-button value="lenient">宽松</el-radio-button>
+                <el-radio-button value="standard">标准</el-radio-button>
+                <el-radio-button value="strict">严格</el-radio-button>
+              </el-radio-group>
+              <el-input
+                v-model="gradingExtra"
+                type="textarea"
+                :rows="2"
+                maxlength="500"
+                show-word-limit
+                class="mt-3"
+                placeholder="补充要求（可选），例如：计算题必须写出关键步骤，只给最终答案不得分"
+              />
             </div>
 
             <div class="flex justify-end gap-2 border-t border-gray-100 pt-4 dark:border-zinc-800">

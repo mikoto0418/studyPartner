@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { BarChart3, Clock, FileText, Plus, RefreshCw, ShieldAlert, Target, TrendingUp, Users } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import type { EChartsOption } from 'echarts'
@@ -10,6 +11,7 @@ import { assessmentApi, type ClassExamAnalytics } from '../../api/modules/assess
 import BaseChart from '../../components/common/BaseChart.vue'
 import StudentPickerDialog from '../../components/common/StudentPickerDialog.vue'
 
+const router = useRouter()
 const classes = ref<ClassOut[]>([])
 const selectedClassId = ref('')
 const analytics = ref<ClassExamAnalytics | null>(null)
@@ -75,6 +77,78 @@ const createClass = async () => {
 
 const handleClassStudentsConfirm = (users: UserOut[]) => {
   selectedClassStudents.value = users
+}
+
+interface ExamHistoryRow {
+  paper_id: string
+  title: string
+  total_score: number | null
+  published_at: string | null
+  time_limit_minutes: number | null
+  attempt_id: string | null
+  status: string | null
+  score: number | null
+  started_at: string | null
+  submitted_at: string | null
+  duration_seconds: number | null
+  suspicious: boolean
+}
+
+const historyVisible = ref(false)
+const historyLoading = ref(false)
+const historyStudent = ref('')
+const historyRows = ref<ExamHistoryRow[]>([])
+
+const examStatusText = (row: ExamHistoryRow) => {
+  if (!row.status) return '未作答'
+  if (row.status === 'in_progress') return '作答中'
+  if (row.status === 'pending_review') return '待批改'
+  if (row.status === 'submitted') return '已交卷'
+  return row.status
+}
+
+const openHistory = async (student: { student_id: string; name: string }) => {
+  historyStudent.value = student.name
+  historyRows.value = []
+  historyVisible.value = true
+  historyLoading.value = true
+  try {
+    const res = await assessmentApi.getStudentExamHistory(selectedClassId.value, student.student_id)
+    historyRows.value = res.data?.attempts || []
+  } catch {
+    ElMessage.error('获取历次考试失败')
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+const historyScoredRows = computed(() =>
+  historyRows.value.filter(
+    (row) => row.score != null && row.total_score != null && row.total_score > 0 && row.status && row.status !== 'in_progress'
+  )
+)
+
+const historyChart = computed<EChartsOption>(() => {
+  const rows = historyScoredRows.value
+  return {
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 16, top: 24, bottom: 48 },
+    xAxis: { type: 'category', data: rows.map((row) => row.title), axisLabel: { fontSize: 10, rotate: 20 } },
+    yAxis: { type: 'value', name: '得分率 %', max: 100 },
+    series: [
+      {
+        type: 'line',
+        data: rows.map((row) => Math.round((Number(row.score) / Number(row.total_score)) * 1000) / 10),
+        smooth: true,
+        symbolSize: 7,
+        itemStyle: { color: '#7c3aed' }
+      }
+    ]
+  }
+})
+
+const openPaperMonitor = (paperId: string) => {
+  router.push({ path: '/teacher/assessment-monitor', query: { paper_id: paperId } })
 }
 
 const summary = computed(() => analytics.value?.summary)
@@ -308,6 +382,7 @@ onMounted(loadData)
                     <th class="py-2 pr-4 font-medium">平均得分率</th>
                     <th class="py-2 pr-4 font-medium">违规事件</th>
                     <th class="py-2 pr-4 font-medium">待批改</th>
+                    <th class="py-2 font-medium">历次</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -331,6 +406,11 @@ onMounted(loadData)
                     <td class="py-2 pr-4">
                       <span v-if="s.pending_review > 0" class="font-semibold text-violet-600 dark:text-violet-400">{{ s.pending_review }}</span>
                       <span v-else class="text-gray-300 dark:text-zinc-600">0</span>
+                    </td>
+                    <td class="py-2">
+                      <button class="font-semibold text-blue-600 hover:underline dark:text-blue-400" @click="openHistory(s)">
+                        查看
+                      </button>
                     </td>
                   </tr>
                 </tbody>
@@ -395,5 +475,57 @@ onMounted(loadData)
       title="选择班级学生"
       @confirm="handleClassStudentsConfirm"
     />
+
+    <el-drawer v-model="historyVisible" :title="historyStudent ? `${historyStudent} · 历次考试` : '历次考试'" size="640px">
+      <div v-loading="historyLoading" class="space-y-4 px-1">
+        <BaseChart
+          :option="historyChart"
+          height="220px"
+          :is-empty="historyScoredRows.length === 0"
+          empty-text="还没有可画成曲线的成绩"
+        />
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="border-b border-gray-100 text-left text-gray-400 dark:border-zinc-800">
+              <th class="py-2 pr-3 font-medium">试卷</th>
+              <th class="py-2 pr-3 font-medium">状态</th>
+              <th class="py-2 pr-3 font-medium">得分</th>
+              <th class="py-2 pr-3 font-medium">用时</th>
+              <th class="py-2 font-medium"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in historyRows" :key="row.paper_id" class="border-b border-gray-50 dark:border-zinc-800/60">
+              <td class="py-2 pr-3">
+                <p class="font-semibold text-gray-800 dark:text-zinc-100">{{ row.title }}</p>
+                <p v-if="row.time_limit_minutes" class="text-[10px] text-gray-400">限时 {{ row.time_limit_minutes }} 分钟</p>
+              </td>
+              <td class="py-2 pr-3">
+                {{ examStatusText(row) }}
+                <span v-if="row.suspicious" class="ml-1 text-amber-600">可疑</span>
+              </td>
+              <td class="py-2 pr-3">
+                <template v-if="row.score != null">{{ row.score }}<span v-if="row.total_score != null"> / {{ row.total_score }}</span></template>
+                <span v-else class="text-gray-300">—</span>
+              </td>
+              <td class="py-2 pr-3">
+                <span v-if="row.duration_seconds != null">{{ Math.round(row.duration_seconds / 60) }} 分</span>
+                <span v-else class="text-gray-300">—</span>
+              </td>
+              <td class="py-2 text-right">
+                <button
+                  v-if="row.attempt_id"
+                  class="font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                  @click="openPaperMonitor(row.paper_id)"
+                >
+                  监考
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="!historyRows.length && !historyLoading" class="py-8 text-center text-sm text-gray-400">还没有发给这名学生的考试</p>
+      </div>
+    </el-drawer>
   </div>
 </template>

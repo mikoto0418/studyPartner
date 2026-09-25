@@ -22,6 +22,9 @@ class AssessmentPaper(BaseModel):
     publish_target = Column(JSONB, nullable=True)  # {type: class/group/student, ids, whitelist, blacklist}
     publish_at = Column(DateTime(timezone=True), nullable=True)  # 预约发布时间
     published_at = Column(DateTime(timezone=True), nullable=True)  # 实际发布时间
+    # 教师对本卷主观题的批阅倾向：{mode: lenient/standard/strict, extra: 补充说明}
+    # AI 预批阅按它决定松紧，人工批改页也显示它提醒教师保持一致
+    grading_preference = Column(JSONB, nullable=True)
 
     creator = relationship("User", backref="created_assessment_papers")
 
@@ -99,6 +102,10 @@ class AssessmentAnswer(BaseModel):
     score = Column(Float, default=0.0, nullable=False)
     graded = Column(Boolean, default=False, nullable=False)
     time_spent_ms = Column(Integer, nullable=True)
+    # AI 预批阅产物：分数只是建议值，教师确认前不写进 score；comment 是评分理由
+    ai_suggested_score = Column(Float, nullable=True)
+    ai_comment = Column(Text, nullable=True)
+    ai_graded_at = Column(DateTime(timezone=True), nullable=True)
 
     attempt = relationship("AssessmentAttempt", backref="answers")
     question = relationship("AssessmentQuestion", backref="answers")

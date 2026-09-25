@@ -1,5 +1,6 @@
 import { onBeforeUnmount, ref } from 'vue'
 import type { BehaviorEventPayload } from '../api/modules/assessment'
+import { diffAnswerText } from '../utils/answerEditDiff'
 
 export interface AntiCheatCallbacks {
   // 允许返回 Promise，失败时可把事件放回队列重投
@@ -40,7 +41,7 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   // 用 WeakMap 而不是单个变量：多个输入框共用一个计数器会互相串，
   // 且首次进入某框时无法判断这一下是敲的还是整段灌进来的。
   const keystrokeCounts = new WeakMap<Element, number>()
-  const valueLengths = new WeakMap<Element, number>()
+  const valueSnapshots = new WeakMap<Element, string>()
 
   const queue: BehaviorEventPayload[] = []
 
@@ -56,13 +57,57 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   const iso = () => new Date().toISOString()
 
   const push = (event_type: string, payload: Record<string, any> = {}) => {
+    const occurred_at = iso()
+    // 连续逐字输入/退格合并成一个编辑段：保留完整新增/删除文本与边界，
+    // 但不要每敲一个字就写一行数据库，避免一篇作文生成数千事件。
+    if (event_type === 'answer_edit') {
+      const previous = queue[queue.length - 1]
+      const old = previous?.payload
+      if (
+        previous?.event_type === 'answer_edit' &&
+        old &&
+        old.input_method === payload.input_method &&
+        old?.question_id === payload.question_id &&
+        old?.field === payload.field
+      ) {
+        const oldInserted = String(old.inserted_text || '')
+        const oldDeleted = String(old.deleted_text || '')
+        const inserted = String(payload.inserted_text || '')
+        const deleted = String(payload.deleted_text || '')
+        const contiguousInsert =
+          old.operation === 'insert' && payload.operation === 'insert' &&
+          Number(old.position) + oldInserted.length === Number(payload.position)
+        const contiguousBackspace =
+          old.operation === 'delete' && payload.operation === 'delete' &&
+          Number(payload.position) + deleted.length === Number(old.position)
+        const contiguousDelete =
+          old.operation === 'delete' && payload.operation === 'delete' &&
+          Number(payload.position) === Number(old.position)
+        if (contiguousInsert) {
+          old.inserted_text = oldInserted + inserted
+          old.inserted_chars = Number(old.inserted_chars || 0) + Number(payload.inserted_chars || 0)
+          old.current_length = payload.current_length
+          previous.occurred_at = occurred_at
+          return
+        }
+        if (contiguousBackspace || contiguousDelete) {
+          old.position = Math.min(Number(old.position), Number(payload.position))
+          old.deleted_text = contiguousBackspace ? deleted + oldDeleted : oldDeleted + deleted
+          old.deleted_chars = Number(old.deleted_chars || 0) + Number(payload.deleted_chars || 0)
+          old.current_length = payload.current_length
+          previous.occurred_at = occurred_at
+          return
+        }
+      }
+    }
     if (queue.length >= MAX_QUEUE_SIZE) queue.shift()
-    queue.push({ event_type, payload, occurred_at: iso() })
+    queue.push({ event_type, payload, occurred_at })
   }
 
   const flush = () => {
     if (!queue.length) return
-    const batch = queue.splice(0, queue.length)
+    // BehaviorBatchReq 上限 200；文本历史可能快速产生大量编辑事件，必须分批发。
+    const batch = queue.splice(0, 200)
     // 上报失败就把这批事件放回队首，等下一次 flush 重投；
     // 否则一次网络抖动就会让这段作答永久没有行为证据。
     const requeue = () => {
@@ -186,7 +231,8 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   }
 
   const resetInputBaseline = (el: Element) => {
-    valueLengths.set(el, (el as HTMLInputElement).value.length)
+    const value = (el as HTMLInputElement).value
+    valueSnapshots.set(el, value)
     keystrokeCounts.set(el, 0)
   }
 
@@ -203,33 +249,54 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     const tag = el.tagName
     if (tag !== 'TEXTAREA' && tag !== 'INPUT') return
     const value = (el as HTMLInputElement).value
-    const isComposingInput =
-      composing || (e as InputEvent).isComposing || Date.now() - compositionEndedAt < 150
-    if (isComposingInput) {
-      // 输入法提交的文字不算敲键，直接把基线推到当前值
+    // composition 中的中间态不记录；最终 input 到来时，用原快照记成一次 IME 编辑。
+    if (composing || (e as InputEvent).isComposing) return
+    const previous = valueSnapshots.get(el)
+    if (previous === undefined) {
       resetInputBaseline(el)
       return
     }
-    // 没见过这个框（比如程序化聚焦），先建基线，这一次不计
-    if (!valueLengths.has(el)) {
-      resetInputBaseline(el)
-      return
-    }
-    const prevLen = valueLengths.get(el) ?? 0
+
+    const diff = diffAnswerText(previous, value)
     const typed = keystrokeCounts.get(el) ?? 0
-    const inserted = value.length - prevLen
-    valueLengths.set(el, value.length)
+    const isImeCommit = Date.now() - compositionEndedAt < 150
+    const inputMethod = isImeCommit
+      ? 'ime'
+      : diff.insertedText.length === 0
+        ? 'delete'
+        : typed === 0
+          ? 'non_key_input'
+          : 'typing'
+
+    valueSnapshots.set(el, value)
     keystrokeCounts.set(el, 0)
-    // 一次插入的字符数明显多于实际敲键数 → 不是手敲进来的。
-    // 带上 question_id / field，否则事件落到库里就丢了题目归属，教师端无法回答
-    // 「是哪道题被整段粘贴」——那正是这套数据最想回答的问题。
-    if (inserted > 0 && typed < inserted) {
+    if (diff.operation === 'none') return
+
+    const questionId = el.getAttribute('data-ac-question')
+    const field = el.getAttribute('data-ac-field')
+    push('answer_edit', {
+      question_id: questionId,
+      field,
+      operation: diff.operation,
+      input_method: inputMethod,
+      position: diff.position,
+      inserted_text: diff.insertedText,
+      deleted_text: diff.deletedText,
+      inserted_chars: diff.insertedText.length,
+      deleted_chars: diff.deletedText.length,
+      previous_length: previous.length,
+      current_length: value.length
+    })
+
+    // 原生菜单粘贴等绕过 paste/beforeinput 的路径仍保存完整 edit diff；
+    // 额外打违规标记。短的非键盘输入只保留编辑记录，减少语音/候选词误报。
+    if (inputMethod === 'non_key_input' && diff.insertedText.length >= 4) {
       recordViolation()
       push('blocked_input', {
-        inserted,
-        keystrokes: typed,
-        question_id: el.getAttribute('data-ac-question'),
-        field: el.getAttribute('data-ac-field')
+        question_id: questionId,
+        field,
+        inserted: diff.insertedText.length,
+        keystrokes: typed
       })
     }
   }

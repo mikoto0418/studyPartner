@@ -48,12 +48,8 @@ const formatDate = (iso?: string | null) => {
 }
 
 const startPaper = (paper: StudentPaper) => {
-  if (paper.attempt_status === 'submitted') {
-    ElMessage.info('该试卷已交卷，无法重复作答')
-    return
-  }
-  if (paper.attempt_status === 'pending_review') {
-    ElMessage.info('该试卷已交卷，等待老师批改')
+  if (paper.attempt_status === 'submitted' || paper.attempt_status === 'pending_review') {
+    router.push(`/student/assessment/${paper.id}/review`)
     return
   }
   router.push(`/student/assessment/${paper.id}`)
@@ -109,13 +105,16 @@ onMounted(loadPapers)
             <template v-if="paper.total_score === null || paper.total_score === undefined">满分待定</template>
             <template v-else>满分 {{ paper.total_score }}</template>
           </span>
+          <span v-if="paper.time_limit_minutes" class="inline-flex items-center gap-1">
+            <Clock class="h-3.5 w-3.5" /> 限时 {{ paper.time_limit_minutes }} 分钟
+          </span>
           <span class="inline-flex items-center gap-1">
             <Clock class="h-3.5 w-3.5" /> 截止 {{ formatDate(paper.due_at) }}
           </span>
         </div>
 
         <div class="mt-4 flex items-center justify-end text-xs font-semibold text-blue-600 dark:text-blue-400">
-          <span>进入</span>
+          <span>{{ paper.attempt_status === 'submitted' || paper.attempt_status === 'pending_review' ? '查看成绩' : '进入' }}</span>
           <ChevronRight class="h-4 w-4 transition group-hover:translate-x-0.5" />
         </div>
       </div>
