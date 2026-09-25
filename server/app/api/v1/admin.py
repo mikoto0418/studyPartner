@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import datetime, timezone
 from typing import List
@@ -18,6 +19,8 @@ from app.models.knowledge import FileModel
 from app.models.llm import LLMProviderConfig, LLMUsageLog
 from app.models.user import User
 from app.schemas.common import BaseResponse
+
+logger = logging.getLogger(__name__)
 from app.schemas.llm import (
     AdminOverviewOut,
     AdminRuntimeSettingsOut,
@@ -254,7 +257,14 @@ async def test_llm_connection(
             )
             ok = True
     except Exception as exc:
-        raise ValidationError(f"模型通道连接测试失败：{str(exc)[:160]}") from exc
+        # httpx 的超时/断连异常 str() 常常是空串，直接拼进消息就成了
+        # 「测试失败：」后面一片空白，管理员看不出发生了什么。退回异常类名。
+        detail = str(exc).strip() or f"{type(exc).__name__}（无详细信息）"
+        logger.warning(
+            "LLM connection test failed for %s/%s: %s",
+            req.provider_name, model_name, detail, exc_info=True,
+        )
+        raise ValidationError(f"模型通道连接测试失败：{detail[:160]}") from exc
     finally:
         await provider.http_client.aclose()
 

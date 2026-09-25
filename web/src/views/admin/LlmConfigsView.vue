@@ -193,8 +193,15 @@ const handleTestGateway = async (target: 'chat' | 'embedding') => {
     )
     testStatus.value = 'success'
     ElMessage.success(target === 'chat' ? '对话模型通道测试成功' : '嵌入模型通道测试成功')
-  } catch (error) {
-    testLogs.value.push('测试失败，请检查 Base URL、API Key、模型名和服务商网络连通性。')
+  } catch (error: any) {
+    // 后端返回的 message 里带着真正的原因（超时 / 401 / 402 等），
+    // 固定文案会把唯一的排查线索丢掉，管理员只能看到「失败了」。
+    const detail = String(error?.message || '').trim()
+    testLogs.value.push(
+      detail
+        ? `测试失败：${detail}`
+        : '测试失败，请检查 Base URL、API Key、模型名和服务商网络连通性。'
+    )
     testStatus.value = 'failed'
     console.warn('模型通道测试失败', error)
   } finally {
