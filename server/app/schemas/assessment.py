@@ -237,3 +237,12 @@ class AttemptInsightsOut(BaseModel):
 
     attempt: Dict[str, Any]
     questions: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ClassExamAnalyticsOut(BaseModel):
+    """班级维度的考试概况。"""
+
+    class_info: Dict[str, Any]
+    summary: Dict[str, Any]
+    papers: List[Dict[str, Any]] = Field(default_factory=list)
+    students: List[Dict[str, Any]] = Field(default_factory=list)

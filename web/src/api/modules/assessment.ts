@@ -130,6 +130,38 @@ export interface AttemptInsights {
   }>
 }
 
+export interface ClassExamAnalytics {
+  class_info: { id: string; name: string; student_count: number }
+  summary: {
+    paper_count: number
+    assigned_total: number
+    finished_total: number
+    avg_score_rate: number | null
+    pass_rate: number | null
+    suspicious_attempts: number
+    pending_review_total: number
+  }
+  papers: Array<{
+    paper_id: string
+    title: string
+    published_at: string | null
+    total_score: number | null
+    assigned: number
+    finished: number
+    avg_score_rate: number | null
+    pass_rate: number | null
+    avg_duration_seconds: number | null
+  }>
+  students: Array<{
+    student_id: string
+    name: string
+    attempted: number
+    avg_score_rate: number | null
+    flag_count: number
+    pending_review: number
+  }>
+}
+
 export interface StudentQuestion {
   id: string
   order_index: number
@@ -310,6 +342,10 @@ export const assessmentApi = {
 
   getAttemptInsights(attemptId: string) {
     return request.get(`/assessment/attempts/${attemptId}/insights`)
+  },
+
+  getClassExamAnalytics(classId: string) {
+    return request.get(`/assessment/classes/${classId}/exam-analytics`)
   },
 
   listAttemptAnswers(attemptId: string) {

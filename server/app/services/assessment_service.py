@@ -1010,6 +1010,203 @@ class AssessmentService:
         }
 
     @staticmethod
+    async def get_class_exam_analytics(
+        db: AsyncSession, class_id: UUID, teacher_id: UUID
+    ) -> Dict[str, Any]:
+        """班级维度的考试概况。
+
+        聚合「发布给本班的所有试卷」：每份卷的完成情况与班级均分、每个学生的
+        跨卷表现。只统计明确以本班为发布对象的试卷（publish_target.type == 'class'
+        且 ids 含本班）—— 单独指派给某个学生的卷不算班级数据，否则会重复计入。
+        """
+        class_group = (
+            await db.execute(
+                select(ClassGroup).where(
+                    ClassGroup.id == class_id,
+                    ClassGroup.teacher_id == teacher_id,
+                    ClassGroup.deleted_at.is_(None),
+                )
+            )
+        ).scalars().first()
+        if not class_group:
+            raise NotFoundError("班级不存在")
+
+        member_ids = [
+            m.user_id
+            for m in (
+                await db.execute(
+                    select(ClassMember).where(
+                        ClassMember.class_id == class_id,
+                        ClassMember.status == "active",
+                        ClassMember.deleted_at.is_(None),
+                    )
+                )
+            ).scalars().all()
+        ]
+        member_strs = {str(m) for m in member_ids}
+
+        papers = (
+            await db.execute(
+                select(AssessmentPaper)
+                .where(
+                    AssessmentPaper.creator_id == teacher_id,
+                    AssessmentPaper.parse_status == "published",
+                    AssessmentPaper.deleted_at.is_(None),
+                )
+                .order_by(AssessmentPaper.published_at.asc())
+            )
+        ).scalars().all()
+
+        # 逐卷判定是否发给了本班，并算出被本班命中的学生集合（考虑白/黑名单与子集）
+        class_papers: List[Tuple[AssessmentPaper, set]] = []
+        for paper in papers:
+            target = AssessmentService._as_target_dict(paper.publish_target)
+            if str(target.get("type") or "").strip() != "class":
+                continue
+            ids = {str(c) for c in AssessmentService._to_uuid_list(target.get("ids"))}
+            if str(class_id) not in ids:
+                continue
+            whitelist = set(AssessmentService._to_str_list(target.get("whitelist")))
+            blacklist = set(AssessmentService._to_str_list(target.get("blacklist")))
+            subset = set(AssessmentService._to_str_list(target.get("student_ids")))
+            targeted = set()
+            for sid in member_strs:
+                if sid in blacklist:
+                    continue
+                if sid in whitelist or not subset or sid in subset:
+                    targeted.add(sid)
+            class_papers.append((paper, targeted))
+
+        class_info = {
+            "id": str(class_group.id),
+            "name": class_group.name,
+            "student_count": len(member_ids),
+        }
+        if not class_papers:
+            return {
+                "class_info": class_info,
+                "summary": {
+                    "paper_count": 0, "assigned_total": 0, "finished_total": 0,
+                    "avg_score_rate": None, "pass_rate": None,
+                    "suspicious_attempts": 0, "pending_review_total": 0,
+                },
+                "papers": [],
+                "students": [],
+            }
+
+        paper_ids = [p.id for p, _ in class_papers]
+        paper_by_id = {p.id: p for p, _ in class_papers}
+        attempts = (
+            await db.execute(
+                select(AssessmentAttempt).where(AssessmentAttempt.paper_id.in_(paper_ids))
+            )
+        ).scalars().all()
+
+        # 违规计数按 attempt 聚合
+        flag_counts: Dict[UUID, int] = {}
+        attempt_ids = [a.id for a in attempts]
+        if attempt_ids:
+            rows = await db.execute(
+                select(BehaviorEvent.attempt_id, func.count(BehaviorEvent.id))
+                .where(
+                    BehaviorEvent.attempt_id.in_(attempt_ids),
+                    BehaviorEvent.event_type.in_(AssessmentService.BEHAVIOR_FLAG_TYPES),
+                )
+                .group_by(BehaviorEvent.attempt_id)
+            )
+            flag_counts = {aid: int(c) for aid, c in rows.all() if aid}
+
+        name_by_id: Dict[str, str] = {}
+        if member_ids:
+            urows = await db.execute(
+                select(User.id, User.nickname, User.username).where(User.id.in_(member_ids))
+            )
+            for uid, nickname, username in urows.all():
+                name_by_id[str(uid)] = nickname or username or "未命名"
+
+        attempts_by_paper: Dict[UUID, List[AssessmentAttempt]] = {}
+        for a in attempts:
+            attempts_by_paper.setdefault(a.paper_id, []).append(a)
+
+        paper_rows: List[Dict[str, Any]] = []
+        all_rates: List[float] = []
+        assigned_total = 0
+        finished_total = 0
+        pass_total = 0
+        suspicious_attempts = 0
+
+        for paper, targeted in class_papers:
+            rows = [a for a in attempts_by_paper.get(paper.id, []) if str(a.student_id) in targeted]
+            finished = [
+                a for a in rows
+                if a.status in ("submitted", "pending_review") and a.score is not None
+            ]
+            total = paper.total_score
+            rates: List[float] = []
+            durations: List[int] = []
+            for a in finished:
+                durations.append(a.duration_seconds or 0)
+                if total:
+                    rates.append(float(a.score) / float(total))
+            pass_cnt = sum(1 for r in rates if r >= 0.6)
+            suspicious_attempts += sum(1 for a in rows if flag_counts.get(a.id, 0) > 0)
+            assigned_total += len(targeted)
+            finished_total += len(finished)
+            pass_total += pass_cnt
+            all_rates.extend(rates)
+            paper_rows.append({
+                "paper_id": str(paper.id),
+                "title": paper.title,
+                "published_at": paper.published_at,
+                "total_score": total,
+                "assigned": len(targeted),
+                "finished": len(finished),
+                "avg_score_rate": round(sum(rates) / len(rates) * 100, 1) if rates else None,
+                "pass_rate": round(pass_cnt / len(rates) * 100, 1) if rates else None,
+                "avg_duration_seconds": int(sum(durations) / len(durations)) if durations else None,
+            })
+
+        student_rows: List[Dict[str, Any]] = []
+        for sid in member_ids:
+            s = str(sid)
+            mine = [a for a in attempts if str(a.student_id) == s]
+            rates = []
+            flags = 0
+            pending = 0
+            for a in mine:
+                flags += flag_counts.get(a.id, 0)
+                if a.status == "pending_review":
+                    pending += 1
+                if a.status in ("submitted", "pending_review") and a.score is not None:
+                    p = paper_by_id.get(a.paper_id)
+                    if p is not None and p.total_score:
+                        rates.append(float(a.score) / float(p.total_score))
+            student_rows.append({
+                "student_id": s,
+                "name": name_by_id.get(s, "未命名"),
+                "attempted": len(mine),
+                "avg_score_rate": round(sum(rates) / len(rates) * 100, 1) if rates else None,
+                "flag_count": flags,
+                "pending_review": pending,
+            })
+        student_rows.sort(key=lambda x: (x["avg_score_rate"] is None, -(x["avg_score_rate"] or 0)))
+
+        return {
+            "class_info": class_info,
+            "summary": {
+                "paper_count": len(class_papers),
+                "assigned_total": assigned_total,
+                "finished_total": finished_total,
+                "avg_score_rate": round(sum(all_rates) / len(all_rates) * 100, 1) if all_rates else None,
+                "pass_rate": round(pass_total / len(all_rates) * 100, 1) if all_rates else None,
+                "suspicious_attempts": suspicious_attempts,
+                "pending_review_total": sum(1 for a in attempts if a.status == "pending_review"),
+            },
+            "papers": paper_rows,
+            "students": student_rows,
+        }
+
+    @staticmethod
     def _to_float_safe(value: Any, default: float) -> float:
         try:
             if value is None or value == "":

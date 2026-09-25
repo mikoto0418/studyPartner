@@ -181,7 +181,7 @@ const routes: Array<RouteRecordRaw> = [
         path: 'classes',
         name: 'TeacherClasses',
         component: ClassOverviewView,
-        meta: { title: '班级学情记忆看板', module: 'classes' }
+        meta: { title: '班级考试看板', module: 'classes' }
       },
       {
         path: 'announcements',
