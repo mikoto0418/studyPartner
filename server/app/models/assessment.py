@@ -17,7 +17,8 @@ class AssessmentPaper(BaseModel):
     parse_progress = Column(JSONB, nullable=True)  # {stage, total, done, current}
     parse_error = Column(Text, nullable=True)
     question_count = Column(Integer, default=0, nullable=False)
-    total_score = Column(Float, default=0.0, nullable=False)
+    # 有题目未设置分值时整卷满分为未知，用 NULL 表达，不用 0 冒充
+    total_score = Column(Float, nullable=True)
     publish_target = Column(JSONB, nullable=True)  # {type: class/group/student, ids, whitelist, blacklist}
     publish_at = Column(DateTime(timezone=True), nullable=True)  # 预约发布时间
     published_at = Column(DateTime(timezone=True), nullable=True)  # 实际发布时间
@@ -37,7 +38,8 @@ class AssessmentQuestion(BaseModel):
     options = Column(JSONB, nullable=True)  # 选择题选项
     answer = Column(JSONB, nullable=True)
     analysis = Column(Text, nullable=True)
-    score = Column(Float, default=0.0, nullable=False)
+    # NULL = 原文没标分值、教师尚未填写；0 是教师明确给出的分值，两者不可混同
+    score = Column(Float, nullable=True)
     difficulty = Column(Float, nullable=True)
     tags = Column(JSONB, nullable=True)
     source_chunk = Column(JSONB, nullable=True)  # {start_idx, end_idx, page_range} 溯源

@@ -19,7 +19,8 @@ class AssessmentQuestionIn(BaseModel):
     options: Optional[List[dict]] = None
     answer: Optional[Any] = None
     analysis: Optional[str] = None
-    score: float = 0.0
+    # 留空表示「未设置分值」，由教师在后续编辑页手动补；不能用 0 冒充
+    score: Optional[float] = None
     difficulty: Optional[float] = None
     tags: Optional[List[str]] = None
     source_chunk: Optional[dict] = None
@@ -35,7 +36,7 @@ class AssessmentQuestionOut(BaseModel):
     options: Optional[List[dict]] = None
     answer: Optional[Any] = None
     analysis: Optional[str] = None
-    score: float
+    score: Optional[float] = None
     difficulty: Optional[float] = None
     tags: Optional[List[str]] = None
     source_chunk: Optional[dict] = None
@@ -61,7 +62,7 @@ class ParseStatusOut(BaseModel):
     parse_progress: Optional[dict] = None
     parse_error: Optional[str] = None
     question_count: int
-    total_score: float
+    total_score: Optional[float] = None
 
 
 class AssessmentPaperOut(BaseModel):
@@ -73,7 +74,7 @@ class AssessmentPaperOut(BaseModel):
     parse_progress: Optional[dict] = None
     parse_error: Optional[str] = None
     question_count: int
-    total_score: float
+    total_score: Optional[float] = None
     publish_target: Optional[dict] = None
     publish_at: Optional[datetime] = None
     published_at: Optional[datetime] = None
@@ -91,7 +92,8 @@ class StudentQuestionOut(BaseModel):
     stem: str
     stem_images: Optional[List[dict]] = None
     options: Optional[List[dict]] = None
-    score: float
+    # 未设置分值时为 None，学生端应显示「未设置」而不是 0 分
+    score: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -116,7 +118,7 @@ class StudentPaperOut(BaseModel):
     title: str
     description: Optional[str] = None
     question_count: int
-    total_score: float
+    total_score: Optional[float] = None
     published_at: Optional[datetime] = None
     due_at: Optional[datetime] = None
     attempt_id: Optional[UUID] = None
@@ -179,7 +181,8 @@ class AttemptAnswerOut(BaseModel):
     stem: str
     options: Optional[List[dict]] = None
     reference_answer: Optional[Any] = None
-    max_score: float
+    # 题目未设置分值时满分为未知，教师批改页据此禁用打分输入
+    max_score: Optional[float] = None
     answer: Optional[Any] = None
     score: float = 0.0
     graded: bool = False

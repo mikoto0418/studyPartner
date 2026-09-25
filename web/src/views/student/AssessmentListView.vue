@@ -105,7 +105,9 @@ onMounted(loadPapers)
             <CircleDashed class="h-3.5 w-3.5" /> {{ paper.question_count }} 题
           </span>
           <span class="inline-flex items-center gap-1">
-            <CheckCircle2 class="h-3.5 w-3.5" /> 满分 {{ paper.total_score }}
+            <CheckCircle2 class="h-3.5 w-3.5" />
+            <template v-if="paper.total_score === null || paper.total_score === undefined">满分待定</template>
+            <template v-else>满分 {{ paper.total_score }}</template>
           </span>
           <span class="inline-flex items-center gap-1">
             <Clock class="h-3.5 w-3.5" /> 截止 {{ formatDate(paper.due_at) }}

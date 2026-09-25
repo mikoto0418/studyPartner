@@ -438,7 +438,9 @@ onUnmounted(() => {
             {{ index + 1 }}
           </span>
           <span class="rounded bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">
-            {{ typeLabel(q.question_type) }} · {{ q.score }} 分
+            {{ typeLabel(q.question_type) }}
+            <template v-if="q.score === null || q.score === undefined"> · 分值待定</template>
+            <template v-else> · {{ q.score }} 分</template>
           </span>
         </div>
 

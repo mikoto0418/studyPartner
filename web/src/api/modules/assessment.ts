@@ -9,7 +9,8 @@ export interface AssessmentPaper {
   parse_progress?: Record<string, any> | null
   parse_error?: string | null
   question_count: number
-  total_score: number
+  /** 有题目未设置分值时整卷满分为未知，后端返回 null */
+  total_score?: number | null
   publish_target?: Record<string, any> | null
   publish_at?: string | null
   published_at?: string | null
@@ -27,7 +28,8 @@ export interface AssessmentQuestion {
   options?: any[] | null
   answer?: any
   analysis?: string | null
-  score: number
+  /** null = 原文没标分值、教师尚未填写 */
+  score?: number | null
   difficulty?: number | null
   tags?: string[] | null
   source_chunk?: any
@@ -40,7 +42,7 @@ export interface ParseStatus {
   parse_progress?: Record<string, any> | null
   parse_error?: string | null
   question_count: number
-  total_score: number
+  total_score?: number | null
 }
 
 export interface StudentPaper {
@@ -48,7 +50,7 @@ export interface StudentPaper {
   title: string
   description?: string | null
   question_count: number
-  total_score: number
+  total_score?: number | null
   published_at?: string | null
   due_at?: string | null
   attempt_id?: string | null
@@ -63,7 +65,8 @@ export interface StudentQuestion {
   stem: string
   stem_images?: any[] | null
   options?: any[] | null
-  score: number
+  /** null = 该题尚未设置分值 */
+  score?: number | null
 }
 
 export interface StudentAttempt {
@@ -107,7 +110,8 @@ export interface AttemptAnswer {
   stem: string
   options?: any[] | null
   reference_answer?: any
-  max_score: number
+  /** null = 题目未设置分值，批改页应禁用打分输入 */
+  max_score?: number | null
   answer?: any
   score: number
   graded: boolean

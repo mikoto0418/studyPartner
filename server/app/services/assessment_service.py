@@ -42,6 +42,32 @@ SUBMIT_GRACE_SECONDS = 60
 
 class AssessmentService:
     @staticmethod
+    def _total_of(scores: List[Optional[float]]) -> Optional[float]:
+        """整卷满分：只要有一题没设分值，总分就是未知，用 None 表达。
+
+        旧实现把「原文没标分值」落成 0.0，学生端会显示「满分 0」，
+        自动判分也会把正确作答算成 0 分 —— 0 分和「不知道多少分」是两回事。
+        """
+        if not scores:
+            return None
+        total = 0.0
+        for value in scores:
+            if value is None:
+                return None
+            total += float(value)
+        return total
+
+    @staticmethod
+    def _optional_score(value: Any) -> Optional[float]:
+        """把自由 JSONB / 表单里的分值收敛成 float 或 None。"""
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _progress_key(paper_id: UUID) -> str:
         return f"assessment:parse:{paper_id}"
 
@@ -87,10 +113,14 @@ class AssessmentService:
         await db.commit()
         await db.refresh(paper)
 
-        from app.tasks.assessment_tasks import parse_assessment_paper_task
+        from app.core.task_dispatch import dispatch_parse_task
 
-        parse_assessment_paper_task.delay(str(paper.id))
-        await AssessmentService.set_parse_progress(paper.id, {"stage": "pending", "total": 0, "done": 0})
+        channel = await dispatch_parse_task(paper.id)
+        logger.info("Assessment paper %s queued for parsing via %s", paper.id, channel)
+        await AssessmentService.set_parse_progress(
+            paper.id,
+            {"stage": "pending", "total": 0, "done": 0, "channel": channel},
+        )
         return paper
 
     @staticmethod
@@ -124,18 +154,19 @@ class AssessmentService:
 
         await db.execute(delete(AssessmentQuestion).where(AssessmentQuestion.paper_id == paper_id))
         paper.question_count = 0
-        paper.total_score = 0.0
+        paper.total_score = None
         paper.parse_status = "pending"
         paper.parse_error = None
         paper.publish_at = None
         await db.commit()
         await db.refresh(paper)
 
-        from app.tasks.assessment_tasks import parse_assessment_paper_task
+        from app.core.task_dispatch import dispatch_parse_task
 
-        parse_assessment_paper_task.delay(str(paper.id))
+        channel = await dispatch_parse_task(paper.id)
+        logger.info("Assessment paper %s re-queued for parsing via %s", paper.id, channel)
         await AssessmentService.set_parse_progress(
-            paper.id, {"stage": "pending", "total": 0, "done": 0}
+            paper.id, {"stage": "pending", "total": 0, "done": 0, "channel": channel}
         )
         return paper
 
@@ -203,11 +234,9 @@ class AssessmentService:
 
         await db.execute(delete(AssessmentQuestion).where(AssessmentQuestion.paper_id == paper_id))
 
-        total_score = 0.0
         for index, q in enumerate(questions):
             question_type = q.get("question_type") or "short"
-            score = float(q.get("score") or 0.0)
-            total_score += score
+            score = AssessmentService._optional_score(q.get("score"))
             db.add(
                 AssessmentQuestion(
                     paper_id=paper_id,
@@ -228,7 +257,9 @@ class AssessmentService:
             )
 
         paper.question_count = len(questions)
-        paper.total_score = total_score
+        paper.total_score = AssessmentService._total_of(
+            [AssessmentService._optional_score(q.get("score")) for q in questions]
+        )
         paper.parse_status = "awaiting_review"
         # 回到「待发布」必须清掉预约时间：否则 beat 会按残留的 publish_at
         # 自动发布，教师拿到一份没点过发布的试卷（失败时存的还是未解析的
@@ -253,6 +284,20 @@ class AssessmentService:
         paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
         if paper.parse_status not in ("awaiting_review", "publish_failed"):
             raise ValidationError("仅完成人工校对的试卷可发布")
+
+        # 有题目没设分值就发布，学生端会看到「满分未知」，客观题也无法自动判分。
+        # 这是教师校对时漏填，属于可修的错误，必须在发布前拦下来。
+        missing = await db.execute(
+            select(func.count(AssessmentQuestion.id)).where(
+                AssessmentQuestion.paper_id == paper_id,
+                AssessmentQuestion.score.is_(None),
+            )
+        )
+        missing_count = missing.scalar() or 0
+        if missing_count:
+            raise ValidationError(
+                f"还有 {missing_count} 道题未设置分值，请返回校对页填写后再发布"
+            )
 
         raw_target = dict(publish_target or {})
         if not raw_target:
@@ -962,12 +1007,15 @@ class AssessmentService:
             if not q:
                 continue
             correct = AssessmentService._judge(q, a.get("answer"))
-            graded = q.question_type in ("single", "multiple", "judge", "fill")
+            # 没设分值的题不能「自动判对但给 0 分」——那等于把学生判错。
+            # 保持未批改，连同主观题一起进批改队列，等教师补分值并给分。
+            graded = q.question_type in ("single", "multiple", "judge", "fill") and q.score is not None
+            awarded = float(q.score or 0.0) if correct else 0.0
             row = existing.get(qid)
             if row:
                 row.answer = a.get("answer")
                 row.is_correct = correct
-                row.score = q.score if correct else 0.0
+                row.score = awarded
                 row.graded = graded
             else:
                 db.add(
@@ -976,7 +1024,7 @@ class AssessmentService:
                         question_id=qid,
                         answer=a.get("answer"),
                         is_correct=correct,
-                        score=q.score if correct else 0.0,
+                        score=awarded,
                         graded=graded,
                     )
                 )
@@ -1213,11 +1261,16 @@ class AssessmentService:
             if not pair:
                 continue
             answer_row, question = pair
-            # fill 由 _judge 自动判分（见 _upsert_answers），此处只处理主观题
-            if question.question_type not in ("short", "essay"):
+            # 主观题必须人工批改；客观题正常已自动判分，只有「未设分值」时才
+            # 落到这里由教师补分（见 _upsert_answers 的 graded 判定）。
+            if question.question_type not in ("short", "essay") and answer_row.graded:
                 continue
             raw = AssessmentService._to_float_safe(g.get("score"), 0.0)
-            answer_row.score = max(0.0, min(float(question.score or 0.0), raw))
+            # 题目没设分值时没有「满分」可钳制，只保证非负
+            if question.score is None:
+                answer_row.score = max(0.0, raw)
+            else:
+                answer_row.score = max(0.0, min(float(question.score), raw))
             answer_row.graded = True
             answer_row.is_correct = None
 
@@ -1349,6 +1402,7 @@ class AssessmentService:
             raise NotFoundError("试卷不存在")
 
         try:
+            logger.info("Assessment parse started for paper %s", paper_id)
             paper.parse_status = "parsing"
             paper.parse_error = None
             await db.commit()
@@ -1362,10 +1416,12 @@ class AssessmentService:
             if not file:
                 raise ValidationError("源文件已不存在")
 
+            logger.info("Parsing paper %s: downloading %s", paper_id, file.original_name)
             file_bytes = await asyncio.to_thread(MinioService.download_file, file.storage_path)
             raw_text = parse_document(file_bytes, file.original_name)
             if not raw_text.strip():
                 raise ValidationError("文档解析为空，无有效可提取文本")
+            logger.info("Parsing paper %s: extracted %d chars of text", paper_id, len(raw_text))
 
             extracted_images = await asyncio.to_thread(extract_images, file_bytes, file.original_name)
             doc_images: List[dict] = []
@@ -1403,6 +1459,11 @@ class AssessmentService:
                 )
 
             questions = await question_parser_module.parse_text_to_questions(raw_text, on_progress=on_progress)
+            logger.info("Parsing paper %s: LLM returned %d question(s)", paper_id, len(questions))
+            if not questions:
+                raise ValidationError(
+                    "拆题未得到任何题目：模型可能未返回有效 JSON，或原文不含可识别题目"
+                )
             for q in questions:
                 q["stem_images"] = AssessmentService._attach_stem_images(q.get("stem") or "", doc_images)
 
@@ -1415,10 +1476,8 @@ class AssessmentService:
 
             await db.execute(delete(AssessmentQuestion).where(AssessmentQuestion.paper_id == paper_id))
 
-            total_score = 0.0
             for q in questions:
-                score = float(q.get("score") or 0.0)
-                total_score += score
+                score = AssessmentService._optional_score(q.get("score"))
                 db.add(
                     AssessmentQuestion(
                         paper_id=paper_id,
@@ -1437,7 +1496,9 @@ class AssessmentService:
                 )
 
             paper.question_count = len(questions)
-            paper.total_score = total_score
+            paper.total_score = AssessmentService._total_of(
+                [AssessmentService._optional_score(q.get("score")) for q in questions]
+            )
             paper.parse_status = "awaiting_review"
             paper.parse_error = None
             await db.commit()
@@ -1446,6 +1507,9 @@ class AssessmentService:
                 {"stage": "done", "total": len(questions), "done": len(questions)},
             )
         except Exception as exc:
+            logger.error(
+                "Assessment parse failed for paper %s: %s", paper_id, exc, exc_info=True
+            )
             paper.parse_status = "failed"
             paper.parse_error = str(exc)[:1000]
             await db.commit()

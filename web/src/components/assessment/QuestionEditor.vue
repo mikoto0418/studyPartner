@@ -46,7 +46,15 @@ function removeOption(idx: number) {
         </el-select>
         <div class="flex items-center gap-1 text-xs text-gray-500 dark:text-zinc-400">
           分值
-          <el-input-number v-model="item.score" :min="0" :precision="1" size="small" class="w-24" />
+          <el-input-number
+            v-model="item.score"
+            :min="0"
+            :precision="1"
+            size="small"
+            class="w-24"
+            placeholder="未设置"
+          />
+          <span v-if="item.score === null || item.score === undefined" class="text-[10px] text-amber-500">未设置</span>
         </div>
       </div>
       <el-button type="danger" plain size="small" :icon="Trash2" @click="$emit('remove', index)">删除</el-button>

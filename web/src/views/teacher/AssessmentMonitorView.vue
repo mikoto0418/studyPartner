@@ -478,7 +478,9 @@ onMounted(loadPapers)
               第 {{ a.order_index + 1 }} 题
             </span>
             <span class="rounded bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">
-              {{ typeLabel(a.question_type) }} · 满分 {{ a.max_score }}
+              {{ typeLabel(a.question_type) }}
+              <template v-if="a.max_score === null || a.max_score === undefined"> · 分值待定</template>
+              <template v-else> · 满分 {{ a.max_score }}</template>
             </span>
             <span
               v-if="a.graded"
@@ -524,18 +526,23 @@ onMounted(loadPapers)
             </p>
           </div>
 
-          <div v-if="isManualType(a.question_type)" class="mt-3 flex items-center gap-2">
-            <span class="text-xs text-gray-500 dark:text-zinc-400">给分</span>
-            <el-input-number
-              v-model="gradeScores[a.question_id]"
-              :min="0"
-              :max="a.max_score"
-              :step="1"
-              size="small"
-              controls-position="right"
-              class="w-28"
-            />
-            <span class="text-xs text-gray-400">/ {{ a.max_score }}</span>
+          <div v-if="isManualType(a.question_type) || !a.graded" class="mt-3 flex items-center gap-2">
+            <template v-if="a.max_score === null || a.max_score === undefined">
+              <span class="text-xs text-amber-500">该题未设置分值，请先在校对页补填后再给分</span>
+            </template>
+            <template v-else>
+              <span class="text-xs text-gray-500 dark:text-zinc-400">给分</span>
+              <el-input-number
+                v-model="gradeScores[a.question_id]"
+                :min="0"
+                :max="a.max_score"
+                :step="1"
+                size="small"
+                controls-position="right"
+                class="w-28"
+              />
+              <span class="text-xs text-gray-400">/ {{ a.max_score }}</span>
+            </template>
           </div>
         </div>
 

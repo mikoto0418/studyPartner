@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, RefreshCw, Upload } from 'lucide-vue-next'
 import QuestionEditor from '../../components/assessment/QuestionEditor.vue'
 import RichStem from '../../components/assessment/RichStem.vue'
@@ -58,6 +58,9 @@ const questionTypeLabels = {
 } as Record<string, string>
 
 let pollTimer: number | null = null
+let stalledPolls = 0
+// 约 2 分钟没有任何状态推进就提示排查方向：任务可能没被 worker 消费
+const STALLED_POLL_LIMIT = 60
 
 // 草稿含标准答案，key 必须绑定当前账号，避免同一浏览器换账号后读到他人草稿
 const authStore = useAuthStore()
@@ -240,6 +243,7 @@ async function startParse() {
 
 function startPolling() {
   stopPolling()
+  stalledPolls = 0
   pollTimer = window.setInterval(async () => {
     if (!paperId.value) return
     try {
@@ -253,6 +257,13 @@ function startPolling() {
       } else if (st.parse_status === 'failed') {
         parseError.value = st.parse_error || '拆题失败'
         stopPolling()
+      } else {
+        // pending / parsing：记录连续无进展的轮询次数，超限给一条可自查的提示
+        stalledPolls += 1
+        if (stalledPolls === STALLED_POLL_LIMIT && !parseError.value) {
+          parseError.value =
+            '拆题任务长时间没有进展。常见原因：后台任务没有被消费（本地未启动 Celery worker），或所配置的拆题模型无法连通。'
+        }
       }
     } catch {
       // 单次轮询失败忽略
@@ -275,6 +286,8 @@ async function loadQuestions() {
     options: q.options || [],
     stem_images: q.stem_images || [],
     tags: q.tags || [],
+    // 后端返回 null 表示「未设置分值」，保留 null 让教师看到待填状态
+    score: q.score ?? null,
     answer: q.answer ?? ''
   }))
 }
@@ -302,6 +315,39 @@ function removeQuestion(index: number) {
   questions.value.splice(index, 1)
 }
 
+// 原文没标分值时拆题会留空，逐题填太慢；这里给一个整卷统一补分的入口
+const unsetScoreCount = computed(
+  () => questions.value.filter((q) => q.score === null || q.score === undefined).length
+)
+
+async function batchFillScore() {
+  if (!questions.value.length) return
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '将为所有尚未设置分值的题目填入该分值（已填写的题目不受影响）',
+      '批量设置分值',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        inputPattern: /^\d+(\.\d+)?$/,
+        inputErrorMessage: '请输入不小于 0 的数字',
+        inputValue: '1'
+      }
+    )
+    const score = Number(value)
+    if (!Number.isFinite(score) || score < 0) {
+      ElMessage.warning('请输入不小于 0 的数字')
+      return
+    }
+    questions.value.forEach((q) => {
+      if (q.score === null || q.score === undefined) q.score = score
+    })
+    ElMessage.success('已批量填入分值')
+  } catch {
+    // 用户取消，无需处理
+  }
+}
+
 async function saveAndNext() {
   if (!paperId.value) return
   saving.value = true
@@ -315,7 +361,8 @@ async function saveAndNext() {
         options: q.options,
         answer: q.answer,
         analysis: q.analysis,
-        score: q.score,
+        // undefined 与 null 都表示「未设置分值」，统一成 null 发给后端
+        score: q.score ?? null,
         difficulty: q.difficulty,
         tags: q.tags,
         source_chunk: q.source_chunk
@@ -655,7 +702,12 @@ onUnmounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="question_count" label="题目数" width="90" />
-        <el-table-column prop="total_score" label="总分" width="90" />
+        <el-table-column label="总分" width="90">
+          <template #default="{ row }">
+            <span v-if="row.total_score === null || row.total_score === undefined" class="text-amber-500">未设置</span>
+            <span v-else>{{ row.total_score }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="创建时间" width="170">
           <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
         </el-table-column>
@@ -739,8 +791,22 @@ onUnmounted(() => {
     <div v-else-if="activeStep === 2" class="space-y-4">
       <div class="flex items-center justify-between">
         <p class="text-sm text-gray-500 dark:text-zinc-400">共 {{ questions.length }} 题，请逐题校对并调整</p>
-        <el-button :icon="Plus" @click="addQuestion">新增题目</el-button>
+        <div class="flex items-center gap-2">
+          <el-button v-if="unsetScoreCount" type="warning" plain @click="batchFillScore">
+            批量设置分值（{{ unsetScoreCount }} 题未填）
+          </el-button>
+          <el-button :icon="Plus" @click="addQuestion">新增题目</el-button>
+        </div>
       </div>
+
+      <el-alert
+        v-if="unsetScoreCount"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="`有 ${unsetScoreCount} 道题未设置分值，发布前必须补全`"
+        description="原文没有标注分值的题目不会自动估算，请在每题上方填写，或用「批量设置分值」统一填入。"
+      />
 
       <QuestionEditor
         v-for="(q, i) in questions"
@@ -847,7 +913,11 @@ onUnmounted(() => {
     <el-dialog v-model="viewVisible" :title="viewTitle" width="72%">
       <div v-if="!viewQuestions.length" class="py-8 text-center text-sm text-gray-400">暂无题目</div>
       <div v-for="(q, i) in viewQuestions" :key="i" class="mb-3 rounded-lg border border-gray-200 p-3 dark:border-zinc-700">
-        <div class="mb-1 text-sm font-medium">{{ i + 1 }}. {{ questionTypeLabels[q.question_type] || q.question_type }}（{{ q.score }} 分）</div>
+        <div class="mb-1 text-sm font-medium">
+          {{ i + 1 }}. {{ questionTypeLabels[q.question_type] || q.question_type }}
+          <span v-if="q.score === null || q.score === undefined" class="text-amber-500">（未设置分值）</span>
+          <span v-else>（{{ q.score }} 分）</span>
+        </div>
         <div class="text-sm text-gray-700 dark:text-zinc-200"><RichStem :stem="q.stem" :images="q.stem_images" /></div>
         <div v-if="q.options && q.options.length" class="mt-2 space-y-1 pl-4 text-sm text-gray-600 dark:text-zinc-400">
           <div v-for="(o, oi) in q.options" :key="oi">{{ o.key }}. {{ o.text }}</div>
