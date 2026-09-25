@@ -3,10 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   LayoutDashboard,
-  MessageSquare,
   Calendar,
-  BookOpen,
-  Tv,
   Settings,
   LogOut,
   ChevronLeft,
@@ -17,9 +14,7 @@ import {
   Settings2,
   GitBranch,
   BarChart3,
-  TrendingUp,
   Megaphone,
-  Brain,
   ShieldAlert
 } from 'lucide-vue-next'
 import { useModuleStore } from '../../stores/module'
@@ -63,16 +58,11 @@ const menuItems = computed(() => {
       { name: '公告发布', path: '/teacher/announcements', icon: Megaphone, module: 'announcements' }
     ]
   } else {
+    // 客户版：学生端侧栏只保留这三个入口，其余页面路由仍在，只是不给入口
     return [
       { name: '仪表盘', path: '/student/dashboard', icon: LayoutDashboard },
       { name: '我的作业', path: '/student/assessment', icon: FileText, module: 'assessment' },
-      { name: 'AI伴学', path: '/student/ai-chat', icon: MessageSquare, module: 'ai_chat' },
-      { name: '记忆 Wiki', path: '/student/memory-wiki', icon: Brain, module: 'memory' },
-      { name: '月历计划', path: '/student/calendar', icon: Calendar, module: 'calendar' },
-      { name: '知识库', path: '/student/knowledge', icon: BookOpen, module: 'knowledge' },
-      { name: 'B站学习', path: '/student/bilibili', icon: Tv, module: 'bilibili' },
-      { name: '学习路径', path: '/student/learning-paths', icon: GitBranch, module: 'learning_path' },
-      { name: '成长全览', path: '/student/growth', icon: TrendingUp, module: 'growth' }
+      { name: '月历计划', path: '/student/calendar', icon: Calendar, module: 'calendar' }
     ]
   }
 })
