@@ -5,7 +5,17 @@ from typing import AsyncIterator, Optional, List, Dict, Any, Union
 class LLMProviderError(RuntimeError):
     """Provider-side error that should be shown to admins/operators."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        retry_after: Optional[float] = None,
+    ):
+        super().__init__(message)
+        # 供路由层判断是否值得重试；非 HTTP 错误（如响应缺字段）保持 None。
+        self.status_code = status_code
+        # 网关 429/503 常带 Retry-After，指明还要等多少秒，优先于本地退避估算。
+        self.retry_after = retry_after
 
 @dataclass
 class ChatMessage:

@@ -1,9 +1,21 @@
 import time
 import json
 import httpx
-from typing import AsyncIterator, List, Dict, Any, Union
+from typing import AsyncIterator, List, Dict, Any, Optional, Union
 
 from app.core.llm.base import LLMProvider, ChatMessage, ChatResponse, EmbeddingResponse, LLMProviderError
+
+def _parse_retry_after(response: httpx.Response) -> Optional[float]:
+    """读取网关给出的 Retry-After（秒）。可能是数字，也可能是 HTTP 日期，后者忽略。"""
+    raw = response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        value = float(raw.strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
 
 class SiliconFlowProvider(LLMProvider):
     """OpenAI-compatible chat and embedding provider."""
@@ -67,7 +79,11 @@ class SiliconFlowProvider(LLMProvider):
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise LLMProviderError(self._http_error_message(exc.response)) from exc
+            raise LLMProviderError(
+                self._http_error_message(exc.response),
+                status_code=exc.response.status_code,
+                retry_after=_parse_retry_after(exc.response),
+            ) from exc
         data = response.json()
 
         latency = (time.monotonic() - start_time) * 1000

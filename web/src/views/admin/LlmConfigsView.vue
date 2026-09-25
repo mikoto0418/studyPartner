@@ -154,8 +154,14 @@ const handleSaveConfig = async () => {
 
 const handleTestGateway = async (target: 'chat' | 'embedding') => {
   const apiKey = target === 'chat' ? chatApiKey.value.trim() : embeddingApiKey.value.trim()
-  if (!apiKey) {
-    ElMessage.warning(target === 'chat' ? '请先输入本次要测试的对话 API Key' : '请先输入本次要测试的嵌入 API Key')
+  const hasSavedKey = target === 'chat' ? hasExistingChatKey.value : hasExistingEmbeddingKey.value
+  // 表单里没填明文 Key 时按「保存态」测试：后端会用该通道已存的密钥发起真实调用
+  if (!apiKey && !hasSavedKey) {
+    ElMessage.warning(
+      target === 'chat'
+        ? '该通道尚未保存对话 API Key，请先在表单里填写后保存，或直接填入本次测试 Key'
+        : '该通道尚未保存嵌入 API Key，请先在表单里填写后保存，或直接填入本次测试 Key'
+    )
     return
   }
 
@@ -167,17 +173,24 @@ const handleTestGateway = async (target: 'chat' | 'embedding') => {
       ? '正在测试对话模型通道，会真实调用当前模型。'
       : '正在测试嵌入模型通道，会真实生成一条测试向量。'
   ]
+  if (!apiKey) {
+    testLogs.value.push('表单未填写明文 Key，将使用该通道已保存的密钥进行测试。')
+  }
 
   try {
     const res = await adminApi.testLlmConnection({
       provider_name: providerName.value,
-      base_url: target === 'chat' ? chatBaseUrl.value.trim() : embeddingBaseUrl.value.trim(),
-      api_key: apiKey,
-      model_name: target === 'chat' ? chatModel.value.trim() : embeddingModel.value.trim(),
+      base_url: (target === 'chat' ? chatBaseUrl.value : embeddingBaseUrl.value).trim() || undefined,
+      api_key: apiKey || undefined,
+      model_name: (target === 'chat' ? chatModel.value : embeddingModel.value).trim() || undefined,
       endpoint_type: target
     })
     testLatency.value = res.data?.latency_ms ?? null
-    testLogs.value.push(`测试成功，模型：${res.data?.model_name || (target === 'chat' ? chatModel.value : embeddingModel.value)}`)
+    const usedSaved = res.data?.key_source === 'saved'
+    testLogs.value.push(
+      `测试成功，模型：${res.data?.model_name || (target === 'chat' ? chatModel.value : embeddingModel.value)}` +
+        (usedSaved ? '（使用已保存密钥）' : '')
+    )
     testStatus.value = 'success'
     ElMessage.success(target === 'chat' ? '对话模型通道测试成功' : '嵌入模型通道测试成功')
   } catch (error) {
@@ -355,7 +368,7 @@ onMounted(() => {
           </span>
         </div>
 
-        <p class="text-[10px] text-gray-400">测试会由后端发起真实请求，分别验证对话接口和向量接口。</p>
+        <p class="text-[10px] text-gray-400">测试会由后端发起真实请求，分别验证对话接口和向量接口。表单里未填写 Key 时，将直接使用该通道已保存的配置进行测试。</p>
 
         <div class="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg p-4 font-mono text-[10px] text-zinc-400 space-y-2 overflow-y-auto min-h-[180px]">
           <div v-for="(log, idx) in testLogs" :key="idx" class="flex items-start space-x-1.5">

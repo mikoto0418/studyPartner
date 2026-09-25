@@ -35,10 +35,12 @@ export interface LLMConfigUpsertData {
 
 export interface LLMConnectionTestData {
   provider_name: string
-  base_url: string
-  api_key: string
-  model_name: string
+  // 以下字段留空即表示「按已保存配置测试」：后端取该通道存好的密钥、地址与模型名
+  base_url?: string
+  api_key?: string
+  model_name?: string
   endpoint_type: 'chat' | 'embedding'
+  task_type?: string
 }
 
 export interface LLMConnectionTestOut {
@@ -46,6 +48,7 @@ export interface LLMConnectionTestOut {
   model_name: string
   latency_ms: number
   ok: boolean
+  key_source?: 'form' | 'saved'
 }
 
 export interface LLMUsageLogOut {

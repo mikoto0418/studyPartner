@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LLMProviderConfigOut(BaseModel):
@@ -24,6 +24,19 @@ class LLMProviderConfigOut(BaseModel):
         from_attributes = True
 
 
+CHAT_TASK_TYPES: List[str] = [
+    "student_chat",
+    "daily_review",
+    "memory_extract",
+    "memory_update",
+    "knowledge_qa",
+    "learning_path_generate",
+    "document_summary",
+    "question_parsing",
+]
+EMBEDDING_TASK_TYPES: List[str] = ["knowledge_embedding"]
+
+
 class LLMConfigUpsertReq(BaseModel):
     provider_name: str = "siliconflow"
     display_name: Optional[str] = "SiliconFlow"
@@ -35,16 +48,7 @@ class LLMConfigUpsertReq(BaseModel):
     embedding_base_url: Optional[str] = None
     embedding_api_key: Optional[str] = Field(default=None, min_length=8)
     embedding_model: str
-    task_types: List[str] = Field(default_factory=lambda: [
-        "student_chat",
-        "daily_review",
-        "memory_extract",
-        "memory_update",
-        "knowledge_qa",
-        "learning_path_generate",
-        "document_summary",
-        "question_parsing",
-    ])
+    task_types: List[str] = Field(default_factory=lambda: list(CHAT_TASK_TYPES))
     enabled: bool = True
     rpm_limit: Optional[int] = None
     tpm_limit: Optional[int] = None
@@ -52,10 +56,20 @@ class LLMConfigUpsertReq(BaseModel):
 
 class LLMConnectionTestReq(BaseModel):
     provider_name: str = "siliconflow"
-    base_url: str = "https://api.siliconflow.cn/v1"
-    api_key: str = Field(..., min_length=8)
-    model_name: str
+    base_url: Optional[str] = None
+    # 留空表示「按保存态测试」：后端取该通道已存的密钥、Base URL 和模型名。
+    api_key: Optional[str] = Field(default=None, min_length=8)
+    model_name: Optional[str] = None
     endpoint_type: Literal["chat", "embedding"] = "chat"
+    # 指定要读哪条通道的已存配置；不填则按 endpoint_type 在对话/嵌入通道里挑优先级最高的。
+    task_type: Optional[str] = None
+
+    @field_validator("api_key", "base_url", "model_name", "task_type", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 class LLMConnectionTestOut(BaseModel):
@@ -63,6 +77,8 @@ class LLMConnectionTestOut(BaseModel):
     model_name: str
     latency_ms: int
     ok: bool
+    # form=本次用的是表单里临时填的密钥；saved=用的是已保存通道的密钥
+    key_source: Literal["form", "saved"] = "form"
 
 
 class LLMUsageLogOut(BaseModel):

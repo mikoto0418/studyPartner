@@ -13,7 +13,7 @@ from app.core.exceptions import ValidationError
 from app.core.llm.base import ChatMessage
 from app.core.llm.providers.siliconflow import SiliconFlowProvider
 from app.core.llm.router import OPENAI_COMPATIBLE_PROVIDERS, PROVIDER_DEFAULT_BASE_URLS
-from app.core.security import encrypt_secret
+from app.core.security import decrypt_secret, encrypt_secret
 from app.models.knowledge import FileModel
 from app.models.llm import LLMProviderConfig, LLMUsageLog
 from app.models.user import User
@@ -174,28 +174,80 @@ async def upsert_llm_configs(
     return BaseResponse.success(data=[_config_out(item) for item in saved], message="LLM 配置已保存")
 
 
+async def _pick_saved_config(
+    db: AsyncSession, req: LLMConnectionTestReq
+) -> LLMProviderConfig | None:
+    """挑出本次要测试的那条已保存通道。
+
+    指定了 task_type 就精确匹配；否则按端点类型在对话/嵌入两组里取优先级最高的一条。
+    """
+    stmt = select(LLMProviderConfig).where(
+        LLMProviderConfig.provider_name == req.provider_name,
+        LLMProviderConfig.enabled.is_(True),
+    )
+    if req.task_type:
+        stmt = stmt.where(LLMProviderConfig.task_type == req.task_type)
+    elif req.endpoint_type == "embedding":
+        stmt = stmt.where(LLMProviderConfig.task_type == "knowledge_embedding")
+    else:
+        stmt = stmt.where(LLMProviderConfig.task_type != "knowledge_embedding")
+    stmt = stmt.order_by(desc(LLMProviderConfig.priority)).limit(1)
+    return (await db.execute(stmt)).scalars().first()
+
+
 @router.post("/llm-configs/test", response_model=BaseResponse[LLMConnectionTestOut], summary="测试 LLM 通道连接")
 async def test_llm_connection(
     req: LLMConnectionTestReq = Body(...),
     current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
 ):
+    """连接测试以保存态为准，表单里有值才覆盖。
+
+    表单里的密钥/地址/模型名留空时回落到该通道已保存的配置，所以「测试」本身
+    就是对一个完整可用的通道做真实调用，不需要为了点一次按钮重新粘贴明文 Key。
+    """
     if req.provider_name not in OPENAI_COMPATIBLE_PROVIDERS:
         raise ValidationError("当前仅支持 OpenAI 兼容通道连接测试")
 
+    saved = await _pick_saved_config(db, req)
+
+    api_key = (req.api_key or "").strip()
+    key_source = "form"
+    if not api_key:
+        if not saved or not saved.api_key_enc:
+            raise ValidationError(
+                "该通道尚未保存过 API Key，请先填写本次要测试的 Key，或先保存配置"
+            )
+        api_key = decrypt_secret(saved.api_key_enc)
+        if not api_key:
+            raise ValidationError("已保存的 API Key 无法解密，请在配置页重新填写并保存")
+        key_source = "saved"
+
+    base_url = (
+        _normal_url(req.base_url)
+        or _normal_url(saved.base_url if saved else None)
+        or _normal_url(PROVIDER_DEFAULT_BASE_URLS.get(req.provider_name))
+    )
+    model_name = (req.model_name or "").strip() or (saved.model_name if saved else "")
+    if not model_name:
+        raise ValidationError("请填写要测试的模型名，或先保存该通道的模型配置")
+    if not base_url:
+        raise ValidationError("请填写要测试的 Base URL，或先保存该通道的地址配置")
+
     provider = SiliconFlowProvider({
         "provider_name": req.provider_name,
-        "api_key": req.api_key,
-        "base_url": _normal_url(req.base_url) or PROVIDER_DEFAULT_BASE_URLS.get(req.provider_name),
+        "api_key": api_key,
+        "base_url": base_url,
     })
     started = time.monotonic()
     try:
         if req.endpoint_type == "embedding":
-            embedding = await provider.embedding("连接测试", req.model_name)
+            embedding = await provider.embedding("连接测试", model_name)
             ok = bool(getattr(embedding, "embedding", None))
         else:
             await provider.chat_completion(
                 messages=[ChatMessage(role="user", content="请只回复 OK，不要解释。")],
-                model=req.model_name,
+                model=model_name,
                 temperature=0,
                 max_tokens=256,
                 stream=False,
@@ -212,9 +264,10 @@ async def test_llm_connection(
     return BaseResponse.success(
         data=LLMConnectionTestOut(
             provider_name=req.provider_name,
-            model_name=req.model_name,
+            model_name=model_name,
             latency_ms=latency_ms,
             ok=True,
+            key_source=key_source,
         ),
         message="连接测试成功",
     )
