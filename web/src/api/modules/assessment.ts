@@ -58,6 +58,56 @@ export interface StudentPaper {
   attempt_score?: number | null
 }
 
+export interface AnalyticsOverview {
+  assigned: number
+  finished: number
+  in_progress: number
+  pending_review: number
+  avg_score: number | null
+  max_score: number | null
+  min_score: number | null
+  total_score: number | null
+  pass_rate: number | null
+  avg_duration_seconds: number | null
+}
+
+export interface ScoreBucket {
+  label: string
+  range: string
+  count: number
+}
+
+export interface QuestionStat {
+  question_id: string
+  order_index: number
+  question_type: string
+  answered: number
+  correct: number | null
+  accuracy: number | null
+  avg_score_rate: number | null
+  avg_dwell_seconds?: number | null
+}
+
+export interface BehaviorStat {
+  event_type: string
+  count: number
+  is_flag: boolean
+}
+
+export interface PaperAnalytics {
+  paper: {
+    id: string
+    title: string
+    question_count: number
+    total_score: number | null
+  }
+  overview: AnalyticsOverview
+  score_distribution: ScoreBucket[]
+  questions: QuestionStat[]
+  behavior_distribution: BehaviorStat[]
+  suspicious_count: number
+}
+
 export interface StudentQuestion {
   id: string
   order_index: number
@@ -226,6 +276,10 @@ export const assessmentApi = {
 
   listPaperAttempts(paperId: string) {
     return request.get(`/assessment/papers/${paperId}/attempts`)
+  },
+
+  getPaperAnalytics(paperId: string) {
+    return request.get(`/assessment/papers/${paperId}/analytics`)
   },
 
   listAttemptBehavior(attemptId: string) {

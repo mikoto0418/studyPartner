@@ -54,6 +54,7 @@ const menuItems = computed(() => {
       { name: '任务管理', path: '/teacher/tasks', icon: ClipboardList, module: 'tasks' },
       { name: '发题工作台', path: '/teacher/assessment', icon: FileText, module: 'assessment' },
       { name: '监考中心', path: '/teacher/assessment-monitor', icon: ShieldAlert, module: 'assessment' },
+      { name: '考试分析', path: '/teacher/assessment-analytics', icon: BarChart3, module: 'assessment' },
       { name: '路径任务', path: '/teacher/learning-paths', icon: GitBranch, module: 'learning_path' },
       { name: '班级看板', path: '/teacher/classes', icon: BarChart3, module: 'classes' },
       { name: '公告发布', path: '/teacher/announcements', icon: Megaphone, module: 'announcements' }

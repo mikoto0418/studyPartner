@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
@@ -219,3 +219,14 @@ class BehaviorEventOut(BaseModel):
     event_type: str
     payload: Optional[dict] = None
     occurred_at: Optional[datetime] = None
+
+
+class PaperAnalyticsOut(BaseModel):
+    """教师端试卷分析聚合。字段结构由 service 组装，这里只做透传与文档化。"""
+
+    paper: Dict[str, Any]
+    overview: Dict[str, Any]
+    score_distribution: List[Dict[str, Any]] = Field(default_factory=list)
+    questions: List[Dict[str, Any]] = Field(default_factory=list)
+    behavior_distribution: List[Dict[str, Any]] = Field(default_factory=list)
+    suspicious_count: int = 0

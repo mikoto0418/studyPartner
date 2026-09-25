@@ -23,6 +23,7 @@ from app.schemas.assessment import (
     StudentPaperOut,
     AttemptAnswerOut,
     GradeAttemptReq,
+    PaperAnalyticsOut,
     StudentQuestionOut,
 )
 from app.schemas.common import BaseResponse
@@ -53,6 +54,20 @@ async def reparse_paper(
 ):
     paper = await AssessmentService.reparse_paper(db, paper_id, current_user.id)
     return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="已重新提交拆题")
+
+
+@router.get(
+    "/papers/{paper_id}/analytics",
+    response_model=BaseResponse[PaperAnalyticsOut],
+    summary="试卷分析聚合（概览/分数分布/逐题正确率与耗时/行为分布）",
+)
+async def get_paper_analytics(
+    paper_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await AssessmentService.get_paper_analytics(db, paper_id, current_user.id)
+    return BaseResponse.success(data=PaperAnalyticsOut(**data), message="获取成功")
 
 
 @router.get("/papers", response_model=BaseResponse[List[AssessmentPaperOut]], summary="教师试卷列表")

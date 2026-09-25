@@ -646,6 +646,209 @@ class AssessmentService:
             )
         return out
 
+    # 分数分布的分桶边界（按得分率百分比）。用得分率而非绝对分，是因为不同试卷
+    # 满分不同（甚至可能为 NULL），只有比率能横向比较。
+    SCORE_BUCKETS = [(0, 60, "不及格"), (60, 70, "及格"), (70, 80, "中等"), (80, 90, "良好"), (90, 101, "优秀")]
+
+    @staticmethod
+    async def get_paper_analytics(
+        db: AsyncSession, paper_id: UUID, teacher_id: UUID
+    ) -> Dict[str, Any]:
+        """教师端试卷分析聚合。
+
+        一次返回概览、分数分布、逐题正确率、逐题平均耗时、行为事件分布，
+        供前端图表直接消费 —— 避免前端为每张图各发一次请求。
+        """
+        paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
+
+        questions = (
+            await db.execute(
+                select(AssessmentQuestion)
+                .where(AssessmentQuestion.paper_id == paper_id)
+                .order_by(AssessmentQuestion.order_index.asc())
+            )
+        ).scalars().all()
+
+        attempts = (
+            await db.execute(
+                select(AssessmentAttempt).where(AssessmentAttempt.paper_id == paper_id)
+            )
+        ).scalars().all()
+        attempt_ids = [a.id for a in attempts]
+
+        # ---------- 概览 ----------
+        # 只有已交卷（含待批改）且算出了分数的作答才进得了统计；
+        # in_progress 的 score 是半成品，混进来会把平均分拉低。
+        finished = [
+            a for a in attempts
+            if a.status in ("submitted", "pending_review") and a.score is not None
+        ]
+        scores = [float(a.score) for a in finished]
+        durations = [a.duration_seconds for a in finished if a.duration_seconds]
+        total_score = paper.total_score
+
+        avg_score = round(sum(scores) / len(scores), 1) if scores else None
+        pass_rate = None
+        if scores and total_score:
+            pass_line = total_score * 0.6
+            pass_rate = round(sum(1 for s in scores if s >= pass_line) / len(scores) * 100, 1)
+
+        overview = {
+            "assigned": len(attempts),
+            "finished": len(finished),
+            "in_progress": sum(1 for a in attempts if a.status == "in_progress"),
+            "pending_review": sum(1 for a in attempts if a.status == "pending_review"),
+            "avg_score": avg_score,
+            "max_score": round(max(scores), 1) if scores else None,
+            "min_score": round(min(scores), 1) if scores else None,
+            "total_score": total_score,
+            "pass_rate": pass_rate,
+            "avg_duration_seconds": int(sum(durations) / len(durations)) if durations else None,
+        }
+
+        # ---------- 分数分布 ----------
+        distribution = [
+            {"label": label, "range": f"{low}-{high if high <= 100 else 100}", "count": 0}
+            for low, high, label in AssessmentService.SCORE_BUCKETS
+        ]
+        for s in scores:
+            if total_score:
+                rate = (s / total_score) * 100
+            else:
+                # 满分未知时无法算比率，统一归入「不及格」桶并在前端标注
+                rate = 0
+            for idx, (low, high, _) in enumerate(AssessmentService.SCORE_BUCKETS):
+                if low <= rate < high:
+                    distribution[idx]["count"] += 1
+                    break
+
+        # ---------- 逐题正确率 / 得分率 ----------
+        answers_by_question: Dict[UUID, List[AssessmentAnswer]] = {}
+        question_ids = [q.id for q in questions]
+        if attempt_ids and question_ids:
+            answer_rows = (
+                await db.execute(
+                    select(AssessmentAnswer).where(
+                        AssessmentAnswer.attempt_id.in_(attempt_ids),
+                        AssessmentAnswer.question_id.in_(question_ids),
+                    )
+                )
+            ).scalars().all()
+            for ans in answer_rows:
+                answers_by_question.setdefault(ans.question_id, []).append(ans)
+
+        question_stats: List[Dict[str, Any]] = []
+        for q in questions:
+            rows = answers_by_question.get(q.id, [])
+            answered = len(rows)
+            # 客观题有 is_correct；主观题只能看得分率
+            if q.question_type in ("single", "multiple", "judge", "fill"):
+                correct = sum(1 for a in rows if a.is_correct)
+                rate = round(correct / answered * 100, 1) if answered else None
+                question_stats.append({
+                    "question_id": str(q.id),
+                    "order_index": q.order_index,
+                    "question_type": q.question_type,
+                    "answered": answered,
+                    "correct": correct,
+                    "accuracy": rate,
+                    "avg_score_rate": None,
+                })
+            else:
+                max_total = sum(float(a.score or 0.0) for a in rows)
+                # 主观题满分按题分值算，未设分值时无法算得分率
+                possible = float(q.score) * answered if q.score is not None else None
+                rate = round(max_total / possible * 100, 1) if possible else None
+                question_stats.append({
+                    "question_id": str(q.id),
+                    "order_index": q.order_index,
+                    "question_type": q.question_type,
+                    "answered": answered,
+                    "correct": None,
+                    "accuracy": None,
+                    "avg_score_rate": rate,
+                })
+
+        # ---------- 逐题平均停留时长（从 question_dwell 聚合）----------
+        # 在 Python 侧聚合而不是 SQL GROUP BY：payload->>'question_id' 在 SELECT 与
+        # GROUP BY 里会被绑定成两个不同的占位符（$1 vs $4），Postgres 判定
+        # 「不是同一个表达式」而报 GroupingError。每份试卷的 dwell 事件量很小
+        # （题数 × 作答数），拉回来算完全够用。
+        dwell_totals: Dict[str, int] = {}
+        dwell_counts: Dict[str, int] = {}
+        if attempt_ids:
+            dwell_rows = await db.execute(
+                select(BehaviorEvent.payload).where(
+                    BehaviorEvent.attempt_id.in_(attempt_ids),
+                    BehaviorEvent.event_type == "question_dwell",
+                )
+            )
+            for (payload,) in dwell_rows.all():
+                if not payload:
+                    continue
+                qid = payload.get("question_id")
+                ms = payload.get("duration_ms")
+                if not qid or ms is None:
+                    continue
+                try:
+                    ms_val = int(ms)
+                except (TypeError, ValueError):
+                    continue
+                dwell_totals[qid] = dwell_totals.get(qid, 0) + ms_val
+                dwell_counts[qid] = dwell_counts.get(qid, 0) + 1
+
+        dwell_map: Dict[str, float] = {
+            qid: round(total / dwell_counts[qid] / 1000, 1)
+            for qid, total in dwell_totals.items()
+            if dwell_counts.get(qid)
+        }
+
+        for stat in question_stats:
+            stat["avg_dwell_seconds"] = dwell_map.get(stat["question_id"])
+
+        # ---------- 行为事件分布 ----------
+        behavior_dist: List[Dict[str, Any]] = []
+        flagged_attempts: set = set()
+        if attempt_ids:
+            event_rows = await db.execute(
+                select(BehaviorEvent.event_type, func.count(BehaviorEvent.id))
+                .where(BehaviorEvent.attempt_id.in_(attempt_ids))
+                .group_by(BehaviorEvent.event_type)
+                .order_by(func.count(BehaviorEvent.id).desc())
+            )
+            for event_type, cnt in event_rows.all():
+                behavior_dist.append({
+                    "event_type": event_type,
+                    "count": int(cnt),
+                    "is_flag": event_type in AssessmentService.BEHAVIOR_FLAG_TYPES,
+                })
+
+            # 可疑作答数要按 attempt 去重：某条作答只要出现过任意一类违规事件就算一次，
+            # 不能拿「事件类型的数量」或「全局有没有违规」来冒充。
+            flagged_rows = await db.execute(
+                select(BehaviorEvent.attempt_id)
+                .where(
+                    BehaviorEvent.attempt_id.in_(attempt_ids),
+                    BehaviorEvent.event_type.in_(AssessmentService.BEHAVIOR_FLAG_TYPES),
+                )
+                .distinct()
+            )
+            flagged_attempts = {aid for (aid,) in flagged_rows.all() if aid}
+
+        return {
+            "paper": {
+                "id": str(paper.id),
+                "title": paper.title,
+                "question_count": paper.question_count,
+                "total_score": total_score,
+            },
+            "overview": overview,
+            "score_distribution": distribution,
+            "questions": question_stats,
+            "behavior_distribution": behavior_dist,
+            "suspicious_count": len(flagged_attempts),
+        }
+
     @staticmethod
     async def list_attempt_behavior(
         db: AsyncSession, attempt_id: UUID, teacher_id: UUID

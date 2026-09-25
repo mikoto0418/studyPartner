@@ -23,6 +23,7 @@ import StudentsView from '../views/teacher/StudentsView.vue'
 import TasksView from '../views/teacher/TasksView.vue'
 import AssessmentCreateView from '../views/teacher/AssessmentCreateView.vue'
 import AssessmentMonitorView from '../views/teacher/AssessmentMonitorView.vue'
+import AssessmentAnalyticsView from '../views/teacher/AssessmentAnalyticsView.vue'
 import TeacherLearningPathsView from '../views/teacher/LearningPathsView.vue'
 import TeacherLearningPathCreateView from '../views/teacher/LearningPathCreateView.vue'
 import TeacherLearningPathStudentProgressView from '../views/teacher/LearningPathStudentProgressView.vue'
@@ -151,6 +152,12 @@ const routes: Array<RouteRecordRaw> = [
         name: 'TeacherAssessmentMonitor',
         component: AssessmentMonitorView,
         meta: { title: '监考中心', module: 'assessment' }
+      },
+      {
+        path: 'assessment-analytics',
+        name: 'TeacherAssessmentAnalytics',
+        component: AssessmentAnalyticsView,
+        meta: { title: '考试分析', module: 'assessment' }
       },
       {
         path: 'learning-paths',
