@@ -47,5 +47,18 @@ export const useModuleStore = defineStore('module', () => {
     return m.enabled
   }
 
-  return { modules, loaded, loading, load, ensureLoaded, isVisible, isEnabled }
+  /**
+   * 某模块是否处于启用态，用于「内容级」显隐（而非入口级）。
+   *
+   * 与 isVisible 的关键区别：查不到该 code 时返回 false。模块列表按角色裁剪，
+   * 学生看不到 teacher-only 的 tasks —— 若沿用 isVisible 的「查不到=不隐藏」，
+   * 学生仪表盘就会一直显示导师任务卡片，管理员关掉 tasks 也不生效。
+   */
+  function isActive(code: string) {
+    const m = modules.value.find((x) => x.code === code)
+    if (!m) return false
+    return m.enabled && m.visible
+  }
+
+  return { modules, loaded, loading, load, ensureLoaded, isVisible, isEnabled, isActive }
 })

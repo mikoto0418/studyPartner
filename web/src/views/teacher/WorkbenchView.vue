@@ -25,6 +25,7 @@ import { taskApi, type TaskDetails, type TaskOut } from '../../api/modules/task'
 import type { ConversationOut, MessageOut } from '../../api/modules/ai_chat'
 import type { ClassOut, ClassOverviewOut } from '../../api/modules/learning_path'
 import { localizeMemorySummaryText } from '../../utils/memoryLabels'
+import { useModuleStore } from '../../stores/module'
 
 interface PendingSubmissionItem {
   id: string
@@ -50,6 +51,7 @@ interface AgentAction {
   prompt: string
 }
 
+const moduleStore = useModuleStore()
 const classes = ref<ClassOut[]>([])
 const selectedClassId = ref('')
 const overview = ref<ClassOverviewOut | null>(null)
@@ -312,16 +314,19 @@ const loadDashboard = async () => {
     ElMessage.error('加载班级列表失败')
   }
 
-  try {
-    const tasksRes = await taskApi.listTeacherTasks()
-    teacherTasks.value = tasksRes.data || []
-    await loadPendingSubmissions(teacherTasks.value)
-  } catch (error) {
-    console.warn('Failed to load teacher dashboard tasks', error)
-    ElMessage.error('加载任务待办失败')
-  } finally {
-    loadingDashboard.value = false
+  // tasks 模块关闭后不再拉取教学任务，否则保留页会显示已关模块的数据、并留下死链入口
+  await moduleStore.ensureLoaded()
+  if (moduleStore.isActive('tasks')) {
+    try {
+      const tasksRes = await taskApi.listTeacherTasks()
+      teacherTasks.value = tasksRes.data || []
+      await loadPendingSubmissions(teacherTasks.value)
+    } catch (error) {
+      console.warn('Failed to load teacher dashboard tasks', error)
+      ElMessage.error('加载任务待办失败')
+    }
   }
+  loadingDashboard.value = false
 }
 
 const handleInsightStatus = async (insightId: string, status: 'acknowledged' | 'resolved' | 'dismissed') => {
@@ -675,7 +680,7 @@ onMounted(() => {
               </article>
 
               <aside class="space-y-6 xl:col-span-5">
-                <article class="minimal-card bg-white p-6 dark:bg-zinc-900">
+                <article v-if="moduleStore.isActive('learning_path')" class="minimal-card bg-white p-6 dark:bg-zinc-900">
                   <div class="flex items-center justify-between border-b border-gray-100 pb-4 dark:border-zinc-800">
                     <h2 class="flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-zinc-50">
                       <GitBranch class="h-4 w-4 text-blue-600" />
@@ -714,12 +719,13 @@ onMounted(() => {
                       <ClipboardCheck class="h-4 w-4 text-amber-600" />
                       今日待办队列
                     </h2>
-                    <router-link to="/teacher/tasks" class="text-[10px] font-semibold text-blue-600 dark:text-blue-300">任务管理</router-link>
+                    <router-link v-if="moduleStore.isActive('tasks')" to="/teacher/tasks" class="text-[10px] font-semibold text-blue-600 dark:text-blue-300">任务管理</router-link>
                   </div>
 
                   <div class="mt-4 space-y-3">
                     <div
                       v-for="submission in pendingSubmissions.slice(0, 5)"
+                      v-show="moduleStore.isActive('tasks')"
                       :key="submission.id"
                       class="rounded-lg border border-gray-100 bg-gray-50/40 p-3 dark:border-zinc-800 dark:bg-zinc-950/30"
                     >

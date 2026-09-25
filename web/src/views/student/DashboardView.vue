@@ -7,6 +7,7 @@ import { todoApi } from '../../api/modules/todo'
 import { noteApi } from '../../api/modules/note'
 import { heatmapApi } from '../../api/modules/heatmap'
 import { taskApi, type StudentTask } from '../../api/modules/task'
+import { useModuleStore } from '../../stores/module'
 import { authApi } from '../../api/modules/auth'
 import { userApi, type UserOut } from '../../api/modules/user'
 
@@ -59,6 +60,7 @@ const currentUser = ref<UserOut | null>(null)
 const todos = ref<TodoItem[]>([])
 const teacherTasks = ref<StudentTask[]>([])
 const notes = ref<NoteItem[]>([])
+const moduleStore = useModuleStore()
 const heatmapWeeks = ref<any[]>([])
 const streakDays = ref(0)
 const todayScore = ref(0)
@@ -371,11 +373,16 @@ const loadData = async () => {
     console.warn('Failed to fetch todos', error)
   }
 
-  try {
-    const taskRes = await taskApi.listMyTasks()
-    teacherTasks.value = taskRes.data || []
-  } catch (error) {
-    console.warn('Failed to fetch teacher tasks', error)
+  // tasks 模块关闭后不再拉导师任务，避免仪表盘显示已停用模块的数据。
+  // 用 isActive 而非 isVisible：tasks 只登记给 teacher，学生的模块列表里查不到它。
+  await moduleStore.ensureLoaded()
+  if (moduleStore.isActive('tasks')) {
+    try {
+      const taskRes = await taskApi.listMyTasks()
+      teacherTasks.value = taskRes.data || []
+    } catch (error) {
+      console.warn('Failed to fetch teacher tasks', error)
+    }
   }
 
   try {
@@ -504,6 +511,7 @@ onUnmounted(() => {
           <div class="flex-1 overflow-y-auto space-y-3 pr-1">
             <div
               v-for="item in activeTeacherTasks"
+              v-show="moduleStore.isActive('tasks')"
               :key="`teacher-${item.id}`"
               class="flex items-center gap-3 p-3 rounded-lg border border-blue-100 dark:border-blue-900/40 bg-blue-50/50 dark:bg-blue-950/10"
             >
