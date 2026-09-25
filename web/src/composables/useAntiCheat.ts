@@ -36,8 +36,11 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   let currentQuestion: string | null = null
   let questionStartedAt: number | null = null
   let devtoolsOpen = false
-  // 已敲入的字符数，与实际插入的文字比对，用来发现「不是手敲的」输入
-  let keystrokes = 0
+  // 按输入框分别记录「已敲入字符数」与「上次的文本长度」。
+  // 用 WeakMap 而不是单个变量：多个输入框共用一个计数器会互相串，
+  // 且首次进入某框时无法判断这一下是敲的还是整段灌进来的。
+  const keystrokeCounts = new WeakMap<Element, number>()
+  const valueLengths = new WeakMap<Element, number>()
 
   const queue: BehaviorEventPayload[] = []
 
@@ -121,7 +124,10 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     }
     // 记录真实敲入的字符数，供输入比对用。带修饰键的组合（Ctrl+Z 等）不产生文字，
     // 输入法组合期间也不计，否则会把正常操作误算成按键。
-    if (!e.isComposing && !isModifier(e) && !e.altKey && e.key.length === 1) keystrokes += 1
+    if (!e.isComposing && !isModifier(e) && !e.altKey && e.key.length === 1) {
+      const t = e.target as Element | null
+      if (t) keystrokeCounts.set(t, (keystrokeCounts.get(t) ?? 0) + 1)
+    }
   }
 
   const onKeyup = (e: KeyboardEvent) => {
@@ -161,12 +167,12 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
 
   // 浏览器原生菜单「粘贴」在部分环境既不派发 paste 也不派发 beforeinput，
   // 只拦事件会漏。这里按「输入框增长了多少字符」与「实际敲了多少键」比对，
-  // 多出来的就是非手敲输入。输入法组合（isComposing）期间不判定，避免误伤中文输入。
-  let lastInputLen = 0
-  let inputTracked: HTMLElement | null = null
-  // 输入法（中文等）会一次性提交整段文字，而且提交那一拍的 input 事件里
-  // isComposing 已经是 false —— 只靠 isComposing 会把中文作答误判成粘贴。
-  // 用组合状态 + 结束后的时间窗共同排除。
+  // 多出来的就是非手敲输入。
+  //
+  // 基线在 focusin 时就记下（此刻输入框通常还是空的），所以「进框第一次就整段
+  // 粘贴」同样能抓到 —— 只在 input 事件里首次建基线的话，那一整段会被当成起点跳过。
+  // 输入法（中文等）会一次性提交整段文字，且提交那一拍 isComposing 已是 false，
+  // 所以用组合状态 + 结束后 150ms 时间窗共同排除，避免把中文作答误判成粘贴。
   let composing = false
   let compositionEndedAt = 0
 
@@ -179,35 +185,46 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     compositionEndedAt = Date.now()
   }
 
+  const resetInputBaseline = (el: Element) => {
+    valueLengths.set(el, (el as HTMLInputElement).value.length)
+    keystrokeCounts.set(el, 0)
+  }
+
+  const onInputBaseline = (e: FocusEvent) => {
+    const el = e.target as HTMLElement | null
+    if (!el) return
+    if (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT') return
+    resetInputBaseline(el)
+  }
+
   const onInputCapture = (e: Event) => {
     const el = e.target as HTMLElement | null
     if (!el) return
     const tag = el.tagName
     if (tag !== 'TEXTAREA' && tag !== 'INPUT') return
     const value = (el as HTMLInputElement).value
-    if (
-      composing ||
-      (e as InputEvent).isComposing ||
-      Date.now() - compositionEndedAt < 150
-    ) {
-      inputTracked = el
-      lastInputLen = value.length
-      keystrokes = 0
+    const isComposingInput =
+      composing || (e as InputEvent).isComposing || Date.now() - compositionEndedAt < 150
+    if (isComposingInput) {
+      // 输入法提交的文字不算敲键，直接把基线推到当前值
+      resetInputBaseline(el)
       return
     }
-    if (inputTracked !== el) {
-      inputTracked = el
-      lastInputLen = value.length
-      keystrokes = 0
+    // 没见过这个框（比如程序化聚焦），先建基线，这一次不计
+    if (!valueLengths.has(el)) {
+      resetInputBaseline(el)
       return
     }
-    const inserted = value.length - lastInputLen
-    lastInputLen = value.length
-    if (inserted > 0 && keystrokes < inserted) {
+    const prevLen = valueLengths.get(el) ?? 0
+    const typed = keystrokeCounts.get(el) ?? 0
+    const inserted = value.length - prevLen
+    valueLengths.set(el, value.length)
+    keystrokeCounts.set(el, 0)
+    // 一次插入的字符数明显多于实际敲键数 → 不是手敲进来的
+    if (inserted > 0 && typed < inserted) {
       recordViolation()
-      push('blocked_input', { inserted, keystrokes })
+      push('blocked_input', { inserted, keystrokes: typed })
     }
-    keystrokes = 0
   }
 
   // ---------- 接管 execCommand 与剪贴板读取 ----------
@@ -329,6 +346,9 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   }
 
   const onFocusIn = (e: FocusEvent) => {
+    // 进输入框就把基线归零。此刻框里通常是空的（或上次的旧值），
+    // 之后第一次 input 的增量才是这次真正插入的内容。
+    onInputBaseline(e)
     const next = describeFocus(e.target as Element | null)
     commitFocusDwell()
     focusState = next
@@ -559,9 +579,6 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     currentQuestion = null
     questionStartedAt = null
     devtoolsOpen = false
-    inputTracked = null
-    lastInputLen = 0
-    keystrokes = 0
     composing = false
     compositionEndedAt = 0
     contentHidden.value = false
