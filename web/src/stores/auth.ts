@@ -1,6 +1,17 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
+/**
+ * 清除登录态。刻意不用 localStorage.clear()：那会一并删掉发题工作台草稿等
+ * 按账号命名空间的业务数据，导致重新登录后「进行中的拆题」无迹可寻。
+ */
+export function clearAuthStorage() {
+  localStorage.removeItem('sp_token')
+  localStorage.removeItem('sp_role')
+  localStorage.removeItem('sp_username')
+  localStorage.removeItem('sp_display_name')
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(localStorage.getItem('sp_token'))
   const role = ref<string | null>(localStorage.getItem('sp_role'))
@@ -31,10 +42,7 @@ export const useAuthStore = defineStore('auth', () => {
     username.value = null
     displayName.value = null
 
-    localStorage.removeItem('sp_token')
-    localStorage.removeItem('sp_role')
-    localStorage.removeItem('sp_username')
-    localStorage.removeItem('sp_display_name')
+    clearAuthStorage()
   }
 
   return {

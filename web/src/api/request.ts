@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '../router'
+import { clearAuthStorage } from '../stores/auth'
 
 const request = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
@@ -43,9 +44,10 @@ request.interceptors.response.use(
     const isTimeout = error.code === 'ECONNABORTED' || String(error.message || '').toLowerCase().includes('timeout')
     
     if (status === 401) {
-      // Unauthorized: clear storage and redirect to login
+      // 只清认证相关的 key：localStorage.clear() 会连发题工作台草稿一起清掉，
+      // 而草稿按账号隔离存储，换账号读不到，留着不构成串号风险。
       ElMessage.warning('身份已过期，请重新登录')
-      localStorage.clear()
+      clearAuthStorage()
       router.push('/login')
     } else if (status === 403) {
       ElMessage.error('权限不足，无法进行此操作')

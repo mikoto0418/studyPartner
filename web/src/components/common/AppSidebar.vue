@@ -18,6 +18,7 @@ import {
   ShieldAlert
 } from 'lucide-vue-next'
 import { useModuleStore } from '../../stores/module'
+import { clearAuthStorage } from '../../stores/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -82,7 +83,8 @@ const toggleCollapse = () => {
 }
 
 const handleLogout = () => {
-  localStorage.clear()
+  // 只清登录态，保留发题工作台草稿等业务数据（草稿按账号隔离，换账号读不到）
+  clearAuthStorage()
   router.push('/login')
 }
 

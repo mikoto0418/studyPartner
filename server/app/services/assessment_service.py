@@ -85,6 +85,44 @@ class AssessmentService:
         return json.loads(raw) if raw else None
 
     @staticmethod
+    async def recover_interrupted_parses(db: AsyncSession) -> int:
+        """服务重启后，把中断在 parsing 的试卷重新派发。
+
+        无 Celery worker 时拆题任务跑在 API 进程内，进程一重启任务就没了，
+        试卷会永久停在 parsing —— 教师那边看到的是「一直在解析」，等多久都没结果。
+        这里在启动时兜底重派。
+
+        只在没有 worker 时重派：有 worker 说明任务在 worker 手里（worker 是独立
+        进程，不会随 API 重启而死），此时重派会让同一份试卷被两个任务同时拆。
+        """
+        from app.core.task_dispatch import dispatch_parse_task, workers_alive
+
+        if await workers_alive():
+            return 0
+
+        papers = (
+            await db.execute(
+                select(AssessmentPaper).where(AssessmentPaper.parse_status == "parsing")
+            )
+        ).scalars().all()
+        if not papers:
+            return 0
+
+        count = 0
+        for paper in papers:
+            try:
+                await dispatch_parse_task(paper.id)
+                count += 1
+            except Exception as exc:
+                logger.error(
+                    "Failed to re-dispatch interrupted parse for %s: %s",
+                    paper.id,
+                    exc,
+                    exc_info=True,
+                )
+        return count
+
+    @staticmethod
     async def create_paper(
         db: AsyncSession,
         teacher_id: UUID,
@@ -1134,7 +1172,7 @@ class AssessmentService:
                 BehaviorEvent.event_type == "fullscreen_exit",
             )
         )
-        return (count.scalar() or 0) >= AssessmentService.FULLSCREEN_EXIT_LIMIT
+        return (count.scalar() or 0) >= FULLSCREEN_EXIT_LIMIT
 
     @staticmethod
     async def _enforce_violation_limit(

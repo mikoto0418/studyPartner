@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -83,6 +86,23 @@ async def startup_event():
     if settings.ENABLE_INLINE_SCHEDULER:
         from app.core.scheduler import start_scheduler
         start_scheduler()
+
+    # 无 Celery worker 时拆题任务跑在本进程内，重启会把它连同状态一起丢掉，
+    # 试卷永久停在 parsing。启动时兜底把这类试卷重新派发一次。
+    from app.core.database import SessionLocal
+    from app.services.assessment_service import AssessmentService
+
+    try:
+        async with SessionLocal() as db:
+            recovered = await AssessmentService.recover_interrupted_parses(db)
+        if recovered:
+            logging.getLogger(__name__).info(
+                "Re-dispatched %d interrupted assessment parse(s) on startup", recovered
+            )
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "Failed to recover interrupted assessment parses: %s", exc, exc_info=True
+        )
 
 @app.on_event("shutdown")
 async def shutdown_event():
