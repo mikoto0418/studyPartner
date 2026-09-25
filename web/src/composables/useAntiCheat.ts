@@ -283,14 +283,25 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   // ---------- 全屏 ----------
   const isFullscreen = () => !!document.fullscreenElement
 
-  const enterFullscreen = async () => {
+  /**
+   * 请求进入全屏，返回是否真的进去了。
+   *
+   * 返回值必须被调用方检查：requestFullscreen 会因「用户拒绝」或「非用户手势」
+   * 而 reject，早期实现把异常吞掉后照样放行，学生只要在弹窗上点拒绝就能全程
+   * 窗口化作答 —— fullscreenchange 从未触发，退出计数始终为 0，所有基于
+   * 「退出全屏」的拦截全部失效。
+   */
+  const enterFullscreen = async (): Promise<boolean> => {
     try {
       if (!document.fullscreenElement) {
         await document.documentElement.requestFullscreen()
       }
       fullscreenActive.value = true
+      return true
     } catch (err) {
+      fullscreenActive.value = false
       push('fullscreen_denied', {})
+      return false
     }
   }
 

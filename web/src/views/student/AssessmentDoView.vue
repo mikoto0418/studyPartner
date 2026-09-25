@@ -153,8 +153,11 @@ const handleAutoSubmit = async () => {
   await submit(true)
 }
 
-const handleRestoreFullscreen = () => {
-  antiCheat.enterFullscreen()
+const handleRestoreFullscreen = async () => {
+  const entered = await antiCheat.enterFullscreen()
+  if (!entered) {
+    ElMessage.warning('未能进入全屏，请检查浏览器是否允许全屏')
+  }
 }
 
 const autosave = async () => {
@@ -246,11 +249,19 @@ const tickCountdown = () => {
   }
 }
 
-// 必须由用户手势同步触发，否则 requestFullscreen 会被浏览器拒绝
-const beginAnswering = () => {
+// 必须由用户手势同步触发，否则 requestFullscreen 会被浏览器拒绝。
+// requestFullscreen() 本身在这次点击里同步发起，await 的只是它的结果。
+const beginAnswering = async () => {
   if (starting.value || started.value) return
   starting.value = true
-  antiCheat.enterFullscreen()
+  // 进不去全屏就不放行：否则学生在权限弹窗上点「拒绝」即可全程窗口化作答，
+  // 而 fullscreenchange 从未触发，退出计数为 0，防作弊完全失效。
+  const entered = await antiCheat.enterFullscreen()
+  if (!entered) {
+    ElMessage.warning('需要进入全屏才能开始作答，请在浏览器提示中允许全屏后重试')
+    starting.value = false
+    return
+  }
   started.value = true
   antiCheat.startTracking(sessionId, attempt.value?.id ?? null, {
     reportEvents,
