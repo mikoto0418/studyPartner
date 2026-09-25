@@ -24,6 +24,7 @@ from app.schemas.assessment import (
     AttemptAnswerOut,
     GradeAttemptReq,
     PaperAnalyticsOut,
+    AttemptInsightsOut,
     StudentQuestionOut,
 )
 from app.schemas.common import BaseResponse
@@ -196,6 +197,20 @@ async def list_attempt_behavior(
         data=[BehaviorEventOut(**e) for e in events],
         message="获取成功",
     )
+
+
+@router.get(
+    "/attempts/{attempt_id}/insights",
+    response_model=BaseResponse[AttemptInsightsOut],
+    summary="某次作答的按题行为画像（逐题用时、粘贴、违规）",
+)
+async def get_attempt_insights(
+    attempt_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await AssessmentService.get_attempt_insights(db, attempt_id, current_user.id)
+    return BaseResponse.success(data=AttemptInsightsOut(**data), message="获取成功")
 
 
 @router.get(

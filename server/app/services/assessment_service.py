@@ -884,6 +884,132 @@ class AssessmentService:
         ]
 
     @staticmethod
+    async def get_attempt_insights(
+        db: AsyncSession, attempt_id: UUID, teacher_id: UUID
+    ) -> Dict[str, Any]:
+        """单次作答的按题行为画像。
+
+        把散落的 behavior_events 按题归拢，回答教师最关心的三件事：
+        这道题他花了多久（与全班均值比）、有没有整段粘贴、错在哪类题上。
+        全部在 Python 侧聚合：行为事件量级是「题数 × 常数」，拉回来算足够快，
+        且能避开 payload->> 在 SQL 里绑定占位符不一致的问题。
+        """
+        attempt = (
+            await db.execute(select(AssessmentAttempt).where(AssessmentAttempt.id == attempt_id))
+        ).scalars().first()
+        if not attempt:
+            raise NotFoundError("作答记录不存在")
+        paper = await AssessmentService.get_paper(db, attempt.paper_id, teacher_id)
+
+        questions = (
+            await db.execute(
+                select(AssessmentQuestion)
+                .where(AssessmentQuestion.paper_id == paper.id)
+                .order_by(AssessmentQuestion.order_index.asc())
+            )
+        ).scalars().all()
+
+        # 本卷所有作答的 question_dwell，用于算全班每题均值做对照
+        all_attempt_ids = [
+            a.id
+            for a in (
+                await db.execute(
+                    select(AssessmentAttempt).where(AssessmentAttempt.paper_id == paper.id)
+                )
+            ).scalars().all()
+        ]
+        class_dwell_sum: Dict[str, int] = {}
+        class_dwell_cnt: Dict[str, int] = {}
+        if all_attempt_ids:
+            rows = await db.execute(
+                select(BehaviorEvent.payload).where(
+                    BehaviorEvent.attempt_id.in_(all_attempt_ids),
+                    BehaviorEvent.event_type == "question_dwell",
+                )
+            )
+            for (payload,) in rows.all():
+                if not payload:
+                    continue
+                qid = payload.get("question_id")
+                ms = payload.get("duration_ms")
+                if not qid or ms is None:
+                    continue
+                try:
+                    ms_val = int(ms)
+                except (TypeError, ValueError):
+                    continue
+                class_dwell_sum[qid] = class_dwell_sum.get(qid, 0) + ms_val
+                class_dwell_cnt[qid] = class_dwell_cnt.get(qid, 0) + 1
+
+        # 本次作答的全部事件
+        events = (
+            await db.execute(
+                select(BehaviorEvent)
+                .where(BehaviorEvent.attempt_id == attempt_id)
+                .order_by(BehaviorEvent.occurred_at.asc())
+            )
+        ).scalars().all()
+
+        # 按题归拢
+        per_q: Dict[str, Dict[str, Any]] = {}
+        for q in questions:
+            per_q[str(q.id)] = {
+                "question_id": str(q.id),
+                "order_index": q.order_index,
+                "question_type": q.question_type,
+                "dwell_seconds": 0.0,
+                "dwell_events": 0,
+                "paste_events": 0,
+                "paste_chars": 0,
+                "flag_count": 0,
+                "class_avg_dwell_seconds": None,
+            }
+
+        overall_flags = 0
+        for e in events:
+            p = e.payload or {}
+            if e.event_type in AssessmentService.BEHAVIOR_FLAG_TYPES:
+                overall_flags += 1
+            qid = p.get("question_id")
+            stat = per_q.get(qid) if qid else None
+            if stat is None:
+                continue
+            if e.event_type == "question_dwell":
+                ms = p.get("duration_ms")
+                try:
+                    stat["dwell_seconds"] += int(ms) / 1000 if ms is not None else 0.0
+                    stat["dwell_events"] += 1
+                except (TypeError, ValueError):
+                    pass
+            elif e.event_type == "blocked_input":
+                stat["paste_events"] += 1
+                try:
+                    stat["paste_chars"] += int(p.get("inserted") or 0)
+                except (TypeError, ValueError):
+                    pass
+            if e.event_type in AssessmentService.BEHAVIOR_FLAG_TYPES:
+                stat["flag_count"] += 1
+
+        for qid, stat in per_q.items():
+            stat["dwell_seconds"] = round(stat["dwell_seconds"], 1)
+            if class_dwell_cnt.get(qid):
+                stat["class_avg_dwell_seconds"] = round(
+                    class_dwell_sum[qid] / class_dwell_cnt[qid] / 1000, 1
+                )
+
+        return {
+            "attempt": {
+                "id": str(attempt.id),
+                "student_id": str(attempt.student_id),
+                "status": attempt.status,
+                "score": attempt.score,
+                "duration_seconds": attempt.duration_seconds,
+                "flag_count": overall_flags,
+            },
+            "questions": [per_q[str(q.id)] for q in questions],
+        }
+
+    @staticmethod
     def _to_float_safe(value: Any, default: float) -> float:
         try:
             if value is None or value == "":

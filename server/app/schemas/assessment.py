@@ -230,3 +230,10 @@ class PaperAnalyticsOut(BaseModel):
     questions: List[Dict[str, Any]] = Field(default_factory=list)
     behavior_distribution: List[Dict[str, Any]] = Field(default_factory=list)
     suspicious_count: int = 0
+
+
+class AttemptInsightsOut(BaseModel):
+    """单次作答的按题行为画像。"""
+
+    attempt: Dict[str, Any]
+    questions: List[Dict[str, Any]] = Field(default_factory=list)

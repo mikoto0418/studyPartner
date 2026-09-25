@@ -108,6 +108,28 @@ export interface PaperAnalytics {
   suspicious_count: number
 }
 
+export interface AttemptInsights {
+  attempt: {
+    id: string
+    student_id: string
+    status: string
+    score: number | null
+    duration_seconds: number | null
+    flag_count: number
+  }
+  questions: Array<{
+    question_id: string
+    order_index: number
+    question_type: string
+    dwell_seconds: number
+    dwell_events: number
+    paste_events: number
+    paste_chars: number
+    flag_count: number
+    class_avg_dwell_seconds: number | null
+  }>
+}
+
 export interface StudentQuestion {
   id: string
   order_index: number
@@ -284,6 +306,10 @@ export const assessmentApi = {
 
   listAttemptBehavior(attemptId: string) {
     return request.get(`/assessment/attempts/${attemptId}/behavior`)
+  },
+
+  getAttemptInsights(attemptId: string) {
+    return request.get(`/assessment/attempts/${attemptId}/insights`)
   },
 
   listAttemptAnswers(attemptId: string) {

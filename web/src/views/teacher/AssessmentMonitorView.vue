@@ -8,7 +8,8 @@ import {
   type AssessmentPaper,
   type AttemptMonitor,
   type AttemptAnswer,
-  type BehaviorEventOut
+  type BehaviorEventOut,
+  type AttemptInsights
 } from '../../api/modules/assessment'
 import RichStem from '../../components/assessment/RichStem.vue'
 import MathText from '../../components/common/MathText.vue'
@@ -24,6 +25,9 @@ const attemptsLoading = ref(false)
 const behaviorDrawer = ref(false)
 const behaviorLoading = ref(false)
 const behaviorEvents = ref<BehaviorEventOut[]>([])
+// 抽屉内两种视图：timeline=原始事件时间线，byQuestion=按题聚合画像
+const behaviorView = ref<'timeline' | 'byQuestion'>('byQuestion')
+const insights = ref<AttemptInsights | null>(null)
 const currentAttempt = ref<AttemptMonitor | null>(null)
 const questionMap = ref<Record<string, number>>({})
 
@@ -249,15 +253,43 @@ const openBehavior = async (attempt: AttemptMonitor) => {
   behaviorDrawer.value = true
   behaviorLoading.value = true
   behaviorEvents.value = []
+  insights.value = null
   try {
-    const res = await assessmentApi.listAttemptBehavior(attempt.id)
-    behaviorEvents.value = res.data || []
+    // 两个接口一起取：默认展示按题画像，切到时间线无需二次请求
+    const [eventsRes, insightsRes] = await Promise.all([
+      assessmentApi.listAttemptBehavior(attempt.id),
+      assessmentApi.getAttemptInsights(attempt.id).catch(() => ({ data: null }))
+    ])
+    behaviorEvents.value = eventsRes.data || []
+    insights.value = insightsRes.data
   } catch {
     behaviorEvents.value = []
   } finally {
     behaviorLoading.value = false
   }
 }
+
+// 逐题用时与全班均值的偏离度：显著高于全班均值（>1.5 倍且绝对差 >10s）的题
+// 标记出来 —— 可能是卡壳，也可能是值得关注的地方。
+const dwellDeviation = (q: AttemptInsights['questions'][number]) => {
+  const avg = q.class_avg_dwell_seconds
+  if (avg == null || avg <= 0 || q.dwell_seconds <= 0) return null
+  if (q.dwell_seconds > avg * 1.5 && q.dwell_seconds - avg > 10) {
+    return { tone: 'slow', ratio: Math.round((q.dwell_seconds / avg) * 10) / 10 }
+  }
+  if (q.dwell_seconds < avg * 0.5 && avg - q.dwell_seconds > 10) {
+    return { tone: 'fast', ratio: Math.round((q.dwell_seconds / avg) * 10) / 10 }
+  }
+  return null
+}
+
+const insightRows = computed(() => {
+  const qs = insights.value?.questions || []
+  return qs.map((q) => ({
+    ...q,
+    deviation: dwellDeviation(q)
+  }))
+})
 
 const openGrading = async (attempt: AttemptMonitor) => {
   gradingAttempt.value = attempt
@@ -419,7 +451,7 @@ onMounted(loadPapers)
               批改 ({{ row.pending_grade_count }})
             </el-button>
             <el-button size="small" text type="primary" :icon="Eye" @click="openBehavior(row)">
-              行为明细
+              作答画像
             </el-button>
           </template>
         </el-table-column>
@@ -432,33 +464,116 @@ onMounted(loadPapers)
 
     <el-drawer
       v-model="behaviorDrawer"
-      :title="currentAttempt ? `${currentAttempt.student_name} 的行为记录` : '行为记录'"
-      size="480px"
+      :title="currentAttempt ? `${currentAttempt.student_name} 的作答画像` : '作答画像'"
+      size="560px"
     >
-      <div v-loading="behaviorLoading" class="space-y-2 px-1">
-        <div
-          v-for="e in behaviorEvents"
-          :key="e.id"
-          class="flex items-start gap-3 rounded-lg border border-gray-100 px-3 py-2.5 dark:border-zinc-800"
+      <div class="mb-4 flex gap-1 rounded-lg bg-gray-100 p-1 dark:bg-zinc-800">
+        <button
+          class="flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition"
+          :class="behaviorView === 'byQuestion' ? 'bg-white text-gray-900 shadow-sm dark:bg-zinc-900 dark:text-zinc-50' : 'text-gray-500 dark:text-zinc-400'"
+          @click="behaviorView = 'byQuestion'"
         >
-          <span
-            class="mt-0.5 flex h-2 w-2 flex-shrink-0 rounded-full"
-            :class="isFlag(e.event_type) ? 'bg-amber-500' : 'bg-gray-300 dark:bg-zinc-600'"
-          />
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-sm font-medium text-gray-800 dark:text-zinc-100">{{ eventLabel(e.event_type) }}</span>
-              <span class="text-[11px] text-gray-400">{{ formatTime(e.occurred_at) }}</span>
-            </div>
-            <p v-if="formatEventPayload(e)" class="mt-0.5 text-xs text-gray-500 dark:text-zinc-400">
-              {{ formatEventPayload(e) }}
-            </p>
-          </div>
-        </div>
+          按题画像
+        </button>
+        <button
+          class="flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition"
+          :class="behaviorView === 'timeline' ? 'bg-white text-gray-900 shadow-sm dark:bg-zinc-900 dark:text-zinc-50' : 'text-gray-500 dark:text-zinc-400'"
+          @click="behaviorView = 'timeline'"
+        >
+          事件时间线
+        </button>
+      </div>
 
-        <div v-if="!behaviorEvents.length && !behaviorLoading" class="py-12 text-center text-sm text-gray-400">
-          暂无行为记录
-        </div>
+      <div v-loading="behaviorLoading" class="px-1">
+        <!-- 按题画像 -->
+        <template v-if="behaviorView === 'byQuestion'">
+          <div
+            v-if="insights"
+            class="mb-4 rounded-lg border border-gray-100 bg-gray-50/50 px-3 py-2.5 text-xs text-gray-500 dark:border-zinc-800 dark:bg-zinc-950/30 dark:text-zinc-400"
+          >
+            总用时 {{ Math.round((insights.attempt.duration_seconds || 0) / 60) }} 分钟
+            · 违规事件 {{ insights.attempt.flag_count }} 次
+          </div>
+
+          <div class="space-y-2">
+            <div
+              v-for="q in insightRows"
+              :key="q.question_id"
+              class="rounded-lg border border-gray-100 px-3 py-2.5 dark:border-zinc-800"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+                    第 {{ q.order_index + 1 }} 题
+                  </span>
+                  <span class="rounded bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">
+                    {{ typeLabel(q.question_type) }}
+                  </span>
+                </div>
+                <span v-if="q.flag_count > 0" class="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                  {{ q.flag_count }} 次违规
+                </span>
+              </div>
+
+              <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500 dark:text-zinc-400">
+                <span>
+                  停留
+                  <span class="font-semibold text-gray-800 dark:text-zinc-100">{{ q.dwell_seconds }}s</span>
+                  <span v-if="q.class_avg_dwell_seconds != null" class="text-gray-400">
+                    （全班均 {{ q.class_avg_dwell_seconds }}s）
+                  </span>
+                </span>
+                <span v-if="q.paste_events > 0" class="font-semibold text-red-500">
+                  整段粘贴 {{ q.paste_events }} 次 · {{ q.paste_chars }} 字
+                </span>
+              </div>
+
+              <div
+                v-if="q.deviation"
+                class="mt-1.5 text-[10px]"
+                :class="q.deviation.tone === 'slow' ? 'text-amber-600 dark:text-amber-400' : 'text-blue-600 dark:text-blue-400'"
+              >
+                <template v-if="q.deviation.tone === 'slow'">
+                  停留约为全班均值的 {{ q.deviation.ratio }} 倍，可能卡壳
+                </template>
+                <template v-else>
+                  停留明显短于全班（约 {{ q.deviation.ratio }} 倍），可能仓促作答
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="!insights" class="py-12 text-center text-sm text-gray-400">
+            暂无按题画像数据
+          </div>
+        </template>
+
+        <!-- 事件时间线 -->
+        <template v-else>
+          <div
+            v-for="e in behaviorEvents"
+            :key="e.id"
+            class="mb-2 flex items-start gap-3 rounded-lg border border-gray-100 px-3 py-2.5 dark:border-zinc-800"
+          >
+            <span
+              class="mt-0.5 flex h-2 w-2 flex-shrink-0 rounded-full"
+              :class="isFlag(e.event_type) ? 'bg-amber-500' : 'bg-gray-300 dark:bg-zinc-600'"
+            />
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-sm font-medium text-gray-800 dark:text-zinc-100">{{ eventLabel(e.event_type) }}</span>
+                <span class="text-[11px] text-gray-400">{{ formatTime(e.occurred_at) }}</span>
+              </div>
+              <p v-if="formatEventPayload(e)" class="mt-0.5 text-xs text-gray-500 dark:text-zinc-400">
+                {{ formatEventPayload(e) }}
+              </p>
+            </div>
+          </div>
+
+          <div v-if="!behaviorEvents.length && !behaviorLoading" class="py-12 text-center text-sm text-gray-400">
+            暂无行为记录
+          </div>
+        </template>
       </div>
     </el-drawer>
 

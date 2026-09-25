@@ -220,10 +220,17 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     const inserted = value.length - prevLen
     valueLengths.set(el, value.length)
     keystrokeCounts.set(el, 0)
-    // 一次插入的字符数明显多于实际敲键数 → 不是手敲进来的
+    // 一次插入的字符数明显多于实际敲键数 → 不是手敲进来的。
+    // 带上 question_id / field，否则事件落到库里就丢了题目归属，教师端无法回答
+    // 「是哪道题被整段粘贴」——那正是这套数据最想回答的问题。
     if (inserted > 0 && typed < inserted) {
       recordViolation()
-      push('blocked_input', { inserted, keystrokes: typed })
+      push('blocked_input', {
+        inserted,
+        keystrokes: typed,
+        question_id: el.getAttribute('data-ac-question'),
+        field: el.getAttribute('data-ac-field')
+      })
     }
   }
 
