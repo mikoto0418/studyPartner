@@ -1,7 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, RefreshCw, Upload } from 'lucide-vue-next'
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  CircleDashed,
+  Clock,
+  Eye,
+  FileText,
+  FileUp,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Send,
+  Sparkles,
+  Trophy,
+  Wand2,
+  X
+} from 'lucide-vue-next'
 import QuestionEditor from '../../components/assessment/QuestionEditor.vue'
 import RichStem from '../../components/assessment/RichStem.vue'
 import { assessmentApi } from '../../api/modules/assessment'
@@ -13,12 +31,13 @@ const activeStep = ref(0)
 const title = ref('')
 const description = ref('')
 const selectedFile = ref<File | null>(null)
-const fileList = ref<any[]>([])
+const dragActive = ref(false)
 const paperId = ref<string | null>(null)
 const parseError = ref('')
-const progress = ref<{ stage?: string; total?: number; done?: number }>({})
+const progress = ref<{ stage?: string; total?: number; done?: number; channel?: string }>({})
 const questions = ref<any[]>([])
 const loading = ref(false)
+const retrying = ref(false)
 const saving = ref(false)
 const publishing = ref(false)
 const published = ref(false)
@@ -48,6 +67,13 @@ const viewVisible = ref(false)
 const viewTitle = ref('')
 const viewQuestions = ref<any[]>([])
 
+const STEPS = [
+  { key: 0, title: '上传文件', desc: '选择试卷文档' },
+  { key: 1, title: 'AI 拆题', desc: '自动识别题目结构' },
+  { key: 2, title: '人工校对', desc: '补全分值与答案' },
+  { key: 3, title: '发布', desc: '指定发布对象' }
+]
+
 const questionTypeLabels = {
   single: '单选题',
   multiple: '多选题',
@@ -56,6 +82,8 @@ const questionTypeLabels = {
   short: '简答题',
   essay: '论述题'
 } as Record<string, string>
+
+const ACCEPTED_EXTS = ['.pdf', '.docx', '.doc', '.md', '.markdown', '.txt']
 
 let pollTimer: number | null = null
 let stalledPolls = 0
@@ -195,22 +223,73 @@ const progressPercent = computed(() => {
 const progressLabel = computed(() => {
   const stage = progress.value.stage || ''
   if (stage === 'downloading') return '正在下载文件…'
-  if (stage === 'extracting') return 'AI 拆题解析中…'
+  if (stage === 'extracting') return 'AI 正在逐段识别题目…'
   if (stage === 'done') return '拆题完成'
   if (stage === 'failed') return '拆题失败'
   return '排队等待中…'
 })
 
+const progressHint = computed(() => {
+  const stage = progress.value.stage || ''
+  if (stage === 'extracting') {
+    const total = progress.value.total || 0
+    const done = progress.value.done || 0
+    if (total) return `已完成 ${done} / ${total} 个分块，请勿关闭页面`
+    return '正在按分块顺序调用模型，整卷通常需要几分钟'
+  }
+  if (stage === 'downloading') return '正在从对象存储取回原始文档'
+  if (stage === 'done') return '马上进入人工校对'
+  if (stage === 'failed') return '可查看下方原因后重试，或直接手工出题'
+  return '任务已提交，等待后台开始处理'
+})
+
+// 后台任务的执行通道：inline 说明本地没有 worker，任务在 API 进程里跑
+const channelLabel = computed(() => {
+  const ch = progress.value.channel
+  if (ch === 'celery') return '后台队列'
+  if (ch === 'inline') return '本地进程'
+  return ''
+})
+
+const unsetScoreCount = computed(
+  () => questions.value.filter((q) => q.score === null || q.score === undefined).length
+)
+
+const totalScorePreview = computed(() =>
+  questions.value.reduce((sum, q) => sum + (Number(q.score) || 0), 0)
+)
+
 function splitIds(value: string): string[] {
   return value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean)
 }
 
-function handleFileChange(uploadFile: any) {
-  selectedFile.value = uploadFile.raw || null
+function prettySize(bytes?: number) {
+  if (!bytes) return ''
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-function handleFileRemove() {
-  selectedFile.value = null
+function acceptFile(file: File) {
+  const name = file.name.toLowerCase()
+  if (!ACCEPTED_EXTS.some((ext) => name.endsWith(ext))) {
+    ElMessage.warning('仅支持 PDF / DOCX / Markdown / TXT 文件')
+    return
+  }
+  selectedFile.value = file
+}
+
+function onPick(e: Event) {
+  const input = e.target as HTMLInputElement
+  const f = input.files?.[0]
+  if (f) acceptFile(f)
+  input.value = ''
+}
+
+function onDrop(e: DragEvent) {
+  dragActive.value = false
+  const f = e.dataTransfer?.files?.[0]
+  if (f) acceptFile(f)
 }
 
 async function startParse() {
@@ -232,6 +311,7 @@ async function startParse() {
     })
     paperId.value = createRes.data.id
     parseError.value = ''
+    progress.value = { stage: 'pending' }
     activeStep.value = 1
     startPolling()
   } catch {
@@ -278,6 +358,30 @@ function stopPolling() {
   }
 }
 
+async function retryCurrentParse() {
+  if (!paperId.value) return
+  retrying.value = true
+  try {
+    await assessmentApi.reparsePaper(paperId.value)
+    parseError.value = ''
+    progress.value = { stage: 'pending' }
+    startPolling()
+    ElMessage.success('已重新提交拆题')
+  } catch {
+    // 拦截器已提示错误
+  } finally {
+    retrying.value = false
+  }
+}
+
+async function skipToManual() {
+  if (!paperId.value) return
+  parseError.value = ''
+  activeStep.value = 2
+  await loadQuestions()
+  if (!questions.value.length) addQuestion()
+}
+
 async function loadQuestions() {
   if (!paperId.value) return
   const res = await assessmentApi.listQuestions(paperId.value)
@@ -304,7 +408,7 @@ function addQuestion() {
     ],
     answer: '',
     analysis: '',
-    score: 1,
+    score: null,
     difficulty: null,
     tags: [],
     stem_images: []
@@ -316,10 +420,6 @@ function removeQuestion(index: number) {
 }
 
 // 原文没标分值时拆题会留空，逐题填太慢；这里给一个整卷统一补分的入口
-const unsetScoreCount = computed(
-  () => questions.value.filter((q) => q.score === null || q.score === undefined).length
-)
-
 async function batchFillScore() {
   if (!questions.value.length) return
   try {
@@ -509,7 +609,7 @@ function reset() {
   description.value = ''
   paperId.value = null
   selectedFile.value = null
-  fileList.value = []
+  dragActive.value = false
   questions.value = []
   parseError.value = ''
   progress.value = {}
@@ -544,11 +644,28 @@ function statusLabel(s: string) {
   return map[s] || s
 }
 
-function statusType(s: string): 'success' | 'warning' | 'danger' | 'info' {
-  if (s === 'published') return 'success'
-  if (s === 'awaiting_review') return 'warning'
-  if (s === 'failed' || s === 'publish_failed') return 'danger'
-  return 'info'
+function statusTone(s: string) {
+  if (s === 'published') return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
+  if (s === 'awaiting_review') return 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
+  if (s === 'failed' || s === 'publish_failed') return 'bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-300'
+  if (s === 'parsing') return 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300'
+  return 'bg-gray-100 text-gray-500 dark:bg-zinc-800 dark:text-zinc-400'
+}
+
+function stepClass(key: number) {
+  if (activeStep.value === key) {
+    return 'border-blue-200 bg-blue-50/60 dark:border-blue-900 dark:bg-blue-950/20'
+  }
+  if (activeStep.value > key) {
+    return 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/60 dark:bg-emerald-950/20'
+  }
+  return 'border-gray-200 bg-gray-50/60 dark:border-zinc-800 dark:bg-zinc-950/40'
+}
+
+function stepBadgeClass(key: number) {
+  if (activeStep.value === key) return 'bg-blue-600 text-white'
+  if (activeStep.value > key) return 'bg-emerald-500 text-white'
+  return 'bg-gray-200 text-gray-500 dark:bg-zinc-800 dark:text-zinc-400'
 }
 
 async function loadPapers() {
@@ -677,254 +794,529 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-5xl px-4 py-6">
-    <div class="mb-6 flex items-start justify-between gap-4">
-      <div>
-        <h1 class="text-xl font-semibold text-gray-900 dark:text-zinc-50">发题工作台</h1>
-        <p class="mt-1 text-sm text-gray-500 dark:text-zinc-400">上传文件 → AI 拆题 → 人工校对 → 发布</p>
-      </div>
-      <div v-if="viewMode === 'list'" class="flex shrink-0 gap-2">
-        <el-button v-if="hasDraft" @click="resumeDraft">继续编辑</el-button>
-        <el-button type="primary" @click="newPaper">新建试卷</el-button>
-      </div>
-      <div v-else class="flex shrink-0 gap-2">
-        <el-button @click="backToList">返回历史</el-button>
-        <el-button @click="reset">清空重来</el-button>
-      </div>
-    </div>
-
-    <div v-if="viewMode === 'list'" class="rounded-xl border border-gray-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-      <el-table :data="papers" v-loading="papersLoading" empty-text="还没有试卷，点击「新建试卷」开始" class="w-full">
-        <el-table-column prop="title" label="标题" min-width="180" />
-        <el-table-column label="状态" width="110">
-          <template #default="{ row }">
-            <el-tag :type="statusType(row.parse_status)" size="small">{{ statusLabel(row.parse_status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="question_count" label="题目数" width="90" />
-        <el-table-column label="总分" width="90">
-          <template #default="{ row }">
-            <span v-if="row.total_score === null || row.total_score === undefined" class="text-amber-500">未设置</span>
-            <span v-else>{{ row.total_score }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" width="170">
-          <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template #default="{ row }">
-            <el-button v-if="row.parse_status === 'awaiting_review'" size="small" type="primary" @click="openPaper(row)">继续校对</el-button>
-            <el-button v-else-if="row.parse_status === 'publish_failed'" size="small" type="primary" @click="resendPaper(row)">重新发送</el-button>
-            <template v-else-if="row.parse_status === 'failed'">
-              <el-button size="small" type="primary" @click="openPaper(row)">手工出题</el-button>
-              <el-button size="small" :loading="reparsingId === row.id" @click="reparsePaper(row)">重新拆题</el-button>
+  <div class="-m-4 min-h-[calc(100vh-8rem)] bg-gray-50 p-4 dark:bg-zinc-950 md:-m-8 md:p-8">
+    <div class="mx-auto flex max-w-[1400px] flex-col gap-6">
+      <!-- 页头 -->
+      <section class="minimal-card bg-white p-5 dark:bg-zinc-900">
+        <div class="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <FileText class="h-5 w-5 text-blue-600" />
+              <h1 class="text-lg font-bold text-gray-900 dark:text-zinc-50">发题工作台</h1>
+            </div>
+            <p class="mt-2 max-w-3xl text-xs leading-relaxed text-gray-500 dark:text-zinc-400">
+              上传试卷文档，由 AI 拆出结构化题目，人工校对分值与答案后发布给学生。
+            </p>
+          </div>
+          <div class="flex shrink-0 items-center gap-2">
+            <template v-if="viewMode === 'list'">
+              <button v-if="hasDraft" class="ui-button-secondary" @click="resumeDraft">
+                <Wand2 class="h-3.5 w-3.5" />
+                <span>继续编辑草稿</span>
+              </button>
+              <button class="ui-button-primary" @click="newPaper">
+                <Plus class="h-3.5 w-3.5" />
+                <span>新建试卷</span>
+              </button>
             </template>
-            <el-button v-else-if="row.question_count" size="small" @click="openPaper(row)">查看题目</el-button>
-            <el-button
-              v-else-if="row.parse_status === 'parsing' || row.parse_status === 'pending'"
-              size="small"
-              type="primary"
-              :loading="reparsingId === row.id"
-              @click="reparsePaper(row)"
-            >重新拆题</el-button>
-            <span v-else class="text-xs text-gray-400">无题</span>
-          </template>
-        </el-table-column>
-      </el-table>
-    </div>
-
-    <template v-else>
-    <el-steps :active="activeStep" align-center class="mb-8">
-      <el-step title="上传文件" />
-      <el-step title="AI 拆题" />
-      <el-step title="人工校对" />
-      <el-step title="发布" />
-    </el-steps>
-
-    <!-- 第一步：上传 -->
-    <div v-if="activeStep === 0" class="rounded-xl border border-gray-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-      <el-upload
-        drag
-        :auto-upload="false"
-        :limit="1"
-        accept=".pdf,.docx,.doc,.md,.markdown,.txt"
-        :file-list="fileList"
-        :on-change="handleFileChange"
-        :on-remove="handleFileRemove"
-      >
-        <div class="flex flex-col items-center py-4 text-gray-500 dark:text-zinc-400">
-          <Upload class="h-8 w-8 text-blue-500" />
-          <p class="mt-3 text-sm">拖拽文件到此处，或<em class="text-blue-600 not-italic">点击上传</em></p>
-          <p class="mt-1 text-xs">支持 PDF / DOCX / Markdown</p>
+            <template v-else>
+              <button class="ui-button-secondary" @click="backToList">
+                <span>返回历史</span>
+              </button>
+              <button class="ui-button-secondary" @click="reset">
+                <RefreshCw class="h-3.5 w-3.5" />
+                <span>清空重来</span>
+              </button>
+            </template>
+          </div>
         </div>
-      </el-upload>
+      </section>
 
-      <div class="mt-5 grid gap-4">
-        <div>
-          <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">试卷标题</label>
-          <el-input v-model="title" placeholder="请输入试卷标题" />
+      <!-- 试卷列表 -->
+      <template v-if="viewMode === 'list'">
+        <div v-if="papersLoading" class="minimal-card flex min-h-[280px] items-center justify-center bg-white p-8 dark:bg-zinc-900">
+          <RefreshCw class="h-6 w-6 animate-spin text-blue-600" />
         </div>
-        <div>
-          <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">说明（可选）</label>
-          <el-input v-model="description" type="textarea" :rows="2" placeholder="试卷说明" />
-        </div>
-        <div>
-          <el-button type="primary" :loading="loading" @click="startParse">开始拆题</el-button>
-        </div>
-      </div>
-    </div>
 
-    <!-- 第二步：拆题进度 -->
-    <div v-else-if="activeStep === 1" class="rounded-xl border border-gray-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-      <div class="mb-4 text-sm font-medium text-gray-700 dark:text-zinc-200">{{ progressLabel }}</div>
-      <el-progress :percentage="progressPercent" :stroke-width="12" />
-      <el-alert v-if="parseError" class="mt-4" type="error" :title="parseError" :closable="false" show-icon>
-        <template #default>
-          <div class="mt-2">
-            <el-button size="small" @click="reset">返回重新上传</el-button>
+        <section
+          v-else-if="!papers.length"
+          class="minimal-card flex min-h-[280px] flex-col items-center justify-center bg-white p-8 text-center dark:bg-zinc-900"
+        >
+          <FileText class="mb-4 h-10 w-10 text-gray-300 dark:text-zinc-700" />
+          <h2 class="text-base font-bold text-gray-900 dark:text-zinc-50">还没有试卷</h2>
+          <p class="mt-2 max-w-md text-xs leading-relaxed text-gray-500 dark:text-zinc-400">
+            上传一份试卷文档，AI 会把它拆成可编辑的题目，校对完成后即可发布。
+          </p>
+          <button class="ui-button-primary mt-5" @click="newPaper">
+            <Plus class="h-3.5 w-3.5" />
+            <span>新建试卷</span>
+          </button>
+        </section>
+
+        <section
+          v-for="paper in papers"
+          v-else
+          :key="paper.id"
+          class="minimal-card bg-white p-5 dark:bg-zinc-900"
+        >
+          <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div class="min-w-0">
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="truncate text-sm font-semibold text-gray-900 dark:text-zinc-50">{{ paper.title }}</h3>
+                <span class="rounded px-2 py-0.5 text-[10px] font-semibold" :class="statusTone(paper.parse_status)">
+                  {{ statusLabel(paper.parse_status) }}
+                </span>
+              </div>
+              <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-400 dark:text-zinc-500">
+                <span class="inline-flex items-center gap-1">
+                  <CircleDashed class="h-3.5 w-3.5" /> {{ paper.question_count }} 题
+                </span>
+                <span class="inline-flex items-center gap-1">
+                  <Trophy class="h-3.5 w-3.5" />
+                  <template v-if="paper.total_score === null || paper.total_score === undefined">总分未设置</template>
+                  <template v-else>总分 {{ paper.total_score }}</template>
+                </span>
+                <span class="inline-flex items-center gap-1">
+                  <Clock class="h-3.5 w-3.5" /> {{ fmtTime(paper.created_at) }}
+                </span>
+              </div>
+              <p
+                v-if="paper.parse_error && (paper.parse_status === 'failed' || paper.parse_status === 'publish_failed')"
+                class="mt-2 line-clamp-2 text-[11px] text-red-500 dark:text-red-400"
+              >
+                {{ paper.parse_error }}
+              </p>
+            </div>
+
+            <div class="flex flex-shrink-0 flex-wrap items-center gap-2">
+              <button
+                v-if="paper.parse_status === 'awaiting_review'"
+                class="ui-button-primary"
+                @click="openPaper(paper)"
+              >
+                <span>继续校对</span>
+                <ChevronRight class="h-3.5 w-3.5" />
+              </button>
+              <button
+                v-else-if="paper.parse_status === 'publish_failed'"
+                class="ui-button-primary"
+                @click="resendPaper(paper)"
+              >
+                <Send class="h-3.5 w-3.5" />
+                <span>重新发送</span>
+              </button>
+              <template v-else-if="paper.parse_status === 'failed'">
+                <button class="ui-button-primary" @click="openPaper(paper)">
+                  <span>手工出题</span>
+                </button>
+                <button
+                  class="ui-button-secondary"
+                  :disabled="reparsingId === paper.id"
+                  @click="reparsePaper(paper)"
+                >
+                  <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reparsingId === paper.id }" />
+                  <span>重新拆题</span>
+                </button>
+              </template>
+              <button v-else-if="paper.question_count" class="ui-button-secondary" @click="openPaper(paper)">
+                <Eye class="h-3.5 w-3.5" />
+                <span>查看题目</span>
+              </button>
+              <button
+                v-else-if="paper.parse_status === 'parsing' || paper.parse_status === 'pending'"
+                class="ui-button-secondary"
+                :disabled="reparsingId === paper.id"
+                @click="reparsePaper(paper)"
+              >
+                <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reparsingId === paper.id }" />
+                <span>重新拆题</span>
+              </button>
+              <span v-else class="text-xs text-gray-400">无题</span>
+            </div>
+          </div>
+        </section>
+      </template>
+
+      <!-- 新建流程 -->
+      <template v-else>
+        <!-- 步骤指示 -->
+        <section class="minimal-card bg-white p-4 dark:bg-zinc-900">
+          <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div
+              v-for="s in STEPS"
+              :key="s.key"
+              class="flex items-center gap-3 rounded-lg border px-3 py-2.5 transition"
+              :class="stepClass(s.key)"
+            >
+              <span
+                class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-bold"
+                :class="stepBadgeClass(s.key)"
+              >
+                <Check v-if="activeStep > s.key" class="h-3.5 w-3.5" />
+                <template v-else>{{ s.key + 1 }}</template>
+              </span>
+              <div class="min-w-0">
+                <p class="truncate text-xs font-semibold text-gray-900 dark:text-zinc-50">{{ s.title }}</p>
+                <p class="truncate text-[10px] text-gray-400 dark:text-zinc-500">{{ s.desc }}</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 第一步：上传 -->
+        <section v-if="activeStep === 0" class="minimal-card bg-white p-6 dark:bg-zinc-900">
+          <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div>
+              <div
+                class="flex flex-col items-center justify-center rounded-lg border border-dashed px-6 py-10 text-center transition"
+                :class="dragActive
+                  ? 'border-blue-400 bg-blue-50/60 dark:border-blue-900 dark:bg-blue-950/20'
+                  : 'border-gray-200 bg-gray-50/60 dark:border-zinc-800 dark:bg-zinc-950/40'"
+                @dragover.prevent="dragActive = true"
+                @dragleave.prevent="dragActive = false"
+                @drop.prevent="onDrop"
+              >
+                <div class="flex h-12 w-12 items-center justify-center rounded-md bg-white text-blue-600 shadow-sm dark:bg-zinc-900 dark:text-blue-400">
+                  <FileUp class="h-6 w-6" />
+                </div>
+                <p class="mt-4 text-sm font-semibold text-gray-800 dark:text-zinc-100">拖拽试卷文件到此处</p>
+                <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">支持 PDF / DOCX / Markdown / TXT</p>
+                <label class="ui-button-secondary mt-4 cursor-pointer">
+                  <input
+                    type="file"
+                    class="hidden"
+                    accept=".pdf,.docx,.doc,.md,.markdown,.txt"
+                    @change="onPick"
+                  />
+                  <span>选择文件</span>
+                </label>
+              </div>
+
+              <div
+                v-if="selectedFile"
+                class="mt-3 flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div class="flex min-w-0 items-center gap-2">
+                  <FileText class="h-4 w-4 flex-shrink-0 text-blue-600" />
+                  <span class="truncate text-xs font-medium text-gray-800 dark:text-zinc-100">{{ selectedFile.name }}</span>
+                  <span class="flex-shrink-0 text-[10px] text-gray-400">{{ prettySize(selectedFile.size) }}</span>
+                </div>
+                <button class="ui-icon-button h-7 w-7" title="移除文件" @click="selectedFile = null">
+                  <X class="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <div class="space-y-4">
+              <div>
+                <label class="ui-field-label mb-1">试卷标题</label>
+                <input v-model="title" class="ui-field" placeholder="例如：2026 秋季高等数学期中卷" />
+              </div>
+              <div>
+                <label class="ui-field-label mb-1">说明（可选）</label>
+                <textarea v-model="description" class="ui-field" rows="3" placeholder="这份试卷的用途或备注" />
+              </div>
+              <button class="ui-button-primary w-full" :disabled="loading" @click="startParse">
+                <Sparkles class="h-3.5 w-3.5" />
+                <span>{{ loading ? '提交中…' : '开始拆题' }}</span>
+              </button>
+              <p class="ui-field-help">拆题会调用管理端「模型配置」里 question_parsing 通道所指定的模型。</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 第二步：拆题进度 -->
+        <section v-else-if="activeStep === 1" class="minimal-card bg-white p-6 dark:bg-zinc-900">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div class="flex items-center gap-3">
+              <div
+                class="flex h-10 w-10 items-center justify-center rounded-md"
+                :class="parseError
+                  ? 'bg-red-50 text-red-500 dark:bg-red-950/30 dark:text-red-400'
+                  : 'bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400'"
+              >
+                <AlertCircle v-if="parseError" class="h-5 w-5" />
+                <Loader2 v-else class="h-5 w-5 animate-spin" />
+              </div>
+              <div>
+                <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">{{ progressLabel }}</p>
+                <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">{{ progressHint }}</p>
+              </div>
+            </div>
+            <span
+              v-if="channelLabel"
+              class="flex-shrink-0 rounded bg-gray-100 px-2 py-1 text-[10px] font-semibold text-gray-500 dark:bg-zinc-800 dark:text-zinc-400"
+            >
+              {{ channelLabel }}
+            </span>
+          </div>
+
+          <div class="mt-6 h-2 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-zinc-800">
+            <div
+              class="h-full rounded-full transition-all duration-500"
+              :class="parseError ? 'bg-red-500' : 'bg-blue-600'"
+              :style="{ width: (parseError ? 100 : progressPercent) + '%' }"
+            />
+          </div>
+          <div class="mt-2 flex items-center justify-between text-[11px] text-gray-400 dark:text-zinc-500">
+            <span v-if="progress.total">{{ progress.done || 0 }} / {{ progress.total }} 个分块</span>
+            <span v-else>正在准备</span>
+            <span v-if="!parseError">{{ progressPercent }}%</span>
+          </div>
+
+          <div
+            v-if="parseError"
+            class="mt-5 rounded-lg border border-red-200 bg-red-50/70 p-4 dark:border-red-900 dark:bg-red-950/20"
+          >
+            <div class="flex items-start gap-2">
+              <AlertCircle class="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" />
+              <div class="min-w-0">
+                <p class="text-xs font-semibold text-red-700 dark:text-red-300">拆题没有完成</p>
+                <p class="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-red-600/90 dark:text-red-300/80">{{ parseError }}</p>
+              </div>
+            </div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <button class="ui-button-primary" :disabled="retrying" @click="retryCurrentParse">
+                <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': retrying }" />
+                <span>{{ retrying ? '提交中…' : '重新拆题' }}</span>
+              </button>
+              <button class="ui-button-secondary" @click="skipToManual">
+                <Plus class="h-3.5 w-3.5" />
+                <span>手工出题</span>
+              </button>
+              <button class="ui-button-secondary" @click="reset">
+                <span>返回重新上传</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 第三步：人工校对 -->
+        <template v-else-if="activeStep === 2">
+          <section class="minimal-card bg-white p-5 dark:bg-zinc-900">
+            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div class="flex items-center gap-3">
+                <div class="flex h-10 w-10 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+                  <CheckCircle2 class="h-5 w-5" />
+                </div>
+                <div>
+                  <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">共 {{ questions.length }} 题，请逐题校对并调整</p>
+                  <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">
+                    已设分值合计 {{ totalScorePreview }} 分<span v-if="unsetScoreCount">，另有 {{ unsetScoreCount }} 题待填</span>
+                  </p>
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button v-if="unsetScoreCount" class="ui-button-secondary" @click="batchFillScore">
+                  <Wand2 class="h-3.5 w-3.5" />
+                  <span>批量设置分值</span>
+                </button>
+                <button class="ui-button-secondary" @click="addQuestion">
+                  <Plus class="h-3.5 w-3.5" />
+                  <span>新增题目</span>
+                </button>
+                <button class="ui-button-secondary" @click="loadQuestions">
+                  <RefreshCw class="h-3.5 w-3.5" />
+                  <span>重新加载</span>
+                </button>
+                <button class="ui-button-primary" :disabled="saving" @click="saveAndNext">
+                  <Send class="h-3.5 w-3.5" />
+                  <span>{{ saving ? '保存中…' : '保存并进入发布' }}</span>
+                </button>
+              </div>
+            </div>
+
+            <div
+              v-if="unsetScoreCount"
+              class="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-2.5 dark:border-amber-900 dark:bg-amber-950/20"
+            >
+              <AlertCircle class="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500" />
+              <p class="text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+                原文没有标注分值的题目不会自动估算，请逐题填写，或用「批量设置分值」统一填入；未设置分值的试卷无法发布。
+              </p>
+            </div>
+          </section>
+
+          <div class="flex flex-col gap-3">
+            <QuestionEditor
+              v-for="(q, i) in questions"
+              :key="i"
+              :item="q"
+              :index="i"
+              @remove="removeQuestion"
+            />
+          </div>
+
+          <div v-if="!questions.length" class="minimal-card bg-white p-8 text-center dark:bg-zinc-900">
+            <p class="text-sm text-gray-400">还没有题目，点击「新增题目」开始手工出题。</p>
           </div>
         </template>
-      </el-alert>
+
+        <!-- 第四步：发布 -->
+        <section v-else class="minimal-card bg-white p-6 dark:bg-zinc-900">
+          <div v-if="published" class="flex flex-col items-center py-12 text-center">
+            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400">
+              <CheckCircle2 class="h-6 w-6" />
+            </div>
+            <p class="mt-4 text-base font-semibold text-gray-900 dark:text-zinc-50">试卷已发布</p>
+            <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">学生已可在「我的作业」中看到这份试卷。</p>
+            <button class="ui-button-primary mt-5" @click="reset">再发一份</button>
+          </div>
+
+          <div v-else class="max-w-xl space-y-5">
+            <div
+              v-if="parseError"
+              class="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50/70 px-3 py-2.5 dark:border-red-900 dark:bg-red-950/20"
+            >
+              <AlertCircle class="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" />
+              <div class="min-w-0">
+                <p class="text-xs font-semibold text-red-700 dark:text-red-300">上次发送失败</p>
+                <p class="mt-1 text-[11px] leading-relaxed text-red-600/90 dark:text-red-300/80">{{ parseError }}</p>
+              </div>
+            </div>
+
+            <div>
+              <label class="ui-field-label mb-1">发布对象类型</label>
+              <el-select v-model="publishType" class="w-full">
+                <el-option label="按班级" value="class" />
+                <el-option label="按指导学生" value="mentor" />
+                <el-option label="按学生（手填 ID）" value="student" />
+              </el-select>
+            </div>
+
+            <template v-if="publishType === 'class'">
+              <div>
+                <label class="ui-field-label mb-1">选择班级</label>
+                <el-select v-model="selectedClassId" class="w-full" placeholder="请选择班级" @change="onClassChange">
+                  <el-option v-for="c in classList" :key="c.id" :label="c.name" :value="c.id" />
+                </el-select>
+              </div>
+              <div>
+                <label class="ui-field-label mb-1">学生范围</label>
+                <el-radio-group v-model="publishScope">
+                  <el-radio value="all">发布给全班</el-radio>
+                  <el-radio value="subset">指定部分学生</el-radio>
+                </el-radio-group>
+              </div>
+              <div v-if="publishScope === 'subset'">
+                <label class="ui-field-label mb-1">选择学生</label>
+                <el-select
+                  v-model="selectedStudentIds"
+                  multiple
+                  filterable
+                  class="w-full"
+                  :loading="classStudentsLoading"
+                  placeholder="请选择学生"
+                >
+                  <el-option v-for="s in classStudents" :key="s.user_id" :label="studentLabel(s)" :value="s.user_id" />
+                </el-select>
+                <p class="ui-field-help">当前班级 {{ classStudents.length }} 名学生</p>
+              </div>
+              <div>
+                <label class="ui-field-label mb-1">黑名单（排除学生，可选）</label>
+                <input v-model="blacklistIds" class="ui-field" placeholder="从发布范围中排除的学生 ID，逗号分隔" />
+              </div>
+            </template>
+
+            <template v-else-if="publishType === 'mentor'">
+              <div>
+                <label class="ui-field-label mb-1">选择指导学生</label>
+                <el-select
+                  v-model="selectedGuidedStudentIds"
+                  multiple
+                  filterable
+                  class="w-full"
+                  :loading="guidedStudentsLoading"
+                  placeholder="请选择指导学生"
+                >
+                  <el-option v-for="s in guidedStudents" :key="s.id" :label="guidedStudentLabel(s)" :value="s.id" />
+                </el-select>
+                <p class="ui-field-help">当前共 {{ guidedStudents.length }} 名指导学生</p>
+              </div>
+            </template>
+
+            <template v-else>
+              <div>
+                <label class="ui-field-label mb-1">学生（学号 / 用户名 / UUID）</label>
+                <input v-model="targetIds" class="ui-field" placeholder="学号 / 用户名 / UUID，多个用逗号分隔" />
+              </div>
+              <div>
+                <label class="ui-field-label mb-1">白名单（追加，可选）</label>
+                <input v-model="whitelistIds" class="ui-field" placeholder="追加的学号 / 用户名 / UUID，逗号分隔" />
+              </div>
+              <div>
+                <label class="ui-field-label mb-1">黑名单（排除，可选）</label>
+                <input v-model="blacklistIds" class="ui-field" placeholder="排除的学号 / 用户名 / UUID，逗号分隔" />
+              </div>
+            </template>
+
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label class="ui-field-label mb-1">预约发布时间（可选）</label>
+                <el-date-picker v-model="publishAt" type="datetime" class="w-full" placeholder="留空表示立即发布" />
+              </div>
+              <div>
+                <label class="ui-field-label mb-1">截止时间（可选）</label>
+                <el-date-picker v-model="dueAt" type="datetime" class="w-full" placeholder="交卷截止时间" />
+              </div>
+            </div>
+
+            <div class="flex justify-end gap-2 border-t border-gray-100 pt-4 dark:border-zinc-800">
+              <button class="ui-button-secondary" @click="activeStep = 2">
+                <span>返回校对</span>
+              </button>
+              <button class="ui-button-primary" :disabled="publishing" @click="doPublish">
+                <Send class="h-3.5 w-3.5" />
+                <span>{{ publishing ? '发布中…' : '发布' }}</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      </template>
+
+      <!-- 已发布试卷预览 -->
+      <el-dialog v-model="viewVisible" :title="viewTitle" width="72%">
+        <div v-if="!viewQuestions.length" class="py-8 text-center text-sm text-gray-400">暂无题目</div>
+        <div class="flex flex-col gap-3">
+          <div
+            v-for="(q, i) in viewQuestions"
+            :key="i"
+            class="rounded-lg border border-gray-200 p-4 dark:border-zinc-800"
+          >
+            <div class="mb-2 flex items-center gap-2">
+              <span class="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+                第 {{ i + 1 }} 题
+              </span>
+              <span class="rounded bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">
+                {{ questionTypeLabels[q.question_type] || q.question_type }}
+              </span>
+              <span
+                class="rounded px-2 py-0.5 text-[10px] font-semibold"
+                :class="q.score === null || q.score === undefined
+                  ? 'bg-amber-50 text-amber-600 dark:bg-amber-950/30 dark:text-amber-300'
+                  : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-300'"
+              >
+                <template v-if="q.score === null || q.score === undefined">未设置分值</template>
+                <template v-else>{{ q.score }} 分</template>
+              </span>
+            </div>
+            <RichStem :stem="q.stem" :images="q.stem_images" class="text-sm leading-relaxed text-gray-800 dark:text-zinc-100" />
+            <div v-if="q.options && q.options.length" class="mt-3 space-y-1.5">
+              <div
+                v-for="(o, oi) in q.options"
+                :key="oi"
+                class="rounded border border-gray-100 px-2.5 py-1.5 text-xs text-gray-600 dark:border-zinc-800 dark:text-zinc-300"
+              >
+                <span class="font-semibold">{{ o.key }}.</span> {{ o.text }}
+              </div>
+            </div>
+            <p class="mt-3 text-xs text-emerald-600 dark:text-emerald-400">
+              答案：{{ Array.isArray(q.answer) ? q.answer.join('、') : q.answer }}
+            </p>
+            <p v-if="q.analysis" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">解析：{{ q.analysis }}</p>
+          </div>
+        </div>
+      </el-dialog>
     </div>
-
-    <!-- 第三步：人工校对 -->
-    <div v-else-if="activeStep === 2" class="space-y-4">
-      <div class="flex items-center justify-between">
-        <p class="text-sm text-gray-500 dark:text-zinc-400">共 {{ questions.length }} 题，请逐题校对并调整</p>
-        <div class="flex items-center gap-2">
-          <el-button v-if="unsetScoreCount" type="warning" plain @click="batchFillScore">
-            批量设置分值（{{ unsetScoreCount }} 题未填）
-          </el-button>
-          <el-button :icon="Plus" @click="addQuestion">新增题目</el-button>
-        </div>
-      </div>
-
-      <el-alert
-        v-if="unsetScoreCount"
-        type="warning"
-        :closable="false"
-        show-icon
-        :title="`有 ${unsetScoreCount} 道题未设置分值，发布前必须补全`"
-        description="原文没有标注分值的题目不会自动估算，请在每题上方填写，或用「批量设置分值」统一填入。"
-      />
-
-      <QuestionEditor
-        v-for="(q, i) in questions"
-        :key="i"
-        :item="q"
-        :index="i"
-        @remove="removeQuestion"
-      />
-
-      <div class="flex justify-end gap-2">
-        <el-button :icon="RefreshCw" @click="loadQuestions">重新加载</el-button>
-        <el-button type="primary" :loading="saving" @click="saveAndNext">保存并进入发布</el-button>
-      </div>
-    </div>
-
-    <!-- 第四步：发布 -->
-    <div v-else class="rounded-xl border border-gray-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900">
-      <div v-if="published" class="py-10 text-center">
-        <p class="text-lg font-semibold text-gray-900 dark:text-zinc-50">试卷已发布</p>
-        <el-button class="mt-4" type="primary" @click="reset">再发一份</el-button>
-      </div>
-
-      <div v-else class="max-w-xl space-y-4">
-        <el-alert v-if="parseError" type="error" title="上次发送失败" :description="parseError" :closable="false" show-icon />
-        <div>
-          <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">发布对象类型</label>
-          <el-select v-model="publishType" class="w-full">
-            <el-option label="按班级" value="class" />
-            <el-option label="按指导学生" value="mentor" />
-            <el-option label="按学生（手填 ID）" value="student" />
-          </el-select>
-        </div>
-
-        <template v-if="publishType === 'class'">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">选择班级</label>
-            <el-select v-model="selectedClassId" class="w-full" placeholder="请选择班级" @change="onClassChange">
-              <el-option v-for="c in classList" :key="c.id" :label="c.name" :value="c.id" />
-            </el-select>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">学生范围</label>
-            <el-radio-group v-model="publishScope">
-              <el-radio value="all">发布给全班</el-radio>
-              <el-radio value="subset">指定部分学生</el-radio>
-            </el-radio-group>
-          </div>
-          <div v-if="publishScope === 'subset'">
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">选择学生</label>
-            <el-select v-model="selectedStudentIds" multiple filterable class="w-full" :loading="classStudentsLoading" placeholder="请选择学生">
-              <el-option v-for="s in classStudents" :key="s.user_id" :label="studentLabel(s)" :value="s.user_id" />
-            </el-select>
-            <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">当前班级 {{ classStudents.length }} 名学生</p>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">黑名单（排除学生，可选）</label>
-            <el-input v-model="blacklistIds" placeholder="从发布范围中排除的学生 ID，逗号分隔" />
-          </div>
-        </template>
-
-        <template v-else-if="publishType === 'mentor'">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">选择指导学生</label>
-            <el-select v-model="selectedGuidedStudentIds" multiple filterable class="w-full" :loading="guidedStudentsLoading" placeholder="请选择指导学生">
-              <el-option v-for="s in guidedStudents" :key="s.id" :label="guidedStudentLabel(s)" :value="s.id" />
-            </el-select>
-            <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">当前共 {{ guidedStudents.length }} 名指导学生</p>
-          </div>
-        </template>
-
-        <template v-else>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">学生（学号 / 用户名 / UUID）</label>
-            <el-input v-model="targetIds" placeholder="学号 / 用户名 / UUID，多个用逗号分隔" />
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">白名单（追加，可选）</label>
-            <el-input v-model="whitelistIds" placeholder="追加的学号 / 用户名 / UUID，逗号分隔" />
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">黑名单（排除，可选）</label>
-            <el-input v-model="blacklistIds" placeholder="排除的学号 / 用户名 / UUID，逗号分隔" />
-          </div>
-        </template>
-
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">预约发布时间（可选）</label>
-            <el-date-picker v-model="publishAt" type="datetime" class="w-full" placeholder="留空表示立即发布" />
-          </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-gray-500 dark:text-zinc-400">截止时间（可选）</label>
-            <el-date-picker v-model="dueAt" type="datetime" class="w-full" placeholder="交卷截止时间" />
-          </div>
-        </div>
-        <div class="flex justify-end gap-2 pt-2">
-          <el-button @click="activeStep = 2">返回校对</el-button>
-          <el-button type="primary" :loading="publishing" @click="doPublish">发布</el-button>
-        </div>
-      </div>
-    </div>
-    </template>
-
-    <el-dialog v-model="viewVisible" :title="viewTitle" width="72%">
-      <div v-if="!viewQuestions.length" class="py-8 text-center text-sm text-gray-400">暂无题目</div>
-      <div v-for="(q, i) in viewQuestions" :key="i" class="mb-3 rounded-lg border border-gray-200 p-3 dark:border-zinc-700">
-        <div class="mb-1 text-sm font-medium">
-          {{ i + 1 }}. {{ questionTypeLabels[q.question_type] || q.question_type }}
-          <span v-if="q.score === null || q.score === undefined" class="text-amber-500">（未设置分值）</span>
-          <span v-else>（{{ q.score }} 分）</span>
-        </div>
-        <div class="text-sm text-gray-700 dark:text-zinc-200"><RichStem :stem="q.stem" :images="q.stem_images" /></div>
-        <div v-if="q.options && q.options.length" class="mt-2 space-y-1 pl-4 text-sm text-gray-600 dark:text-zinc-400">
-          <div v-for="(o, oi) in q.options" :key="oi">{{ o.key }}. {{ o.text }}</div>
-        </div>
-        <div class="mt-2 text-xs text-green-600 dark:text-green-400">答案：{{ Array.isArray(q.answer) ? q.answer.join('、') : q.answer }}</div>
-        <div v-if="q.analysis" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">解析：{{ q.analysis }}</div>
-      </div>
-    </el-dialog>
   </div>
 </template>

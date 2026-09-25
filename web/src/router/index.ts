@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { useModuleStore } from '../stores/module'
 import MainLayout from '../layouts/MainLayout.vue'
 import LoginView from '../views/common/LoginView.vue'
 import NotFoundView from '../views/common/NotFoundView.vue'
@@ -64,55 +65,55 @@ const routes: Array<RouteRecordRaw> = [
         path: 'ai-chat',
         name: 'StudentChat',
         component: ChatView,
-        meta: { title: 'AI 伴学助手' }
+        meta: { title: 'AI 伴学助手', module: 'ai_chat' }
       },
       {
         path: 'calendar',
         name: 'StudentCalendar',
         component: CalendarView,
-        meta: { title: '学习计划月历' }
+        meta: { title: '学习计划月历', module: 'calendar' }
       },
       {
         path: 'knowledge',
         name: 'StudentKnowledge',
         component: KnowledgeView,
-        meta: { title: '实验室知识库' }
+        meta: { title: '实验室知识库', module: 'knowledge' }
       },
       {
         path: 'bilibili',
         name: 'StudentBilibili',
         component: BilibiliView,
-        meta: { title: 'B 站学习室' }
+        meta: { title: 'B 站学习室', module: 'bilibili' }
       },
       {
         path: 'learning-paths',
         name: 'StudentLearningPaths',
         component: StudentLearningPathsView,
-        meta: { title: '我的学习路径' }
+        meta: { title: '我的学习路径', module: 'learning_path' }
       },
       {
         path: 'growth',
         name: 'StudentGrowth',
         component: GrowthView,
-        meta: { title: '成长数据全览' }
+        meta: { title: '成长数据全览', module: 'growth' }
       },
       {
         path: 'memory-wiki',
         name: 'StudentMemoryWiki',
         component: MemoryWikiView,
-        meta: { title: '记忆 Wiki' }
+        meta: { title: '记忆 Wiki', module: 'memory' }
       },
       {
         path: 'assessment',
         name: 'StudentAssessmentList',
         component: AssessmentListView,
-        meta: { title: '我的作业与考试' }
+        meta: { title: '我的作业与考试', module: 'assessment' }
       },
       {
         path: 'assessment/:id',
         name: 'StudentAssessmentDo',
         component: AssessmentDoView,
-        meta: { title: '在线作答' }
+        meta: { title: '在线作答', module: 'assessment' }
       }
     ]
   },
@@ -137,25 +138,25 @@ const routes: Array<RouteRecordRaw> = [
         path: 'tasks',
         name: 'TeacherTasks',
         component: TasksView,
-        meta: { title: '学习任务发布' }
+        meta: { title: '学习任务发布', module: 'tasks' }
       },
       {
         path: 'assessment',
         name: 'TeacherAssessment',
         component: AssessmentCreateView,
-        meta: { title: '发题工作台' }
+        meta: { title: '发题工作台', module: 'assessment' }
       },
       {
         path: 'assessment-monitor',
         name: 'TeacherAssessmentMonitor',
         component: AssessmentMonitorView,
-        meta: { title: '监考中心' }
+        meta: { title: '监考中心', module: 'assessment' }
       },
       {
         path: 'learning-paths',
         name: 'TeacherLearningPaths',
         component: TeacherLearningPathsView,
-        meta: { title: '学习路径任务' }
+        meta: { title: '学习路径任务', module: 'learning_path' }
       },
       {
         path: 'learning-paths/new',
@@ -173,7 +174,7 @@ const routes: Array<RouteRecordRaw> = [
         path: 'classes',
         name: 'TeacherClasses',
         component: ClassOverviewView,
-        meta: { title: '班级学情记忆看板' }
+        meta: { title: '班级学情记忆看板', module: 'classes' }
       },
       {
         path: 'announcements',
@@ -216,7 +217,7 @@ const routes: Array<RouteRecordRaw> = [
         path: 'announcements',
         name: 'AdminAnnouncements',
         component: AnnouncementsView,
-        meta: { title: '公告发布' }
+        meta: { title: '公告发布', module: 'announcements' }
       }
     ]
   },
@@ -246,7 +247,7 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to, _from, next) => {
   if (to.meta.title) {
     document.title = `${to.meta.title} - AI伴学协同平台`
   }
@@ -264,6 +265,17 @@ router.beforeEach((to, _from, next) => {
     if (requiredRole && requiredRole !== userRole) {
       next('/403')
       return
+    }
+
+    // 侧栏入口隐藏不等于页面不可达：模块被管理员关掉后，直接敲地址也必须拦下来
+    const moduleCode = to.matched.find(record => record.meta.module)?.meta.module as string | undefined
+    if (moduleCode) {
+      const moduleStore = useModuleStore()
+      await moduleStore.ensureLoaded()
+      if (!moduleStore.isEnabled(moduleCode)) {
+        next('/403')
+        return
+      }
     }
 
     next()
