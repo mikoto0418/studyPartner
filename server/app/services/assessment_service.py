@@ -565,6 +565,7 @@ class AssessmentService:
         "blocked_selection",
         "blocked_drag",
         "blocked_exec",
+        "blocked_input",
         "clipboard_read",
         "devtools_open",
         "focus_loss",

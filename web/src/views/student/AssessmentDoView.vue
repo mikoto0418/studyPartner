@@ -56,6 +56,12 @@ const showOverlay = computed(
   () => started.value && !submitted.value && antiCheat.fullscreenExitCount.value > 0 && !antiCheat.fullscreenActive.value
 )
 
+// 窗口失焦 / 切后台时把卷面盖住：后台窗口仍在渲染，不遮挡的话
+// 截图与录屏能完整抄走题目。恢复焦点后自动揭开。
+const contentMasked = computed(
+  () => started.value && !submitted.value && antiCheat.contentHidden.value
+)
+
 const isExpired = computed(
   () => blockedByExpiry.value || (remainingSeconds.value !== null && remainingSeconds.value <= 0)
 )
@@ -508,6 +514,21 @@ onUnmounted(() => {
       <div v-if="questions.length === 0" class="surface-panel p-12 text-center text-sm text-gray-400">
         暂无题目
       </div>
+    </div>
+
+    <!-- 失焦/切后台时盖住卷面：后台窗口仍在渲染，不遮的话截图录屏能把题抄走。
+         全屏遮罩优先级更高，两者同时成立时只显示全屏那条。 -->
+    <div
+      v-if="contentMasked && !showOverlay"
+      class="fixed inset-0 z-40 flex flex-col items-center justify-center bg-zinc-950 px-6 text-center"
+    >
+      <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-500/20 text-amber-400">
+        <AlertTriangle class="h-7 w-7" />
+      </div>
+      <h3 class="text-lg font-semibold text-white">页面已暂时隐藏</h3>
+      <p class="mt-2 max-w-sm text-sm text-zinc-400">
+        检测到窗口失去焦点。为保护试题内容，作答界面已遮挡，请点击本页面继续作答。
+      </p>
     </div>
 
     <div

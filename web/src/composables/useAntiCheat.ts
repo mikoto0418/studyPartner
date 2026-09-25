@@ -23,6 +23,8 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   const fullscreenActive = ref(false)
   const fullscreenExitCount = ref(0)
   const blockedActionCount = ref(0)
+  // 失焦/切后台时把卷面盖住：后台窗口仍在渲染，不遮挡的话截图与录屏能完整抄走
+  const contentHidden = ref(false)
 
   let tracking = false
   let flushTimer: number | null = null
@@ -34,6 +36,8 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   let currentQuestion: string | null = null
   let questionStartedAt: number | null = null
   let devtoolsOpen = false
+  // 已敲入的字符数，与实际插入的文字比对，用来发现「不是手敲的」输入
+  let keystrokes = 0
 
   const queue: BehaviorEventPayload[] = []
 
@@ -82,7 +86,8 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
 
   // ---------- 键盘/剪贴板多层拦截 ----------
   const isModifier = (e: KeyboardEvent) => e.ctrlKey || e.metaKey
-  const blockedKeys = new Set(['KeyC', 'KeyV', 'KeyX', 'KeyS', 'KeyP', 'KeyU'])
+  // Ctrl+F 页内搜索是取答案的常规路径，一并拦掉
+  const blockedKeys = new Set(['KeyC', 'KeyV', 'KeyX', 'KeyS', 'KeyP', 'KeyU', 'KeyF'])
   const blockedFKeys = new Set(['F12', 'F3'])
   const devtoolsKeys = new Set(['KeyI', 'KeyJ', 'KeyC'])
 
@@ -98,13 +103,25 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
       preventAndFlag(e, 'blocked_shortcut', { code: e.code })
       return
     }
+    const target = e.target as HTMLElement | null
+    const editable = !!target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')
+    // 输入框内的 Ctrl+A 是「全选自己写的字」，属于正常编辑，放行；
+    // 页面级全选（对着题干）才拦 —— 那才是「全选复制」的第一步。
+    if (isModifier(e) && e.code === 'KeyA' && !editable) {
+      preventAndFlag(e, 'blocked_shortcut', { code: e.code, key: e.key })
+      return
+    }
     if (isModifier(e) && blockedKeys.has(e.code)) {
       preventAndFlag(e, 'blocked_shortcut', { code: e.code, key: e.key })
       return
     }
     if (isModifier(e) && e.shiftKey && devtoolsKeys.has(e.code)) {
       preventAndFlag(e, 'blocked_shortcut', { code: e.code, devtools: true })
+      return
     }
+    // 记录真实敲入的字符数，供输入比对用。带修饰键的组合（Ctrl+Z 等）不产生文字，
+    // 输入法组合期间也不计，否则会把正常操作误算成按键。
+    if (!e.isComposing && !isModifier(e) && !e.altKey && e.key.length === 1) keystrokes += 1
   }
 
   const onKeyup = (e: KeyboardEvent) => {
@@ -140,6 +157,57 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
 
   const onDragStart = (e: Event) => {
     preventAndFlag(e, 'blocked_drag', {})
+  }
+
+  // 浏览器原生菜单「粘贴」在部分环境既不派发 paste 也不派发 beforeinput，
+  // 只拦事件会漏。这里按「输入框增长了多少字符」与「实际敲了多少键」比对，
+  // 多出来的就是非手敲输入。输入法组合（isComposing）期间不判定，避免误伤中文输入。
+  let lastInputLen = 0
+  let inputTracked: HTMLElement | null = null
+  // 输入法（中文等）会一次性提交整段文字，而且提交那一拍的 input 事件里
+  // isComposing 已经是 false —— 只靠 isComposing 会把中文作答误判成粘贴。
+  // 用组合状态 + 结束后的时间窗共同排除。
+  let composing = false
+  let compositionEndedAt = 0
+
+  const onCompositionStart = () => {
+    composing = true
+  }
+
+  const onCompositionEnd = () => {
+    composing = false
+    compositionEndedAt = Date.now()
+  }
+
+  const onInputCapture = (e: Event) => {
+    const el = e.target as HTMLElement | null
+    if (!el) return
+    const tag = el.tagName
+    if (tag !== 'TEXTAREA' && tag !== 'INPUT') return
+    const value = (el as HTMLInputElement).value
+    if (
+      composing ||
+      (e as InputEvent).isComposing ||
+      Date.now() - compositionEndedAt < 150
+    ) {
+      inputTracked = el
+      lastInputLen = value.length
+      keystrokes = 0
+      return
+    }
+    if (inputTracked !== el) {
+      inputTracked = el
+      lastInputLen = value.length
+      keystrokes = 0
+      return
+    }
+    const inserted = value.length - lastInputLen
+    lastInputLen = value.length
+    if (inserted > 0 && keystrokes < inserted) {
+      recordViolation()
+      push('blocked_input', { inserted, keystrokes })
+    }
+    keystrokes = 0
   }
 
   // ---------- 接管 execCommand 与剪贴板读取 ----------
@@ -230,15 +298,21 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
       focusLostAt = null
       push('focus_gain', { duration_ms: durationMs })
     }
+    contentHidden.value = false
   }
 
   const onBlur = () => {
     focusLostAt = ts()
+    // 不遮住的话，切到后台的窗口仍在渲染卷面，截图/录屏能完整抄走
+    contentHidden.value = true
     push('focus_loss', {})
   }
 
   const onVisibilityChange = () => {
-    push(document.hidden ? 'visibility_hidden' : 'visibility_visible', {})
+    const hidden = document.hidden
+    if (hidden) contentHidden.value = true
+    else contentHidden.value = false
+    push(hidden ? 'visibility_hidden' : 'visibility_visible', {})
   }
 
   // ---------- 焦点位置与停留时长 ----------
@@ -329,13 +403,42 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   }
 
   // ---------- 开发者工具检测 ----------
+  // 三重信号叠加，单靠窗口尺寸差早就能被绕过：
+  //   1) debugger 语句耗时（开着 devtools 时会被断点挂住）
+  //   2) console 对象被打开后才会有的 toString 探针
+  //   3) 窗口尺寸差（保留作兜底，宽高同时超过阈值才算）
+  // 独立标志，不能复用 devtoolsOpen：那个变量还承担「本次是否已上报」的去重职责
+  let probeTriggered = false
+  const devtoolsProbe = new Image()
+  Object.defineProperty(devtoolsProbe, 'id', {
+    get() {
+      probeTriggered = true
+      return 'ac-probe'
+    }
+  })
+
   const detectDevtools = (): boolean => {
+    // 1) debugger 计时
     const start = performance.now()
     trapDebugger()
     if (performance.now() - start > 80) return true
+
+    // 2) console 探针：打开 devtools 时 console 会读取对象的 id 触发 getter
+    probeTriggered = false
+    try {
+      // eslint-disable-next-line no-console
+      console.log(devtoolsProbe)
+      // eslint-disable-next-line no-console
+      console.clear()
+    } catch (err) {
+      // 忽略
+    }
+    if (probeTriggered) return true
+
+    // 3) 窗口尺寸差兜底：宽高需同时异常，避免系统缩放/侧栏误判
     const w = window.outerWidth - window.innerWidth
     const h = window.outerHeight - window.innerHeight
-    return w > 160 || h > 160
+    return w > 160 && h > 160
   }
 
   const onDevtoolsCheck = () => {
@@ -371,6 +474,9 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     document.addEventListener('drop', onDrop, true)
     document.addEventListener('contextmenu', onContextMenu, true)
     document.addEventListener('beforeinput', onBeforeInput, true)
+    document.addEventListener('input', onInputCapture, true)
+    document.addEventListener('compositionstart', onCompositionStart, true)
+    document.addEventListener('compositionend', onCompositionEnd, true)
     document.addEventListener('selectstart', onSelectStart, true)
     document.addEventListener('dragstart', onDragStart, true)
     document.addEventListener('fullscreenchange', onFullscreenChange)
@@ -433,6 +539,9 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     document.removeEventListener('drop', onDrop, true)
     document.removeEventListener('contextmenu', onContextMenu, true)
     document.removeEventListener('beforeinput', onBeforeInput, true)
+    document.removeEventListener('input', onInputCapture, true)
+    document.removeEventListener('compositionstart', onCompositionStart, true)
+    document.removeEventListener('compositionend', onCompositionEnd, true)
     document.removeEventListener('selectstart', onSelectStart, true)
     document.removeEventListener('dragstart', onDragStart, true)
     document.removeEventListener('fullscreenchange', onFullscreenChange)
@@ -450,6 +559,12 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     currentQuestion = null
     questionStartedAt = null
     devtoolsOpen = false
+    inputTracked = null
+    lastInputLen = 0
+    keystrokes = 0
+    composing = false
+    compositionEndedAt = 0
+    contentHidden.value = false
   }
 
   const exitFullscreen = async () => {
@@ -468,6 +583,7 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     fullscreenActive,
     fullscreenExitCount,
     blockedActionCount,
+    contentHidden,
     startTracking,
     stopTracking,
     enterFullscreen,
