@@ -300,7 +300,7 @@ router.beforeEach(async (to, _from, next) => {
     if (userRole === 'admin') {
       next('/admin/overview')
     } else if (userRole === 'teacher') {
-      next('/teacher/workbench')
+      next('/teacher/assessment')
     } else {
       next('/student/dashboard')
     }

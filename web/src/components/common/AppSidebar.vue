@@ -8,11 +8,9 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  ClipboardList,
   FileText,
   Users,
   Settings2,
-  GitBranch,
   BarChart3,
   Megaphone,
   ShieldAlert
@@ -48,16 +46,14 @@ const menuItems = computed(() => {
       { name: '系统设置', path: '/admin/settings', icon: Settings }
     ]
   } else if (userRole.value === 'teacher') {
+    // 客户版教师端只保留考试主链路：发题 → 监考 → 分析，外加班级看板。
+    // 其余页面（工作台、学生列表、任务管理、路径任务、公告）路由仍然存在，
+    // 只是不再给入口 —— 需要时把它们加回这个数组即可。
     return [
-      { name: '工作台', path: '/teacher/workbench', icon: LayoutDashboard },
-      { name: '学生列表', path: '/teacher/students', icon: Users },
-      { name: '任务管理', path: '/teacher/tasks', icon: ClipboardList, module: 'tasks' },
       { name: '发题工作台', path: '/teacher/assessment', icon: FileText, module: 'assessment' },
       { name: '监考中心', path: '/teacher/assessment-monitor', icon: ShieldAlert, module: 'assessment' },
       { name: '考试分析', path: '/teacher/assessment-analytics', icon: BarChart3, module: 'assessment' },
-      { name: '路径任务', path: '/teacher/learning-paths', icon: GitBranch, module: 'learning_path' },
-      { name: '班级看板', path: '/teacher/classes', icon: BarChart3, module: 'classes' },
-      { name: '公告发布', path: '/teacher/announcements', icon: Megaphone, module: 'announcements' }
+      { name: '班级看板', path: '/teacher/classes', icon: BarChart3, module: 'classes' }
     ]
   } else {
     // 客户版：学生端侧栏只保留这三个入口，其余页面路由仍在，只是不给入口

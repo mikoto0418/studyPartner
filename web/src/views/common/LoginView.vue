@@ -98,7 +98,7 @@ const handleLogin = async () => {
     if (userRole === 'admin') {
       router.push('/admin/overview')
     } else if (userRole === 'teacher') {
-      router.push('/teacher/workbench')
+      router.push('/teacher/assessment')
     } else {
       router.push('/student/dashboard')
     }
@@ -150,7 +150,7 @@ const handleRegister = async () => {
     
     const userRole = data.user.roles[0]?.code || 'student'
     if (userRole === 'teacher') {
-      router.push('/teacher/workbench')
+      router.push('/teacher/assessment')
     } else {
       router.push('/student/dashboard')
     }
