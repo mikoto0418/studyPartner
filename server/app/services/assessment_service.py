@@ -12,6 +12,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.exceptions import NotFoundError, PermissionDenied, ValidationError
 from app.core.redis import redis_client
 from app.models.assessment import (
@@ -370,6 +371,7 @@ class AssessmentService:
         due_at: Optional[datetime] = None,
         grading_preference: Optional[Dict[str, Any]] = None,
         time_limit_minutes: Optional[int] = None,
+        require_fullscreen: bool = True,
     ) -> AssessmentPaper:
         paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
         if paper.parse_status not in ("awaiting_review", "publish_failed"):
@@ -474,6 +476,9 @@ class AssessmentService:
             target["time_limit_minutes"] = minutes
         else:
             target.pop("time_limit_minutes", None)
+        # 显式写 true 而不是省略：学生端要靠这个字段决定是否强制全屏，
+        # 省略会让「教师取消了全屏要求」和「老数据」两种情况长得一模一样。
+        target["require_fullscreen"] = bool(require_fullscreen)
 
         paper.publish_target = target
         paper.publish_at = publish_at
@@ -1896,6 +1901,7 @@ class AssessmentService:
                     "published_at": paper.published_at,
                     "due_at": due_at,
                     "time_limit_minutes": AssessmentService._time_limit_minutes_of(paper),
+                    "require_fullscreen": AssessmentService.require_fullscreen_of(paper),
                     "attempt_id": attempt.id if attempt else None,
                     "attempt_status": attempt.status if attempt else None,
                     "attempt_score": attempt.score if attempt else None,
@@ -2315,6 +2321,98 @@ class AssessmentService:
             "language": question.language,
             "starter_code": question.starter_code,
             "sample_cases": question.test_cases,
+        }
+
+    @staticmethod
+    def _coerce_require_fullscreen(raw: Any) -> bool:
+        """读发布配置里的全屏开关。老数据没有这个字段，默认按「要求全屏」处理。"""
+        if raw is None:
+            return True
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() not in ("false", "0", "no", "off")
+        return True
+
+    @staticmethod
+    def require_fullscreen_of(paper: Optional[AssessmentPaper]) -> bool:
+        if paper is None:
+            return True
+        target = AssessmentService._as_target_dict(paper.publish_target)
+        return AssessmentService._coerce_require_fullscreen(target.get("require_fullscreen"))
+
+    @staticmethod
+    async def code_dry_run(
+        db: AsyncSession,
+        attempt_id: UUID,
+        student_id: UUID,
+        question_id: UUID,
+        code: str,
+        stdin_text: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """编程题自测。只跑样例，或跑学生自己填的输入。
+
+        每次调用都记一次 Redis 计数，超过上限直接拒绝：自测要真的编译运行，
+        不限额的话一个学生就能靠连点把沙箱占满，拖垮整场考试。
+        """
+        from app.services import judge_service
+
+        attempt = await AssessmentService._load_student_attempt(
+            db, attempt_id, student_id, enforce_due=False
+        )
+        if attempt.status != "in_progress":
+            raise ValidationError("已交卷，无法再自测")
+
+        question = (
+            await db.execute(
+                select(AssessmentQuestion).where(
+                    AssessmentQuestion.id == question_id,
+                    AssessmentQuestion.paper_id == attempt.paper_id,
+                )
+            )
+        ).scalars().first()
+        if not question:
+            raise NotFoundError("题目不存在")
+        if question.question_type != "code":
+            raise ValidationError("该题不是编程题")
+
+        key = f"judge:dryrun:{attempt_id}"
+        try:
+            used = await redis_client.incr(key)
+            if used == 1:
+                await redis_client.expire(key, 12 * 3600)
+        except Exception:
+            # Redis 不可用时放行，不能因为计数服务故障就禁止学生自测
+            used = 0
+        limit = settings.JUDGE_DRY_RUN_LIMIT
+        if used and used > limit:
+            raise ValidationError(f"自测次数已用完（上限 {limit} 次）")
+
+        result = await asyncio.to_thread(
+            judge_service.dry_run,
+            question.language or "python",
+            code,
+            AssessmentService._sample_cases(question),
+            stdin_text,
+        )
+        return {
+            "status": result.status,
+            "message": result.message,
+            "compile_output": result.compile_output,
+            "cases": [
+                {
+                    "index": case.index,
+                    "passed": case.passed,
+                    "status": case.status,
+                    "input": case.input_text,
+                    "expected_output": case.expected,
+                    "actual_output": case.actual,
+                    "stderr": case.stderr,
+                    "time_ms": case.time_ms,
+                }
+                for case in result.cases
+            ],
+            "runs_left": max(0, limit - max(used, 1)),
         }
 
     @staticmethod

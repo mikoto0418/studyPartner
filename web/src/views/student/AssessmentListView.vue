@@ -67,7 +67,9 @@ onMounted(loadPapers)
         </div>
         <div>
           <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">我的作业与考试</h3>
-          <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">老师发布给你的在线作业与考试，进入后需在全屏模式下作答。</p>
+          <p class="mt-1 text-xs text-gray-400 dark:text-zinc-500">
+            老师发布给你的在线作业与考试。一页一题，用「上一题 / 下一题」或答题卡切换；编程题可以随时自测。
+          </p>
         </div>
       </div>
     </div>
@@ -107,6 +109,12 @@ onMounted(loadPapers)
           </span>
           <span v-if="paper.time_limit_minutes" class="inline-flex items-center gap-1">
             <Clock class="h-3.5 w-3.5" /> 限时 {{ paper.time_limit_minutes }} 分钟
+          </span>
+          <span
+            v-if="paper.require_fullscreen === false"
+            class="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 dark:bg-zinc-800"
+          >
+            可窗口作答
           </span>
           <span class="inline-flex items-center gap-1">
             <Clock class="h-3.5 w-3.5" /> 截止 {{ formatDate(paper.due_at) }}

@@ -19,8 +19,14 @@ interface FocusState {
   field: string | null
 }
 
-export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
+export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFullscreen?: boolean } = {}) {
   const maxFullscreenExits = options.maxFullscreenExits ?? 3
+  // 试卷可以关掉强制全屏：此时不做进入/恢复全屏，也不因退出全屏计违规。
+  // 关闭后「已退出全屏」遮罩与自动交卷都不触发，但其它防作弊信号照常记录。
+  let enforceFullscreen = options.enforceFullscreen ?? true
+  const setEnforceFullscreen = (value: boolean) => {
+    enforceFullscreen = value
+  }
   const fullscreenActive = ref(false)
   const fullscreenExitCount = ref(0)
   const blockedActionCount = ref(0)
@@ -370,6 +376,10 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
    *    所有基于退出全屏的拦截全部失效。所以必须回读真实状态。
    */
   const enterFullscreen = async (): Promise<boolean> => {
+    if (!enforceFullscreen) {
+      fullscreenActive.value = true
+      return true
+    }
     const request =
       document.documentElement.requestFullscreen ||
       (document.documentElement as any).webkitRequestFullscreen ||
@@ -405,6 +415,8 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     const active = isFullscreen()
     fullscreenActive.value = active
     if (!active) {
+      // 没开强制全屏时退出不算违规：教师本来就没要求，计进去会误伤
+      if (!enforceFullscreen) return
       fullscreenExitCount.value += 1
       push('fullscreen_exit', { count: fullscreenExitCount.value })
       onFullscreenExit(fullscreenExitCount.value)
@@ -521,6 +533,19 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     questionStartedAt = ts()
   }
 
+  /**
+   * 顶部视图切换时直接指定当前题。
+   *
+   * 一页一题之后没有滚动，findCurrentQuestion 的视口中心判定不再适用；
+   * 由调用方在切题时显式告知，否则逐题用时会被记到错误的题上。
+   */
+  const setCurrentQuestion = (qid: string | null) => {
+    if (qid === currentQuestion) return
+    commitQuestionDwell()
+    currentQuestion = qid
+    questionStartedAt = ts()
+  }
+
   const onScroll = () => {
     if (scrollTimer != null) return
     scrollTimer = window.setTimeout(() => {
@@ -620,7 +645,12 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     push('session_start', { session_id: sessionId, attempt_id: attemptId })
     currentQuestion = findCurrentQuestion()
     questionStartedAt = ts()
-    enterFullscreen()
+    if (enforceFullscreen) {
+      enterFullscreen()
+    } else {
+      fullscreenActive.value = true
+      push('fullscreen_skipped', {})
+    }
 
     flushTimer = window.setInterval(flush, 5000)
     heartbeatTimer = window.setInterval(onHeartbeat, 6000)
@@ -692,6 +722,7 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   }
 
   const exitFullscreen = async () => {
+    if (!enforceFullscreen) return
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen()
@@ -712,6 +743,8 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
     stopTracking,
     enterFullscreen,
     exitFullscreen,
+    setCurrentQuestion,
+    setEnforceFullscreen,
     flush
   }
 }

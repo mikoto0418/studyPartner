@@ -314,3 +314,103 @@ def judge_code(
         total=len(visible),
         cases=cases,
     )
+
+
+@dataclass
+class DryRunCase:
+    index: int
+    passed: Optional[bool]  # None = 自定义输入，没有期望输出可比较
+    status: str
+    input_text: str = ""
+    expected: str = ""
+    actual: str = ""
+    stderr: str = ""
+    time_ms: Optional[int] = None
+
+
+@dataclass
+class DryRunResult:
+    status: str  # ok / wrong_answer / compile_error / runtime_error / time_limit / judge_error
+    message: str = ""
+    compile_output: str = ""
+    cases: List[DryRunCase] = field(default_factory=list)
+
+
+def dry_run(
+    language: str,
+    source: str,
+    sample_cases: List[Dict[str, Any]],
+    stdin_text: Optional[str] = None,
+) -> DryRunResult:
+    """学生自测：只跑样例用例，或跑一段学生自己填的输入。
+
+    绝不接触隐藏用例 —— 学生反复调用这个接口去试出隐藏用例的答案，
+    判题就失去意义了。调用方传进来的 sample_cases 必须已经筛过。
+    """
+    try:
+        spec = language_spec(language)
+    except ValueError as exc:
+        return DryRunResult(status="judge_error", message=str(exc))
+
+    try:
+        compiled_id, compile_error = compile_source(language, source)
+    except JudgeUnavailable as exc:
+        return DryRunResult(status="judge_error", message=str(exc))
+    if compile_error:
+        return DryRunResult(
+            status="compile_error", message="编译未通过", compile_output=compile_error
+        )
+    if spec["binary"] and not compiled_id:
+        return DryRunResult(status="compile_error", message="编译产物缺失")
+
+    custom = stdin_text is not None
+    planned = (
+        [{"input": stdin_text or "", "expected_output": None}]
+        if custom
+        else [
+            {"input": c.get("input") or "", "expected_output": c.get("expected_output") or ""}
+            for c in sample_cases
+        ]
+    )
+    if not planned:
+        return DryRunResult(status="judge_error", message="这道题没有可用来自测的样例输入")
+
+    cases: List[DryRunCase] = []
+    overall = "ok"
+    for index, case in enumerate(planned):
+        try:
+            raw = run_case(language, source, case["input"], compiled_id)
+        except JudgeUnavailable as exc:
+            return DryRunResult(status="judge_error", message=str(exc))
+        state = _status_of(raw)
+        actual = raw.get("stdout") or ""
+        expected = case.get("expected_output")
+        passed: Optional[bool] = None
+        if state == "time_limit":
+            passed = False
+            overall = "time_limit" if overall == "ok" else overall
+        elif state == "runtime_error":
+            passed = False
+            overall = "runtime_error" if overall == "ok" else overall
+        elif expected is not None:
+            passed = _normalize(actual) == _normalize(expected)
+            if not passed and overall == "ok":
+                overall = "wrong_answer"
+        cases.append(
+            DryRunCase(
+                index=index,
+                passed=passed,
+                status=state,
+                input_text=case["input"],
+                expected=expected or "",
+                actual=actual[:4000],
+                stderr=(raw.get("stderr") or "")[:2000],
+                time_ms=raw.get("time_ms"),
+            )
+        )
+
+    return DryRunResult(
+        status=overall,
+        message="自测完成" if overall == "ok" else "自测发现问题",
+        cases=cases,
+    )

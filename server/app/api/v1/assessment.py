@@ -23,6 +23,8 @@ from app.schemas.assessment import (
     StudentAnswersReq,
     StudentAnswersOut,
     StudentReviewOut,
+    CodeRunReq,
+    CodeRunOut,
     StudentAttemptOut,
     StudentPaperOut,
     AttemptAnswerOut,
@@ -171,6 +173,7 @@ async def publish_paper(
         req.due_at,
         req.grading_preference,
         req.time_limit_minutes,
+        req.require_fullscreen,
     )
     return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="发布成功")
 
@@ -428,6 +431,24 @@ async def student_review(
 ):
     data = await AssessmentService.get_student_review(db, paper_id, current_user.id)
     return BaseResponse.success(data=StudentReviewOut(**data), message="获取成功")
+
+
+@router.post(
+    "/student/attempts/{attempt_id}/questions/{question_id}/run",
+    response_model=BaseResponse[CodeRunOut],
+    summary="编程题自测（只跑样例或自定义输入，不接触隐藏用例）",
+)
+async def student_code_dry_run(
+    attempt_id: UUID = Path(...),
+    question_id: UUID = Path(...),
+    req: CodeRunReq = Body(...),
+    current_user: User = Depends(require_student),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await AssessmentService.code_dry_run(
+        db, attempt_id, current_user.id, question_id, req.code, req.stdin
+    )
+    return BaseResponse.success(data=CodeRunOut(**data), message=data["message"])
 
 
 @router.post(

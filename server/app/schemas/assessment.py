@@ -64,6 +64,8 @@ class AssessmentPublishReq(BaseModel):
     due_at: Optional[datetime] = None
     # 开考后限时，单位分钟。与 due_at 同时存在时，先到的那个收卷
     time_limit_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    # 是否要求全程全屏作答。默认开：进入作答页即强制全屏，退出会遮住卷面
+    require_fullscreen: bool = True
     # 主观题批阅倾向，随发布一并保存；{mode: lenient/standard/strict, extra: str}
     grading_preference: Optional[dict] = None
 
@@ -151,9 +153,36 @@ class StudentPaperOut(BaseModel):
     published_at: Optional[datetime] = None
     due_at: Optional[datetime] = None
     time_limit_minutes: Optional[int] = None
+    require_fullscreen: bool = True
     attempt_id: Optional[UUID] = None
     attempt_status: Optional[str] = None
     attempt_score: Optional[float] = None
+
+
+class CodeRunReq(BaseModel):
+    """编程题自测。stdin 为空表示按样例逐个跑。"""
+
+    code: str = Field(..., max_length=100_000)
+    stdin: Optional[str] = Field(default=None, max_length=10_000)
+
+
+class CodeRunCaseOut(BaseModel):
+    index: int
+    passed: Optional[bool] = None
+    status: str
+    input: str = ""
+    expected_output: str = ""
+    actual_output: str = ""
+    stderr: str = ""
+    time_ms: Optional[int] = None
+
+
+class CodeRunOut(BaseModel):
+    status: str
+    message: str = ""
+    compile_output: str = ""
+    cases: List[CodeRunCaseOut] = Field(default_factory=list)
+    runs_left: int = 0
 
 
 class StudentReviewQuestionOut(BaseModel):

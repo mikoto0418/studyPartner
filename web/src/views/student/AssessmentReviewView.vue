@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { CircleCheck, CircleX } from 'lucide-vue-next'
 import { assessmentApi, type StudentReview } from '../../api/modules/assessment'
 import RichStem from '../../components/assessment/RichStem.vue'
 import MathText from '../../components/common/MathText.vue'
@@ -65,53 +66,82 @@ onMounted(load)
 
 <template>
   <div v-loading="loading" class="space-y-4">
-    <div class="surface-panel flex flex-wrap items-center justify-between gap-3 p-4">
-      <div>
-        <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">{{ review?.paper.title || '成绩回顾' }}</p>
-        <p v-if="review?.attempt.status === 'pending_review'" class="mt-1 text-xs text-amber-600">
-          主观题还没批完。当前只统计客观题 {{ review.attempt.objective_score }} 分，不是最终成绩。
-        </p>
-        <p v-else-if="review" class="mt-1 text-xs text-gray-400">
-          得分 {{ review.attempt.score ?? 0 }} 分
-          <template v-if="review.paper.total_score != null"> / {{ review.paper.total_score }}</template>
-          <template v-if="review.attempt.duration_seconds != null">
-            · 用时 {{ Math.round(review.attempt.duration_seconds / 60) }} 分钟
-          </template>
-        </p>
+    <div class="surface-panel overflow-hidden">
+      <div class="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+        <div class="min-w-0">
+          <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">{{ review?.paper.title || '成绩回顾' }}</h3>
+          <p class="mt-1 text-[11px] text-gray-400">
+            {{ review?.questions.length || 0 }} 题
+            <template v-if="review?.paper.total_score != null"> · 满分 {{ review.paper.total_score }}</template>
+          </p>
+        </div>
+        <button class="ui-button-secondary" @click="router.push('/student/assessment')">返回列表</button>
       </div>
-      <button class="ui-button-secondary" @click="router.push('/student/assessment')">返回列表</button>
+
+      <div v-if="review" class="grid grid-cols-2 divide-x divide-gray-100 border-t border-gray-100 dark:divide-zinc-800 dark:border-zinc-800 sm:grid-cols-3">
+        <div class="px-6 py-5 text-center">
+          <p class="text-[11px] text-gray-400">
+            {{ review.attempt.status === 'pending_review' ? '已判得分' : '得分' }}
+          </p>
+          <p class="mt-1 text-2xl font-semibold text-gray-900 dark:text-zinc-50">{{ review.attempt.score ?? review.attempt.objective_score ?? 0 }}</p>
+        </div>
+        <div class="px-6 py-5 text-center">
+          <p class="text-[11px] text-gray-400">用时</p>
+          <p class="mt-1 text-2xl font-semibold text-gray-900 dark:text-zinc-50">
+            {{ Math.max(1, Math.round((review.attempt.duration_seconds ?? 0) / 60)) }}<span class="ml-0.5 text-xs font-normal text-gray-400">分钟</span>
+          </p>
+        </div>
+        <div class="col-span-2 border-t border-gray-100 px-6 py-5 text-center dark:border-zinc-800 sm:col-span-1 sm:border-t-0">
+          <p class="text-[11px] text-gray-400">状态</p>
+          <p
+            class="mt-1 text-sm font-semibold"
+            :class="review.attempt.status === 'pending_review' ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'"
+          >
+            {{ review.attempt.status === 'pending_review' ? '待老师批改' : '已批改完成' }}
+          </p>
+        </div>
+      </div>
+
+      <p
+        v-if="review?.attempt.status === 'pending_review'"
+        class="border-t border-gray-100 px-5 py-3 text-[11px] leading-relaxed text-amber-600 dark:border-zinc-800 dark:text-amber-400"
+      >
+        主观题与编程题还没批完，上面只是当前已判部分的分数，不是最终成绩。
+      </p>
     </div>
 
     <article
       v-for="question in review?.questions || []"
       :key="question.question_id"
-      class="surface-panel p-4"
+      class="surface-panel p-5"
     >
-      <div class="mb-2 flex flex-wrap items-center gap-2">
-        <span class="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <span class="rounded bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
           第 {{ question.order_index + 1 }} 题
         </span>
-        <span class="rounded bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">
+        <span class="rounded bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500 dark:bg-zinc-800 dark:text-zinc-400">
           {{ typeLabel(question.question_type) }}
           <template v-if="question.max_score == null"> · 分值待定</template>
           <template v-else> · 满分 {{ question.max_score }}</template>
         </span>
         <span
           v-if="question.graded && question.is_correct === true"
-          class="text-[10px] font-semibold text-emerald-600"
+          class="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400"
         >
-          正确 · {{ question.score }} 分
+          <CircleCheck class="h-3 w-3" />正确 · {{ question.score }} 分
         </span>
         <span
           v-else-if="question.graded && question.is_correct === false"
-          class="text-[10px] font-semibold text-red-500"
+          class="inline-flex items-center gap-1 rounded bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-500 dark:bg-red-950/30 dark:text-red-400"
         >
-          不正确 · {{ question.score }} 分
+          <CircleX class="h-3 w-3" />不正确 · {{ question.score }} 分
         </span>
-        <span v-else-if="question.graded" class="text-[10px] font-semibold text-gray-600 dark:text-zinc-300">
+        <span v-else-if="question.graded" class="rounded bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400">
           {{ question.score }} 分
         </span>
-        <span v-else class="text-[10px] font-semibold text-amber-600">待老师批改</span>
+        <span v-else class="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-600 dark:bg-amber-950/30 dark:text-amber-400">
+          待老师批改
+        </span>
       </div>
 
       <RichStem :stem="question.stem" :images="question.stem_images" class="text-sm leading-relaxed text-gray-800 dark:text-zinc-100" />

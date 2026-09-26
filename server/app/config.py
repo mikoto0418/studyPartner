@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     JUDGE_COMPILE_MEMORY_LIMIT_BYTES: int = 512 * 1024 * 1024
     JUDGE_OUTPUT_LIMIT_BYTES: int = 64 * 1024
     JUDGE_TIMEOUT_SECONDS: float = 30.0
+    # 单个作答的编程题自测次数上限。自测只跑样例，但仍要防住刷接口占满沙箱。
+    JUDGE_DRY_RUN_LIMIT: int = 60
 
     # ========== SiliconFlow (LLM) ==========
     SILICONFLOW_API_KEY: str = ""

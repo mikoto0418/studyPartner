@@ -56,9 +56,30 @@ export interface StudentPaper {
   published_at?: string | null
   due_at?: string | null
   time_limit_minutes?: number | null
+  /** 未配置的老数据按 true 处理 */
+  require_fullscreen?: boolean
   attempt_id?: string | null
   attempt_status?: string | null
   attempt_score?: number | null
+}
+
+export interface CodeRunCase {
+  index: number
+  passed?: boolean | null
+  status: string
+  input: string
+  expected_output: string
+  actual_output: string
+  stderr: string
+  time_ms?: number | null
+}
+
+export interface CodeRunResult {
+  status: string
+  message: string
+  compile_output: string
+  cases: CodeRunCase[]
+  runs_left: number
 }
 
 export interface StudentReview {
@@ -383,6 +404,7 @@ export const assessmentApi = {
       publish_at?: string | null
       due_at?: string | null
       time_limit_minutes?: number | null
+      require_fullscreen?: boolean
       grading_preference?: { mode: string; extra?: string } | null
     }
   ) {
@@ -399,6 +421,15 @@ export const assessmentApi = {
 
   startAttempt(paperId: string) {
     return request.post(`/assessment/student/papers/${paperId}/attempts`)
+  },
+
+  runCode(attemptId: string, questionId: string, data: { code: string; stdin?: string | null }) {
+    // 自测要真的编译运行，比普通请求慢得多；超时只断前端，服务端会跑完
+    return request.post(
+      `/assessment/student/attempts/${attemptId}/questions/${questionId}/run`,
+      data,
+      { timeout: 90_000 }
+    )
   },
 
   getStudentAnswers(paperId: string) {

@@ -49,6 +49,9 @@ const blacklistIds = ref('')
 const publishAt = ref<Date | null>(null)
 const dueAt = ref<Date | null>(null)
 const timeLimitMinutes = ref<number | null>(null)
+// 是否要求全程全屏作答。默认开——这是这类考试的默认形态；
+// 随发布保存到试卷配置里，学生端按它决定是否强制全屏。
+const requireFullscreen = ref(true)
 
 // 主观题批阅倾向：随发布保存，AI 预批阅和人工批改都按它执行
 const gradingMode = ref<'lenient' | 'standard' | 'strict'>('standard')
@@ -138,6 +141,7 @@ function buildDraft() {
     publishAt: publishAt.value ? publishAt.value.toISOString() : null,
     dueAt: dueAt.value ? dueAt.value.toISOString() : null,
     timeLimitMinutes: timeLimitMinutes.value,
+    requireFullscreen: requireFullscreen.value,
     gradingMode: gradingMode.value,
     gradingExtra: gradingExtra.value,
     selectedClassId: selectedClassId.value,
@@ -200,6 +204,7 @@ function applyDraft(d: any) {
   publishAt.value = d.publishAt ? new Date(d.publishAt) : null
   dueAt.value = d.dueAt ? new Date(d.dueAt) : null
   timeLimitMinutes.value = d.timeLimitMinutes || null
+  requireFullscreen.value = d.requireFullscreen !== false
   gradingMode.value = d.gradingMode || 'standard'
   gradingExtra.value = d.gradingExtra || ''
   hasDraft.value = true
@@ -606,6 +611,7 @@ async function doPublish() {
       publish_at: publishAt.value ? publishAt.value.toISOString() : null,
       due_at: dueAt.value ? dueAt.value.toISOString() : null,
       time_limit_minutes: timeLimitMinutes.value && timeLimitMinutes.value > 0 ? timeLimitMinutes.value : null,
+      require_fullscreen: requireFullscreen.value,
       grading_preference: {
         mode: gradingMode.value,
         extra: gradingExtra.value.trim()
@@ -644,6 +650,7 @@ function reset() {
   publishAt.value = null
   dueAt.value = null
   timeLimitMinutes.value = null
+  requireFullscreen.value = true
   gradingMode.value = 'standard'
   gradingExtra.value = ''
 }
@@ -797,6 +804,7 @@ async function resendPaper(paper: any) {
   if (paper.publish_at) publishAt.value = new Date(paper.publish_at)
   if (t.due_at) dueAt.value = new Date(t.due_at)
   timeLimitMinutes.value = t.time_limit_minutes || null
+  requireFullscreen.value = t.require_fullscreen !== false
   if (paper.grading_preference) {
     gradingMode.value = paper.grading_preference.mode || 'standard'
     gradingExtra.value = paper.grading_preference.extra || ''
@@ -1301,6 +1309,18 @@ onUnmounted(() => {
                 />
                 <p class="mt-1 text-[11px] text-gray-400">和截止时间都填时，先到的那个收卷。</p>
               </div>
+            </div>
+
+            <div class="rounded-lg border border-gray-100 p-4 dark:border-zinc-800">
+              <p class="text-xs font-semibold text-gray-900 dark:text-zinc-50">作答环境</p>
+              <p class="mt-1 text-[11px] leading-relaxed text-gray-400">
+                开启后学生进入作答页即被强制全屏，退出全屏会遮住卷面并计违规，连续退出 3 次自动交卷。
+                关闭则允许窗口化作答，复制粘贴等限制照常生效。
+              </p>
+              <label class="mt-3 flex items-center gap-2 text-xs text-gray-700 dark:text-zinc-200">
+                <input v-model="requireFullscreen" type="checkbox" />
+                <span>要求全程全屏作答{{ requireFullscreen ? '' : '（当前关闭）' }}</span>
+              </label>
             </div>
 
             <div class="rounded-lg border border-gray-100 p-4 dark:border-zinc-800">
