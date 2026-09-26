@@ -9,7 +9,13 @@ from app.core.llm import ChatMessage, llm_router
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_TYPES = {"single", "multiple", "judge", "fill", "short", "essay"}
+ALLOWED_TYPES = {"single", "multiple", "judge", "fill", "short", "essay", "code"}
+CODE_LANGUAGES = {"python", "javascript", "java"}
+CODE_LANGUAGE_ALIASES = {
+    "py": "python", "python3": "python", "python2": "python",
+    "js": "javascript", "node": "javascript", "nodejs": "javascript", "ts": "javascript",
+    "typescript": "javascript", "java8": "java", "java11": "java", "java17": "java",
+}
 
 # 相邻两次调用的最小间隔。网关对同一把密钥按分钟限流：实测 5 次/50 秒稳定通过，
 # 而 5 次/25 秒会被 429。所以既要减少调用次数（见 mechanical_chunk 的合并），
@@ -40,12 +46,21 @@ TYPE_ALIASES = {
     "essay": "essay",
     "论述": "essay",
     "论述题": "essay",
+    "code": "code",
+    "coding": "code",
+    "program": "code",
+    "programming": "code",
+    "编程": "code",
+    "编程题": "code",
+    "代码": "code",
+    "代码题": "code",
+    "算法题": "code",
 }
 
 QUESTION_START_RE = re.compile(
     r"^\s*(\d{1,3})\s*[.、．)）]\s*"
     r"|^\s*第\s*[一二三四五六七八九十百\d]+\s*题\s*"
-    r"|^\s*(?:选择题|单选题|多项选择题|多选题|判断题|填空题|简答题|问答题|论述题|计算题)\b"
+    r"|^\s*(?:选择题|单选题|多项选择题|多选题|判断题|填空题|简答题|问答题|论述题|计算题|编程题|代码题)\b"
 )
 
 SYSTEM_PROMPT = """你是一名专业的教育题目结构化提取助手。请把输入文本中的题目逐题提取为严格 JSON。
@@ -57,17 +72,28 @@ SYSTEM_PROMPT = """你是一名专业的教育题目结构化提取助手。请�
   "complete": true或false,
   "questions": [
     {
-      "type": "single|multiple|judge|fill|short|essay",
+      "type": "single|multiple|judge|fill|short|essay|code",
       "stem": "题干文本",
       "options": [{"key": "A", "text": "选项内容"}],
-      "answer": "答案（选择题填正确选项字母或数字，判断题填 true/false 或 对/错，主观题填参考答案或空字符串）",
+      "answer": "答案（选择题填正确选项字母或数字，判断题填 true/false 或 对/错，主观题填参考答案或空字符串，编程题填可AC的标准代码）",
       "analysis": "答案解析",
+      "language": "编程题的语言：python|javascript|java（非编程题省略）",
+      "test_cases": [{"input": "标准输入", "expected_output": "期望输出", "is_sample": true}],
+      "starter_code": "给学生预填的代码骨架（可选）",
       "score": 每题分值数字（原文明确标注了分值才填；原文没有就省略该字段或填 null，不要自己估一个）,
       "tags": ["可选标签"]
     }
   ]
 }
-3. type 取值只能是 single（单选）、multiple（多选）、judge（判断）、fill（填空）、short（简答/问答/编程/计算）、essay（论述）。
+3. type 取值只能是 single（单选）、multiple（多选）、judge（判断）、fill（填空）、short（简答/问答/计算）、essay（论述）、code（编程/算法/代码题）。
+   凡是要求「写代码 / 写程序 / 实现函数 / 补全算法」的题一律用 code，不要用 short 或 essay。
+   code 题必须额外给出 language 与 test_cases：
+   - language 只能是 python、javascript、java 之一。原文指定了其他语言（C/C++/Go/Rust）时，
+     也要落到这三个里最接近的，并在 analysis 里注明原语言。
+   - test_cases 是 [{"input": "标准输入", "expected_output": "期望的标准输出", "is_sample": true/false}]，
+     至少给 2 条；其中 is_sample=true 的会展示给学生，最多 2 条是样例。
+     原文没给样例输入输出时，按题意自己构造能验证解题正确性的用例。
+   - answer 填一份可AC的标准代码。starter_code 填给学生预填的代码骨架（没有就省略）。
 4. 数学公式一律输出为 LaTeX：行内公式用 \\(...\\)，独立公式用 \\[...\\]。
 5. 图片一律用占位符 [[IMG:n]]（n 从 1 开始），不要臆造图片内容，图片位置保留占位符即可。
 6. complete 表示：该输入块是否已包含"完整且未被拦腰截断"的题目。若最后一个题目疑似被截断，complete 填 false，且只把完整题目放进 questions；被截断的残题不要放进 questions。
@@ -209,6 +235,14 @@ def _coerce_question(raw: dict, fallback_index: int) -> dict:
     answer = raw.get("answer")
     if options is None and qtype in {"single", "multiple", "judge"}:
         options = []
+    language = None
+    test_cases = None
+    starter_code = None
+    if qtype == "code":
+        language = normalize_code_language(raw.get("language"))
+        test_cases = normalize_test_cases(raw.get("test_cases"))
+        raw_starter = raw.get("starter_code")
+        starter_code = str(raw_starter).strip() if raw_starter else None
     return {
         "question_type": qtype,
         "stem": str(raw.get("stem") or "").strip(),
@@ -216,12 +250,75 @@ def _coerce_question(raw: dict, fallback_index: int) -> dict:
         "options": options,
         "answer": answer,
         "analysis": str(raw.get("analysis") or "").strip() or None,
+        "language": language,
+        "test_cases": test_cases,
+        "starter_code": starter_code,
         # 原文没标分值时为 None，交给教师在校对页填写；不要用 0 冒充
         "score": _to_float(raw.get("score"), None),
         "difficulty": _to_float(raw.get("difficulty"), None),
         "tags": raw.get("tags") or [],
         "order_index": fallback_index,
     }
+
+
+def normalize_code_language(raw: Any) -> str:
+    """把模型给出的语言名收敛到沙箱真正支持的三选一，默认 python。"""
+    key = str(raw or "").strip().lower()
+    if key in CODE_LANGUAGES:
+        return key
+    return CODE_LANGUAGE_ALIASES.get(key, "python")
+
+
+def normalize_test_cases(raw: Any) -> List[dict]:
+    """收敛测试用例形状。
+
+    模型可能给成 {"1": "2"}、[["1","2"]] 或 [{"input":..,"output":..}]。
+    落库前必须统一成 [{input, expected_output, is_sample}]：
+    读侧按这个形状渲染，形状不对会在教师校对页或学生答题页直接 500。
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: List[dict] = []
+    for index, item in enumerate(raw):
+        text_in: Any = None
+        expected: Any = None
+        sample: Optional[bool] = None
+        if isinstance(item, dict):
+            text_in = item.get("input")
+            if text_in is None:
+                text_in = item.get("stdin")
+            expected = item.get("expected_output")
+            if expected is None:
+                expected = item.get("output")
+            if expected is None:
+                expected = item.get("expected")
+            if "is_sample" in item:
+                sample = bool(item.get("is_sample"))
+            elif "sample" in item:
+                sample = bool(item.get("sample"))
+            if text_in is None and expected is None:
+                # {"1": "2"} 这种把输入当键的写法
+                pairs = [(k, v) for k, v in item.items() if k not in ("is_sample", "sample")]
+                if len(pairs) == 1:
+                    text_in, expected = pairs[0]
+                else:
+                    continue
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            text_in, expected = item[0], item[1]
+        else:
+            continue
+        out.append(
+            {
+                "input": "" if text_in is None else str(text_in),
+                "expected_output": "" if expected is None else str(expected),
+                "is_sample": sample if sample is not None else index < 2,
+            }
+        )
+    # 模型没标任何样例时，把前两条当样例展示，保证学生至少看到一组输入输出
+    if out and not any(case["is_sample"] for case in out):
+        for case in out[:2]:
+            case["is_sample"] = True
+    return out
 
 
 def _to_float(value: Any, default: Optional[float]) -> Optional[float]:

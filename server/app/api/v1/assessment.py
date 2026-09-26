@@ -353,7 +353,10 @@ async def student_get_questions(
 ):
     questions = await AssessmentService.get_student_questions(db, paper_id, current_user.id)
     return BaseResponse.success(
-        data=[StudentQuestionOut.model_validate(q) for q in questions],
+        data=[
+            StudentQuestionOut(**AssessmentService._student_question_payload(q))
+            for q in questions
+        ],
         message="获取成功",
     )
 

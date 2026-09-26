@@ -14,12 +14,34 @@ const typeOptions = [
   { value: 'judge', label: '判断题' },
   { value: 'fill', label: '填空题' },
   { value: 'short', label: '简答题' },
-  { value: 'essay', label: '论述题' }
+  { value: 'essay', label: '论述题' },
+  { value: 'code', label: '编程题' }
 ]
 
 const isChoice = computed(() => ['single', 'multiple', 'judge'].includes(props.item.question_type))
 const isJudge = computed(() => props.item.question_type === 'judge')
+const isCode = computed(() => props.item.question_type === 'code')
 const scoreUnset = computed(() => props.item.score === null || props.item.score === undefined)
+
+const codeLanguages = [
+  { value: 'python', label: 'Python 3' },
+  { value: 'javascript', label: 'JavaScript (Node)' },
+  { value: 'java', label: 'Java 17' }
+]
+
+const testCases = computed<any[]>(() => {
+  if (!Array.isArray(props.item.test_cases)) props.item.test_cases = []
+  return props.item.test_cases
+})
+
+function addTestCase() {
+  if (!Array.isArray(props.item.test_cases)) props.item.test_cases = []
+  props.item.test_cases.push({ input: '', expected_output: '', is_sample: true })
+}
+
+function removeTestCase(idx: number) {
+  props.item.test_cases.splice(idx, 1)
+}
 
 function addOption() {
   if (!Array.isArray(props.item.options)) props.item.options = []
@@ -41,7 +63,7 @@ function onScoreInput(e: Event) {
 </script>
 
 <template>
-  <div class="minimal-card bg-white p-5 dark:bg-zinc-900">
+  <div class="minimal-card minimal-card-static bg-white p-5 dark:bg-zinc-900">
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div class="flex flex-wrap items-center gap-3">
         <span class="flex h-7 w-7 items-center justify-center rounded-md bg-blue-50 text-sm font-semibold text-blue-700 dark:bg-blue-950/30 dark:text-blue-300">
@@ -71,13 +93,13 @@ function onScoreInput(e: Event) {
       </button>
     </div>
 
-    <div class="space-y-4">
+    <div class="space-y-5">
       <div>
         <label class="ui-field-label mb-1">题干</label>
         <textarea
           v-model="item.stem"
           class="ui-field"
-          rows="2"
+          rows="4"
           placeholder="题干内容，支持 LaTeX 公式"
         />
         <div
@@ -88,6 +110,66 @@ function onScoreInput(e: Event) {
           <RichStem :stem="item.stem" :images="item.stem_images" />
         </div>
       </div>
+
+      <template v-if="isCode">
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label class="ui-field-label mb-1">编程语言</label>
+            <select v-model="item.language" class="ui-field">
+              <option v-for="lang in codeLanguages" :key="lang.value" :value="lang.value">{{ lang.label }}</option>
+            </select>
+            <p class="ui-field-help">学生只能用它作答；判题与 AI 阅卷都按该语言执行。</p>
+          </div>
+          <div>
+            <label class="ui-field-label mb-1">起始代码（可选）</label>
+            <textarea v-model="item.starter_code" class="ui-field font-mono" rows="5" placeholder="给学生预填的代码骨架" />
+          </div>
+        </div>
+
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <label class="ui-field-label">测试用例</label>
+            <button class="ui-button-secondary" @click="addTestCase">
+              <Plus class="h-3.5 w-3.5" />
+              <span>添加用例</span>
+            </button>
+          </div>
+          <p class="ui-field-help">
+            学生只看到「样例」用例；其余用例用于判题。程序需从标准输入读取数据、把结果打到标准输出，逐行比较（忽略行尾空白）。
+          </p>
+          <div
+            v-for="(tc, ti) in testCases"
+            :key="ti"
+            class="rounded-lg border border-gray-100 p-3 dark:border-zinc-800"
+          >
+            <div class="mb-2 flex items-center justify-between">
+              <span class="text-[10px] font-semibold text-gray-500">用例 {{ ti + 1 }}</span>
+              <div class="flex items-center gap-3">
+                <label class="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <input v-model="tc.is_sample" type="checkbox" />
+                  <span>作为样例展示给学生</span>
+                </label>
+                <button class="ui-icon-button h-7 w-7" title="删除用例" @click="removeTestCase(Number(ti))">
+                  <Trash2 class="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <label class="space-y-1">
+                <span class="text-[10px] text-gray-400">输入</span>
+                <textarea v-model="tc.input" class="ui-field font-mono" rows="3" placeholder="每行一个输入，留空表示无输入" />
+              </label>
+              <label class="space-y-1">
+                <span class="text-[10px] text-gray-400">期望输出</span>
+                <textarea v-model="tc.expected_output" class="ui-field font-mono" rows="3" placeholder="期望的标准输出" />
+              </label>
+            </div>
+          </div>
+          <p v-if="!testCases.length" class="rounded-lg border border-dashed border-gray-200 px-3 py-4 text-center text-[11px] text-gray-400 dark:border-zinc-700">
+            还没有测试用例。没有用例时只能靠 AI 阅卷，无法自动判题。
+          </p>
+        </div>
+      </template>
 
       <div v-if="isChoice" class="space-y-2">
         <label class="ui-field-label">选项</label>
@@ -104,7 +186,7 @@ function onScoreInput(e: Event) {
         </button>
       </div>
 
-      <div>
+      <div v-if="!isCode">
         <label class="ui-field-label mb-1">答案</label>
         <select v-if="isJudge" v-model="item.answer" class="ui-field">
           <option value="true">正确</option>
@@ -112,10 +194,19 @@ function onScoreInput(e: Event) {
         </select>
         <input v-else v-model="item.answer" class="ui-field" placeholder="选择题填选项字母，其余填参考答案" />
       </div>
+      <div v-else>
+        <label class="ui-field-label mb-1">参考解法（可选）</label>
+        <textarea
+          v-model="item.answer"
+          class="ui-field font-mono"
+          rows="6"
+          placeholder="一份可AC的标准代码，供 AI 阅卷比对思路"
+        />
+      </div>
 
       <div>
         <label class="ui-field-label mb-1">解析（可选）</label>
-        <textarea v-model="item.analysis" class="ui-field" rows="2" placeholder="答案解析" />
+        <textarea v-model="item.analysis" class="ui-field" rows="3" placeholder="答案解析" />
       </div>
     </div>
   </div>

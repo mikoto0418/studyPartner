@@ -54,8 +54,11 @@ const generateSessionId = () => {
 
 const antiCheat = useAntiCheat({ maxFullscreenExits: 3 })
 
+// 作答中只要不在全屏就必须盖住。不能带上 fullscreenExitCount > 0 这个条件：
+// 若全屏压根没进去（被浏览器拒绝或策略禁用），退出计数恒为 0，遮罩永不出现，
+// 学生就能全程窗口化作答而界面没有任何提示。
 const showOverlay = computed(
-  () => started.value && !submitted.value && antiCheat.fullscreenExitCount.value > 0 && !antiCheat.fullscreenActive.value
+  () => started.value && !submitted.value && !antiCheat.fullscreenActive.value
 )
 
 // 窗口失焦 / 切后台时把卷面盖住：后台窗口仍在渲染，不遮挡的话
@@ -93,10 +96,23 @@ const typeLabel = (t: string) => {
     judge: '判断题',
     fill: '填空题',
     short: '简答题',
-    essay: '论述题'
+    essay: '论述题',
+    code: '编程题'
   }
   return map[t] || '题目'
 }
+
+const codeLanguageLabel = (lang?: string | null) => {
+  const map: Record<string, string> = {
+    python: 'Python 3',
+    javascript: 'JavaScript (Node)',
+    java: 'Java 17'
+  }
+  return map[lang || ''] || 'Python 3'
+}
+
+// 编程题预填起始代码：学生进来就有一份能改的骨架，不用从零敲。
+const prefillCode = (q: StudentQuestion) => q.starter_code || ''
 
 // 必须把 promise 交回给 useAntiCheat：上报失败时它会把这批事件放回队列重投
 const reportEvents = (events: BehaviorEventPayload[]) => {
@@ -322,6 +338,8 @@ const load = async () => {
       queries.forEach((q) => {
         if (q.question_type === 'multiple') {
           map[q.id] = []
+        } else if (q.question_type === 'code') {
+          map[q.id] = prefillCode(q)
         } else {
           map[q.id] = ''
         }
@@ -336,7 +354,8 @@ const load = async () => {
       const savedRes = await assessmentApi.getStudentAnswers(paperId)
       const saved: Array<{ question_id: string; answer?: any }> = savedRes.data?.answers || []
       saved.forEach((item) => {
-        if (item.question_id in answers.value) {
+        // 只回填真正写过的答案：库里把「未作答」存成空串，直接覆盖会把起始代码清掉
+        if (item.question_id in answers.value && item.answer !== null && item.answer !== undefined && item.answer !== '') {
           answers.value[item.question_id] = item.answer
         }
       })
@@ -515,6 +534,45 @@ onUnmounted(() => {
           </button>
         </div>
 
+        <div v-else-if="q.question_type === 'code'" class="mt-4 space-y-3">
+          <div class="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-zinc-400">
+            <span class="rounded bg-gray-100 px-2 py-0.5 font-semibold dark:bg-zinc-800">
+              {{ codeLanguageLabel(q.language) }}
+            </span>
+            <span>从标准输入读数据，结果打印到标准输出</span>
+          </div>
+
+          <div v-if="q.sample_cases?.length" class="space-y-1.5">
+            <p class="text-[11px] font-semibold text-gray-400">样例</p>
+            <div
+              v-for="(c, ci) in q.sample_cases"
+              :key="ci"
+              class="grid gap-2 rounded-lg border border-gray-100 px-3 py-2 text-[11px] sm:grid-cols-2 dark:border-zinc-800"
+            >
+              <div>
+                <p class="text-gray-400">输入</p>
+                <pre class="mt-0.5 whitespace-pre-wrap break-words font-mono text-gray-700 dark:text-zinc-200">{{ c.input || '（空）' }}</pre>
+              </div>
+              <div>
+                <p class="text-gray-400">期望输出</p>
+                <pre class="mt-0.5 whitespace-pre-wrap break-words font-mono text-gray-700 dark:text-zinc-200">{{ c.expected_output || '（空）' }}</pre>
+              </div>
+            </div>
+          </div>
+
+          <textarea
+            :value="answers[q.id] || ''"
+            rows="14"
+            spellcheck="false"
+            placeholder="在这里写你的代码（禁止粘贴）"
+            class="ui-field resize-y font-mono text-xs leading-relaxed"
+            data-ac-target="answer"
+            :data-ac-question="q.id"
+            data-ac-field="code"
+            @input="onTextInput(q.id, ($event.target as HTMLTextAreaElement).value)"
+          ></textarea>
+        </div>
+
         <div v-else class="mt-4">
           <textarea
             :value="answers[q.id] || ''"
@@ -558,7 +616,12 @@ onUnmounted(() => {
       </div>
       <h3 class="text-lg font-semibold text-white">已退出全屏模式</h3>
       <p class="mt-2 max-w-sm text-sm text-zinc-300">
-        在线考试要求保持全屏。已退出 {{ antiCheat.fullscreenExitCount.value }} 次，连续退出将被自动交卷。
+        <template v-if="antiCheat.fullscreenExitCount.value > 0">
+          在线考试要求保持全屏。已退出 {{ antiCheat.fullscreenExitCount.value }} 次，连续退出将被自动交卷。
+        </template>
+        <template v-else>
+          在线考试要求保持全屏，当前不在全屏状态，作答已暂停。请点击下方按钮回到全屏继续作答。
+        </template>
       </p>
       <button class="mt-6 inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500" @click="handleRestoreFullscreen">
         <Maximize2 class="h-4 w-4" />

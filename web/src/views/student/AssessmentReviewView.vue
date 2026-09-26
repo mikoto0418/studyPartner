@@ -20,7 +20,8 @@ const typeLabel = (type: string) => {
     judge: '判断题',
     fill: '填空题',
     short: '简答题',
-    essay: '论述题'
+    essay: '论述题',
+    code: '编程题'
   }
   return map[type] || '题目'
 }
@@ -30,6 +31,20 @@ const formatAnswer = (value: any) => {
   if (Array.isArray(value)) return value.length ? value.join('、') : '未作答'
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
+}
+
+// 回顾页只说「过了几个用例」，不列隐藏用例的输入输出，避免学生据此打表
+const judgeStatusLabel = (status: string) => {
+  const map: Record<string, string> = {
+    accepted: '全部通过',
+    wrong_answer: '有输出不符的用例',
+    compile_error: '编译或语法未通过',
+    runtime_error: '运行时报错',
+    time_limit: '超时',
+    no_answer: '未提交代码',
+    judge_error: '判题服务异常'
+  }
+  return map[status] || status
 }
 
 const load = async () => {
@@ -112,9 +127,41 @@ onMounted(load)
         </div>
       </div>
 
+      <div v-if="question.sample_cases?.length" class="mt-2 space-y-1.5">
+        <p class="text-[11px] font-semibold text-gray-400">样例</p>
+        <div
+          v-for="(c, ci) in question.sample_cases"
+          :key="`${question.question_id}-case-${ci}`"
+          class="grid gap-2 rounded-lg border border-gray-100 px-3 py-2 text-[11px] sm:grid-cols-2 dark:border-zinc-800"
+        >
+          <div>
+            <p class="text-gray-400">输入</p>
+            <pre class="mt-0.5 whitespace-pre-wrap break-words font-mono text-gray-700 dark:text-zinc-200">{{ c.input || '（空）' }}</pre>
+          </div>
+          <div>
+            <p class="text-gray-400">期望输出</p>
+            <pre class="mt-0.5 whitespace-pre-wrap break-words font-mono text-gray-700 dark:text-zinc-200">{{ c.expected_output || '（空）' }}</pre>
+          </div>
+        </div>
+      </div>
+
       <div class="mt-3 rounded bg-gray-50 px-3 py-2 dark:bg-zinc-900/60">
         <p class="text-[11px] font-semibold text-gray-400">我的作答</p>
-        <p class="mt-1 whitespace-pre-wrap text-sm text-gray-800 dark:text-zinc-100">{{ formatAnswer(question.student_answer) }}</p>
+        <pre
+          v-if="question.question_type === 'code'"
+          class="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-gray-800 dark:text-zinc-100"
+        >{{ formatAnswer(question.student_answer) }}</pre>
+        <p v-else class="mt-1 whitespace-pre-wrap text-sm text-gray-800 dark:text-zinc-100">{{ formatAnswer(question.student_answer) }}</p>
+      </div>
+
+      <div
+        v-if="question.judge_summary"
+        class="mt-2 rounded px-3 py-2 text-[11px]"
+        :class="question.judge_summary.status === 'accepted'
+          ? 'bg-emerald-50/70 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300'
+          : 'bg-amber-50/70 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300'"
+      >
+        测试用例通过 {{ question.judge_summary.passed }} / {{ question.judge_summary.total }}（{{ judgeStatusLabel(question.judge_summary.status) }}）
       </div>
 
       <div class="mt-2 rounded bg-emerald-50/70 px-3 py-2 dark:bg-emerald-950/20">

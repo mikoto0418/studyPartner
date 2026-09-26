@@ -5,7 +5,8 @@ import os
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 OBJECTIVE_TYPES = {"single", "multiple", "judge", "fill"}
-SUBJECTIVE_TYPES = {"short", "essay"}
+# 编程题由教师确认给分（判题全通过时自动满分），计入主观分一列
+SUBJECTIVE_TYPES = {"short", "essay", "code"}
 
 STATUS_LABELS = {
     "in_progress": "作答中",

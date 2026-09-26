@@ -147,14 +147,26 @@ const typeLabel = (t: string) => {
     judge: '判断题',
     fill: '填空题',
     short: '简答题',
-    essay: '论述题'
+    essay: '论述题',
+    code: '编程题'
   }
   return map[t] || '题目'
 }
 
 // 只有主观题由教师给分：单选/多选/判断/填空都走 _judge 自动判分，
-// 后端 grade_attempt 也只接受 short/essay，这里必须保持一致。
-const isManualType = (t: string) => t === 'short' || t === 'essay'
+// 编程题由沙箱判题（全用例通过自动满分，否则待批）。后端 grade_attempt 接受 short/essay/code，
+// 这里必须保持一致。
+const isManualType = (t: string) => t === 'short' || t === 'essay' || t === 'code'
+
+const caseStatusLabel = (status: string) => {
+  const map: Record<string, string> = {
+    wrong_answer: '输出不符',
+    runtime_error: '运行报错',
+    time_limit: '超时',
+    ok: '未通过'
+  }
+  return map[status] || '未通过'
+}
 
 const formatAnswer = (v: any) => {
   if (v == null || v === '') return '（未作答）'
@@ -808,6 +820,15 @@ onMounted(loadPapers)
             >
               待批改
             </span>
+            <span
+              v-if="a.judge_summary"
+              class="rounded px-2 py-0.5 text-[10px] font-semibold"
+              :class="a.judge_summary.status === 'accepted'
+                ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30 dark:text-emerald-400'
+                : 'bg-red-50 text-red-500 dark:bg-red-950/30 dark:text-red-400'"
+            >
+              用例 {{ a.judge_summary.passed }}/{{ a.judge_summary.total }}
+            </span>
           </div>
 
           <RichStem :stem="a.stem" class="text-sm leading-relaxed text-gray-800 dark:text-zinc-100" />
@@ -824,8 +845,17 @@ onMounted(loadPapers)
           </div>
 
           <div class="mt-3 rounded bg-gray-50 px-3 py-2 dark:bg-zinc-900/60">
-            <p class="text-[11px] font-semibold text-gray-400">学生作答</p>
-            <p class="mt-1 whitespace-pre-wrap text-sm text-gray-800 dark:text-zinc-100">
+            <p class="flex items-center gap-2 text-[11px] font-semibold text-gray-400">
+              学生作答
+              <span v-if="a.question_type === 'code'" class="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-zinc-800 dark:text-zinc-300">
+                {{ a.language || 'python' }}
+              </span>
+            </p>
+            <pre
+              v-if="a.question_type === 'code'"
+              class="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-gray-800 dark:text-zinc-100"
+            >{{ formatAnswer(a.answer) }}</pre>
+            <p v-else class="mt-1 whitespace-pre-wrap text-sm text-gray-800 dark:text-zinc-100">
               {{ formatAnswer(a.answer) }}
             </p>
           </div>
@@ -838,6 +868,37 @@ onMounted(loadPapers)
             <p class="mt-1 whitespace-pre-wrap text-sm text-emerald-800 dark:text-emerald-200">
               {{ formatAnswer(a.reference_answer) }}
             </p>
+          </div>
+
+          <div
+            v-if="a.judge_detail && (a.judge_detail.cases?.length || a.judge_detail.compile_output)"
+            class="mt-2 rounded border border-gray-200 px-3 py-2 dark:border-zinc-800"
+          >
+            <p class="text-[11px] font-semibold text-gray-500 dark:text-zinc-400">判题明细</p>
+            <pre
+              v-if="a.judge_detail.compile_output"
+              class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-red-50/70 p-2 font-mono text-[11px] text-red-700 dark:bg-red-950/20 dark:text-red-300"
+            >{{ a.judge_detail.compile_output }}</pre>
+            <div class="mt-1.5 space-y-1.5">
+              <div
+                v-for="c in a.judge_detail.cases || []"
+                :key="c.index"
+                class="rounded bg-gray-50 px-2 py-1.5 text-[11px] dark:bg-zinc-900/60"
+              >
+                <p class="font-semibold" :class="c.passed ? 'text-emerald-600' : 'text-red-500'">
+                  用例 {{ c.index + 1 }} · {{ c.passed ? '通过' : caseStatusLabel(c.status) }}
+                  <span v-if="c.is_sample" class="ml-1 text-gray-400">（样例）</span>
+                </p>
+                <p class="mt-0.5 text-gray-500 dark:text-zinc-400">
+                  输入 <code class="font-mono">{{ c.input || '（空）' }}</code>
+                  · 期望 <code class="font-mono">{{ c.expected || '（空）' }}</code>
+                  · 实际 <code class="font-mono">{{ c.actual || '（空）' }}</code>
+                </p>
+                <p v-if="c.stderr" class="mt-0.5 whitespace-pre-wrap break-words font-mono text-red-500">
+                  {{ c.stderr }}
+                </p>
+              </div>
+            </div>
           </div>
 
           <div

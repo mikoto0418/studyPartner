@@ -310,6 +310,14 @@ class AssessmentService:
         for index, q in enumerate(questions):
             question_type = q.get("question_type") or "short"
             score = AssessmentService._optional_score(q.get("score"))
+            # 编程题的附加字段只在 code 类型下保留：题目类型改成选择题后，
+            # 遗留的 language/test_cases 会让判题逻辑对一道选择题跑代码。
+            is_code = question_type == "code"
+            test_cases = (
+                question_parser_module.normalize_test_cases(q.get("test_cases"))
+                if is_code
+                else None
+            )
             db.add(
                 AssessmentQuestion(
                     paper_id=paper_id,
@@ -322,6 +330,13 @@ class AssessmentService:
                     options=question_parser_module.normalize_options(q.get("options")),
                     answer=q.get("answer"),
                     analysis=q.get("analysis"),
+                    language=(
+                        question_parser_module.normalize_code_language(q.get("language"))
+                        if is_code
+                        else None
+                    ),
+                    test_cases=test_cases or None,
+                    starter_code=(q.get("starter_code") or None) if is_code else None,
                     score=score,
                     difficulty=q.get("difficulty"),
                     tags=q.get("tags") or None,
@@ -2045,11 +2060,93 @@ class AssessmentService:
         return await AssessmentService._finalize_attempt(db, attempt)
 
     @staticmethod
+    async def _run_code_judge(
+        db: AsyncSession, attempt: AssessmentAttempt
+    ) -> Tuple[int, int]:
+        """在沙箱里跑本次作答的全部编程题，把结果写进 answer.judge_result。
+
+        返回 (判题通过的题数, 因沙箱不可用而没跑成的题数)。沙箱故障时题目保持在
+        未批改状态，让教师看到「待批」而不是被静默判成 0 分。
+        """
+        from app.services import judge_service
+
+        rows = (
+            await db.execute(
+                select(AssessmentAnswer, AssessmentQuestion)
+                .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
+                .where(
+                    AssessmentAnswer.attempt_id == attempt.id,
+                    AssessmentQuestion.paper_id == attempt.paper_id,
+                    AssessmentQuestion.question_type == "code",
+                )
+            )
+        ).all()
+        if not rows:
+            return 0, 0
+
+        passed_count = 0
+        unavailable = 0
+        for answer_row, question in rows:
+            source = AssessmentService._answer_text(answer_row.answer)
+            if not source:
+                answer_row.judge_result = {
+                    "status": "no_answer",
+                    "passed": 0,
+                    "total": len(question.test_cases or []),
+                    "cases": [],
+                    "message": "未提交代码",
+                }
+                continue
+            cases = question.test_cases or []
+            result = judge_service.judge_code(
+                question.language or "python", source, cases
+            )
+            if result.status == "judge_error":
+                # 沙箱不可用：不写判题结果，题目继续留在待批改队列
+                unavailable += 1
+                logger.error(
+                    "Judge unavailable for question %s: %s", question.id, result.message
+                )
+                continue
+            answer_row.judge_result = {
+                "status": result.status,
+                "passed": result.passed,
+                "total": result.total,
+                "message": result.message,
+                "compile_output": result.compile_output[:4000],
+                "cases": [
+                    {
+                        "index": case.index,
+                        "passed": case.passed,
+                        "status": case.status,
+                        "input": case.input_text[:500],
+                        "expected": case.expected[:500],
+                        "actual": case.actual[:500],
+                        "stderr": case.stderr[:500],
+                        "time_ms": case.time_ms,
+                        "is_sample": case.is_sample,
+                    }
+                    for case in result.cases
+                ],
+            }
+            if result.ok and question.score is not None:
+                # 全部用例通过才自动给满分；部分通过交给教师结合 AI 评语给分
+                answer_row.score = float(question.score)
+                answer_row.graded = True
+                answer_row.is_correct = True
+                passed_count += 1
+        await db.flush()
+        return passed_count, unavailable
+
+    @staticmethod
     async def _finalize_attempt(db: AsyncSession, attempt: AssessmentAttempt) -> AssessmentAttempt:
         """按已落库的答案结算一次作答：算总分并定状态。"""
         # 会话是 autoflush=False，刚 db.add() 的答案行对下面的 SELECT 不可见，
         # 必须先 flush，否则新作答不计入总分、pending 也统计不到（主观题会被锁成 0 分）。
         await db.flush()
+        # 编程题先跑沙箱：通过全用例的直接给满分并标记已批改，
+        # 其余留给教师。沙箱不可用时保持待批，绝不静默判 0。
+        await AssessmentService._run_code_judge(db, attempt)
         answered = await db.execute(
             select(AssessmentAnswer).where(
                 AssessmentAnswer.attempt_id == attempt.id,
@@ -2192,6 +2289,35 @@ class AssessmentService:
         return out
 
     @staticmethod
+    def _sample_cases(question: AssessmentQuestion) -> Optional[List[dict]]:
+        """只保留 is_sample 的用例。
+
+        隐藏用例一旦下发，学生照着期望输出打表就能拿满分，判题形同虚设。
+        """
+        cases = [
+            {"input": c.get("input") or "", "expected_output": c.get("expected_output") or ""}
+            for c in (question.test_cases or [])
+            if isinstance(c, dict) and c.get("is_sample")
+        ]
+        return cases or None
+
+    @staticmethod
+    def _student_question_payload(question: AssessmentQuestion) -> Dict[str, Any]:
+        """学生端题目。test_cases 原样带上，由 StudentQuestionOut 的校验器只放行样例。"""
+        return {
+            "id": question.id,
+            "order_index": question.order_index,
+            "question_type": question.question_type,
+            "stem": question.stem,
+            "stem_images": question.stem_images,
+            "options": question.options,
+            "score": question.score,
+            "language": question.language,
+            "starter_code": question.starter_code,
+            "sample_cases": question.test_cases,
+        }
+
+    @staticmethod
     async def get_student_review(
         db: AsyncSession, paper_id: UUID, student_id: UUID
     ) -> Dict[str, Any]:
@@ -2223,9 +2349,10 @@ class AssessmentService:
         for question in questions:
             row = by_question.get(question.id)
             graded = bool(row and row.graded)
-            manual = question.question_type in ("short", "essay")
+            manual = question.question_type in ("short", "essay", "code")
             if graded and not manual:
                 objective_score += float(row.score or 0.0)
+            judge = row.judge_result if row else None
             items.append(
                 {
                     "question_id": question.id,
@@ -2234,6 +2361,8 @@ class AssessmentService:
                     "stem": question.stem,
                     "stem_images": question.stem_images,
                     "options": AssessmentService._public_options(question.options),
+                    "language": question.language,
+                    "sample_cases": AssessmentService._sample_cases(question),
                     "max_score": question.score,
                     "student_answer": row.answer if row else None,
                     "score": float(row.score) if graded else None,
@@ -2241,6 +2370,16 @@ class AssessmentService:
                     "is_correct": row.is_correct if graded else None,
                     "reference_answer": question.answer,
                     "analysis": question.analysis,
+                    # 只回通过数，不回隐藏用例的输入输出：否则学生能照着输出打表
+                    "judge_summary": (
+                        {
+                            "status": judge.get("status"),
+                            "passed": judge.get("passed"),
+                            "total": judge.get("total"),
+                        }
+                        if isinstance(judge, dict) and judge
+                        else None
+                    ),
                 }
             )
 
@@ -2303,9 +2442,10 @@ class AssessmentService:
             if not pair:
                 continue
             answer_row, question = pair
-            # 主观题必须人工批改；客观题正常已自动判分，只有「未设分值」时才
+            # 主观题与编程题由教师给分（编程题全用例通过时已自动满分，
+            # 教师仍可覆盖那个分数）；客观题正常已自动判分，只有「未设分值」时才
             # 落到这里由教师补分（见 _upsert_answers 的 graded 判定）。
-            if question.question_type not in ("short", "essay") and answer_row.graded:
+            if question.question_type not in ("short", "essay", "code") and answer_row.graded:
                 continue
             raw = AssessmentService._to_float_safe(g.get("score"), 0.0)
             # 题目没设分值时没有「满分」可钳制，只保证非负
@@ -2383,12 +2523,65 @@ class AssessmentService:
                 "score": a.score,
                 "graded": a.graded,
                 "is_correct": a.is_correct,
+                "language": q.language,
+                # 教师能看到隐藏用例的通过情况与输入输出：批改编程题必须能看到
+                # 「挂在哪个用例上」，只有通过数等于让教师盲批。
+                "judge_summary": (
+                    {
+                        "status": (a.judge_result or {}).get("status"),
+                        "passed": (a.judge_result or {}).get("passed"),
+                        "total": (a.judge_result or {}).get("total"),
+                    }
+                    if a.judge_result
+                    else None
+                ),
+                "judge_detail": a.judge_result,
                 "ai_suggested_score": a.ai_suggested_score,
                 "ai_comment": a.ai_comment,
                 "ai_graded_at": a.ai_graded_at,
             }
             for a, q in rows
         ]
+
+    @staticmethod
+    def _judge_context(answer_row: AssessmentAnswer, question: AssessmentQuestion) -> str:
+        """编程题把判题结果拼进提示词。
+
+        模型看不到沙箱输出，不给它就会凭感觉给分，甚至给一份编译不过的代码满分。
+        """
+        if question.question_type != "code":
+            return ""
+        result = answer_row.judge_result or {}
+        if not result:
+            return "该题未运行测试用例，请只按代码逻辑与题意匹配度给分。\n\n"
+        passed = result.get("passed", 0)
+        total = result.get("total", 0)
+        status_map = {
+            "accepted": "全部用例通过",
+            "wrong_answer": "存在答案错误的用例",
+            "compile_error": "编译/语法未通过",
+            "runtime_error": "运行时报错",
+            "time_limit": "超时",
+            "judge_error": "判题服务异常，未取得结果",
+        }
+        lines = [
+            "该题是编程题，下面是沙箱判题结果（客观事实，请作为主要给分依据）：",
+            f"状态：{status_map.get(result.get('status'), result.get('status'))}；通过 {passed}/{total} 个用例。",
+        ]
+        for case in (result.get("cases") or [])[:6]:
+            verdict = "通过" if case.get("passed") else "未通过"
+            lines.append(
+                f"- 用例{case.get('index', 0) + 1}（{verdict}）"
+                f" 输入={str(case.get('input') or '')[:200]!r}"
+                f" 期望={str(case.get('expected') or '')[:200]!r}"
+                f" 实际={str(case.get('actual') or '')[:200]!r}"
+                f" 错误={str(case.get('stderr') or '')[:200]!r}"
+            )
+        compile_output = result.get("compile_output")
+        if compile_output:
+            lines.append(f"编译输出：{str(compile_output)[:600]}")
+        lines.append("")
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _parse_ai_grade_response(content: str, max_score: float) -> Tuple[float, str]:
@@ -2455,7 +2648,8 @@ class AssessmentService:
                 .where(
                     AssessmentAnswer.attempt_id == attempt_id,
                     AssessmentQuestion.paper_id == attempt.paper_id,
-                    AssessmentQuestion.question_type.in_(("short", "essay")),
+                    # 编程题一并预批：模型读代码给出可读的评语，与用例判题结果互补。
+                    AssessmentQuestion.question_type.in_(("short", "essay", "code")),
                 )
                 .order_by(AssessmentQuestion.order_index.asc())
             )
@@ -2517,6 +2711,7 @@ class AssessmentService:
                 f"题目（{question.question_type}）：\n{question.stem}\n\n"
                 f"参考答案：\n{reference or '（未提供参考答案，请按题意合理给分）'}\n\n"
                 f"学生作答：\n{student_answer}\n\n"
+                f"{AssessmentService._judge_context(answer_row, question)}"
                 f"该题满分 {max_score} 分。请只输出一个 JSON 对象，不要任何其他文字：\n"
                 '{"score": <0 到满分之间的数字>, "comment": "<给分理由，指出得分点与失分点>"}'
             )

@@ -83,6 +83,10 @@ export interface StudentReview {
     is_correct: boolean | null
     reference_answer: any
     analysis?: string | null
+    language?: string | null
+    sample_cases?: Array<{ input: string; expected_output: string }> | null
+    /** 只含通过数，不含隐藏用例内容 */
+    judge_summary?: { status: string; passed: number; total: number } | null
   }>
 }
 
@@ -196,6 +200,12 @@ export interface ClassExamAnalytics {
   }>
 }
 
+export interface CodeTestCase {
+  input: string
+  expected_output: string
+  is_sample?: boolean
+}
+
 export interface StudentQuestion {
   id: string
   order_index: number
@@ -205,6 +215,11 @@ export interface StudentQuestion {
   options?: any[] | null
   /** null = 该题尚未设置分值 */
   score?: number | null
+  /** 编程题：python / javascript / java */
+  language?: string | null
+  starter_code?: string | null
+  /** 只含样例用例，隐藏用例不会下发 */
+  sample_cases?: Array<{ input: string; expected_output: string }> | null
 }
 
 export interface StudentAttempt {
@@ -256,6 +271,28 @@ export interface AttemptAnswer {
   score: number
   graded: boolean
   is_correct?: boolean | null
+  /** 编程题判题结果：只有通过数，不含隐藏用例内容 */
+  language?: string | null
+  judge_summary?: { status: string; passed: number; total: number } | null
+  /** 教师端可见的逐用例明细（含隐藏用例） */
+  judge_detail?: {
+    status: string
+    passed: number
+    total: number
+    message?: string
+    compile_output?: string
+    cases?: Array<{
+      index: number
+      passed: boolean
+      status: string
+      input: string
+      expected: string
+      actual: string
+      stderr: string
+      time_ms?: number | null
+      is_sample?: boolean
+    }>
+  } | null
   /** AI 预批阅建议，教师确认前只是参考值 */
   ai_suggested_score?: number | null
   ai_comment?: string | null

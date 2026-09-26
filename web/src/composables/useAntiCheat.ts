@@ -360,23 +360,45 @@ export function useAntiCheat(options: { maxFullscreenExits?: number } = {}) {
   /**
    * 请求进入全屏，返回是否真的进去了。
    *
-   * 返回值必须被调用方检查：requestFullscreen 会因「用户拒绝」或「非用户手势」
-   * 而 reject，早期实现把异常吞掉后照样放行，学生只要在弹窗上点拒绝就能全程
-   * 窗口化作答 —— fullscreenchange 从未触发，退出计数始终为 0，所有基于
-   * 「退出全屏」的拦截全部失效。
+   * 两个坑必须同时堵住：
+   * 1) requestFullscreen 会因「用户拒绝」「非用户手势」而 reject。早期实现把异常
+   *    吞掉后照样放行，学生点「拒绝」就能全程窗口化作答。
+   * 2) 更隐蔽的一种：某些浏览器/内嵌 WebView 下 requestFullscreen() 会直接
+   *    resolve，但 document.fullscreenElement 仍是 null（文档未聚焦、被策略
+   *    禁用、iframe 未开 allowfullscreen 等）。只看 promise 是否 resolve 就会
+   *    误判成「已进入全屏」，于是完整作答期间都没有全屏，而退出计数恒为 0，
+   *    所有基于退出全屏的拦截全部失效。所以必须回读真实状态。
    */
   const enterFullscreen = async (): Promise<boolean> => {
-    try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen()
-      }
-      fullscreenActive.value = true
-      return true
-    } catch (err) {
+    const request =
+      document.documentElement.requestFullscreen ||
+      (document.documentElement as any).webkitRequestFullscreen ||
+      (document.documentElement as any).msRequestFullscreen
+    if (!request) {
       fullscreenActive.value = false
-      push('fullscreen_denied', {})
+      push('fullscreen_denied', { reason: 'unsupported' })
       return false
     }
+    try {
+      if (!document.fullscreenElement) {
+        await request.call(document.documentElement, { navigationUI: 'hide' })
+      }
+    } catch (err) {
+      fullscreenActive.value = false
+      push('fullscreen_denied', { reason: 'rejected' })
+      return false
+    }
+    // 等到下一帧再回读：部分浏览器在 promise resolve 后才更新 fullscreenElement
+    if (!document.fullscreenElement) {
+      await new Promise((resolve) => window.setTimeout(resolve, 120))
+    }
+    if (!document.fullscreenElement) {
+      fullscreenActive.value = false
+      push('fullscreen_denied', { reason: 'not_entered' })
+      return false
+    }
+    fullscreenActive.value = true
+    return true
   }
 
   const onFullscreenChange = () => {

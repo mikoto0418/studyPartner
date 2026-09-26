@@ -85,7 +85,8 @@ const questionTypeLabels = {
   judge: '判断题',
   fill: '填空题',
   short: '简答题',
-  essay: '论述题'
+  essay: '论述题',
+  code: '编程题'
 } as Record<string, string>
 
 const ACCEPTED_EXTS = ['.pdf', '.docx', '.doc', '.md', '.markdown', '.txt']
@@ -820,7 +821,10 @@ onUnmounted(() => {
 
 <template>
   <div class="-m-4 min-h-[calc(100vh-8rem)] bg-gray-50 p-4 dark:bg-zinc-950 md:-m-8 md:p-8">
-    <div class="mx-auto flex max-w-[1400px] flex-col gap-6">
+    <div
+      class="mx-auto flex flex-col gap-6"
+      :class="activeStep === 2 ? 'max-w-[1800px]' : 'max-w-[1400px]'"
+    >
       <!-- 页头 -->
       <section class="minimal-card bg-white p-5 dark:bg-zinc-900">
         <div class="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
@@ -1118,7 +1122,7 @@ onUnmounted(() => {
 
         <!-- 第三步：人工校对 -->
         <template v-else-if="activeStep === 2">
-          <section class="minimal-card bg-white p-5 dark:bg-zinc-900">
+          <section class="minimal-card minimal-card-static bg-white p-6 dark:bg-zinc-900">
             <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div class="flex items-center gap-3">
                 <div class="flex h-10 w-10 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-400">
@@ -1162,7 +1166,7 @@ onUnmounted(() => {
             </div>
           </section>
 
-          <div class="flex flex-col gap-3">
+          <div class="flex flex-col gap-5">
             <QuestionEditor
               v-for="(q, i) in questions"
               :key="i"
@@ -1172,7 +1176,7 @@ onUnmounted(() => {
             />
           </div>
 
-          <div v-if="!questions.length" class="minimal-card bg-white p-8 text-center dark:bg-zinc-900">
+          <div v-if="!questions.length" class="minimal-card minimal-card-static bg-white p-8 text-center dark:bg-zinc-900">
             <p class="text-sm text-gray-400">还没有题目，点击「新增题目」开始手工出题。</p>
           </div>
         </template>

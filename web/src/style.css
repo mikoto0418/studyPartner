@@ -49,6 +49,17 @@ body {
   transform: scale(0.985);
 }
 
+/* 纯内容容器：不可点击的卡片不要有 hover 变色与按下缩放。
+   校对页每题都是一张卡，点在卡片里任意位置都会整块缩放，逐题改分值时代价很高。 */
+.minimal-card-static,
+.minimal-card-static:hover,
+.minimal-card-static:active {
+  border-color: var(--border-thin);
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+  transform: none;
+  transition: none;
+}
+
 @layer components {
   .surface-panel {
     @apply rounded-lg border border-gray-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900;

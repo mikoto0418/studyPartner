@@ -19,6 +19,10 @@ class AssessmentQuestionIn(BaseModel):
     options: Optional[List[dict]] = None
     answer: Optional[Any] = None
     analysis: Optional[str] = None
+    # 编程题：语言三选一；test_cases 里 is_sample=true 的会下发学生，其余仅判题
+    language: Optional[str] = None
+    test_cases: Optional[List[dict]] = None
+    starter_code: Optional[str] = None
     # 留空表示「未设置分值」，由教师在后续编辑页手动补；不能用 0 冒充
     score: Optional[float] = None
     difficulty: Optional[float] = None
@@ -36,6 +40,9 @@ class AssessmentQuestionOut(BaseModel):
     options: Optional[List[dict]] = None
     answer: Optional[Any] = None
     analysis: Optional[str] = None
+    language: Optional[str] = None
+    test_cases: Optional[List[dict]] = None
+    starter_code: Optional[str] = None
     score: Optional[float] = None
     difficulty: Optional[float] = None
     tags: Optional[List[str]] = None
@@ -99,6 +106,10 @@ class StudentQuestionOut(BaseModel):
     options: Optional[List[dict]] = None
     # 未设置分值时为 None，学生端应显示「未设置」而不是 0 分
     score: Optional[float] = None
+    # 编程题：语言、起始代码、以及只有样例的测试用例（隐藏用例不下发）
+    language: Optional[str] = None
+    starter_code: Optional[str] = None
+    sample_cases: Optional[List[dict]] = None
 
     class Config:
         from_attributes = True
@@ -116,6 +127,19 @@ class StudentQuestionOut(BaseModel):
             else:
                 out.append(opt)
         return out
+
+    @field_validator("sample_cases", mode="before")
+    @classmethod
+    def _only_samples(cls, value):
+        """只放样例用例。隐藏用例一旦下发，学生直接照着输出打表就能满分。"""
+        if not value or not isinstance(value, list):
+            return None
+        out = [
+            {"input": c.get("input", ""), "expected_output": c.get("expected_output", "")}
+            for c in value
+            if isinstance(c, dict) and c.get("is_sample")
+        ]
+        return out or None
 
 
 class StudentPaperOut(BaseModel):
@@ -146,6 +170,10 @@ class StudentReviewQuestionOut(BaseModel):
     is_correct: Optional[bool] = None
     reference_answer: Optional[Any] = None
     analysis: Optional[str] = None
+    language: Optional[str] = None
+    sample_cases: Optional[List[dict]] = None
+    # 编程题只回通过数，不回隐藏用例内容
+    judge_summary: Optional[dict] = None
 
 
 class StudentReviewOut(BaseModel):
@@ -219,6 +247,10 @@ class AttemptAnswerOut(BaseModel):
     score: float = 0.0
     graded: bool = False
     is_correct: Optional[bool] = None
+    # 编程题：语言、判题通过数与逐用例明细（教师可见隐藏用例）
+    language: Optional[str] = None
+    judge_summary: Optional[dict] = None
+    judge_detail: Optional[dict] = None
     # AI 预批阅建议：教师确认前只是参考值，不写进 score
     ai_suggested_score: Optional[float] = None
     ai_comment: Optional[str] = None

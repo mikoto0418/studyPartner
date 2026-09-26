@@ -72,6 +72,20 @@ class Settings(BaseSettings):
     QDRANT_PORT: int = 6333
     QDRANT_COLLECTION: str = "knowledge_base"
 
+    # ========== 判题沙箱（go-judge） ==========
+    # 编程题在这里编译运行学生代码。未配置时判题接口会明确报错而不是静默判错。
+    JUDGE_BASE_URL: str = "http://127.0.0.1:5050"
+    JUDGE_AUTH_TOKEN: str = ""
+    # 单次运行上限：2 秒 CPU、256MB 内存、64 个子进程
+    JUDGE_CPU_LIMIT_NS: int = 2_000_000_000
+    JUDGE_MEMORY_LIMIT_BYTES: int = 256 * 1024 * 1024
+    JUDGE_PROC_LIMIT: int = 64
+    # 编译类语言（java/c++）需要的额外时间
+    JUDGE_COMPILE_CPU_LIMIT_NS: int = 12_000_000_000
+    JUDGE_COMPILE_MEMORY_LIMIT_BYTES: int = 512 * 1024 * 1024
+    JUDGE_OUTPUT_LIMIT_BYTES: int = 64 * 1024
+    JUDGE_TIMEOUT_SECONDS: float = 30.0
+
     # ========== SiliconFlow (LLM) ==========
     SILICONFLOW_API_KEY: str = ""
     SILICONFLOW_BASE_URL: str = "https://api.siliconflow.cn/v1"

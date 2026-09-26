@@ -34,13 +34,18 @@ class AssessmentQuestion(BaseModel):
 
     paper_id = Column(UUID(as_uuid=True), ForeignKey("assessment_papers.id", ondelete="CASCADE"), nullable=False, index=True)
     order_index = Column(Integer, default=0, nullable=False)
-    # single, multiple, judge, fill, short, essay
+    # single, multiple, judge, fill, short, essay, code
     question_type = Column(String(30), nullable=False)
     stem = Column(Text, nullable=False)
     stem_images = Column(JSONB, nullable=True)  # [{object_name, url}]
     options = Column(JSONB, nullable=True)  # 选择题选项
     answer = Column(JSONB, nullable=True)
     analysis = Column(Text, nullable=True)
+    # 编程题专用：language=python/javascript/java，test_cases=[{input, expected_output, is_sample}]，
+    # test_cases 里带 is_sample 的用例会下发给学生，其余仅用于判题
+    language = Column(String(30), nullable=True)
+    test_cases = Column(JSONB, nullable=True)
+    starter_code = Column(Text, nullable=True)
     # NULL = 原文没标分值、教师尚未填写；0 是教师明确给出的分值，两者不可混同
     score = Column(Float, nullable=True)
     difficulty = Column(Float, nullable=True)
@@ -102,6 +107,8 @@ class AssessmentAnswer(BaseModel):
     score = Column(Float, default=0.0, nullable=False)
     graded = Column(Boolean, default=False, nullable=False)
     time_spent_ms = Column(Integer, nullable=True)
+    # 编程题判题产物：{status, passed, total, cases:[...]}。仅在交卷结算时写入。
+    judge_result = Column(JSONB, nullable=True)
     # AI 预批阅产物：分数只是建议值，教师确认前不写进 score；comment 是评分理由
     ai_suggested_score = Column(Float, nullable=True)
     ai_comment = Column(Text, nullable=True)
