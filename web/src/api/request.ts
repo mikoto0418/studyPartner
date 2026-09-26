@@ -28,6 +28,9 @@ request.interceptors.request.use(
 // Response Interceptor
 request.interceptors.response.use(
   (response) => {
+    if (response.config.responseType === 'blob') {
+      return response
+    }
     const res = response.data
     
     // Check business code (0 means success as per API spec 1.1)

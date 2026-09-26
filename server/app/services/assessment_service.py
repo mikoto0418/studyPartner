@@ -727,6 +727,122 @@ class AssessmentService:
             )
         return out
 
+    @staticmethod
+    async def build_score_sheet(
+        db: AsyncSession, paper_id: UUID, teacher_id: UUID
+    ) -> Dict[str, Any]:
+        """一份试卷的成绩单。包含发布范围内还没开考的学生。"""
+        from app.services.score_sheet import summarize_saved_scores
+
+        paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
+        student_ids = await AssessmentService._roster_student_ids(db, paper)
+        users = {}
+        if student_ids:
+            user_rows = await db.execute(
+                select(User.id, User.nickname, User.username).where(User.id.in_(student_ids))
+            )
+            users = {row.id: row for row in user_rows.all()}
+
+        attempts = (
+            await db.execute(
+                select(AssessmentAttempt).where(AssessmentAttempt.paper_id == paper_id)
+            )
+        ).scalars().all()
+        by_student = {attempt.student_id: attempt for attempt in attempts}
+        # 发布范围外但已经有作答的学生也要出现，避免成绩单比监考名单少人
+        for attempt in attempts:
+            if attempt.student_id not in users:
+                student_ids.append(attempt.student_id)
+        if any(attempt.student_id not in users for attempt in attempts):
+            extra_ids = [attempt.student_id for attempt in attempts if attempt.student_id not in users]
+            extra_rows = await db.execute(
+                select(User.id, User.nickname, User.username).where(User.id.in_(extra_ids))
+            )
+            for row in extra_rows.all():
+                users[row.id] = row
+
+        attempt_ids = [attempt.id for attempt in attempts]
+        answers_by_attempt: Dict[UUID, List[Tuple[str, Optional[float], bool]]] = {
+            attempt_id: [] for attempt_id in attempt_ids
+        }
+        if attempt_ids:
+            answer_rows = await db.execute(
+                select(
+                    AssessmentAnswer.attempt_id,
+                    AssessmentQuestion.question_type,
+                    AssessmentAnswer.score,
+                    AssessmentAnswer.graded,
+                )
+                .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
+                .where(
+                    AssessmentAnswer.attempt_id.in_(attempt_ids),
+                    AssessmentQuestion.paper_id == paper_id,
+                )
+            )
+            for attempt_id, question_type, score, graded in answer_rows.all():
+                answers_by_attempt.setdefault(attempt_id, []).append(
+                    (question_type, score, bool(graded))
+                )
+
+        rows = []
+        seen = set()
+        for student_id in student_ids:
+            if student_id in seen:
+                continue
+            seen.add(student_id)
+            user = users.get(student_id)
+            attempt = by_student.get(student_id)
+            status = attempt.status if attempt else None
+            summary = summarize_saved_scores(
+                status, answers_by_attempt.get(attempt.id, []) if attempt else []
+            )
+            rows.append(
+                {
+                    "student_name": (user.nickname or user.username) if user else "未知学生",
+                    "username": user.username if user else "",
+                    **summary,
+                    "status": status,
+                }
+            )
+        rows.sort(key=lambda row: (row["student_name"] or "", row["username"] or ""))
+        return {"title": paper.title, "paper_id": str(paper.id), "rows": rows}
+
+    @staticmethod
+    async def _roster_student_ids(db: AsyncSession, paper: AssessmentPaper) -> List[UUID]:
+        target = AssessmentService._as_target_dict(paper.publish_target)
+        blacklist = set(AssessmentService._to_str_list(target.get("blacklist")))
+        ttype = str(target.get("type") or "").strip()
+        ordered: List[UUID] = []
+
+        def add(raw_ids: List[UUID]) -> None:
+            for uid in raw_ids:
+                if str(uid) in blacklist or uid in ordered:
+                    continue
+                ordered.append(uid)
+
+        if ttype == "student":
+            add(AssessmentService._to_uuid_list(target.get("ids")))
+        else:
+            class_ids = AssessmentService._to_uuid_list(target.get("ids"))
+            if class_ids:
+                member_rows = await db.execute(
+                    select(ClassMember.user_id).where(
+                        ClassMember.class_id.in_(class_ids),
+                        ClassMember.status == "active",
+                        ClassMember.deleted_at.is_(None),
+                    )
+                )
+                members = list(member_rows.scalars().all())
+                subset = set(AssessmentService._to_str_list(target.get("student_ids")))
+                whitelist = set(AssessmentService._to_str_list(target.get("whitelist")))
+                if subset:
+                    members = [
+                        uid for uid in members if str(uid) in subset or str(uid) in whitelist
+                    ]
+                add(members)
+        add(AssessmentService._to_uuid_list(target.get("whitelist")))
+        return ordered
+
     # 分数分布的分桶边界（按得分率百分比）。用得分率而非绝对分，是因为不同试卷
     # 满分不同（甚至可能为 NULL），只有比率能横向比较。
     SCORE_BUCKETS = [(0, 60, "不及格"), (60, 70, "及格"), (70, 80, "中等"), (80, 90, "良好"), (90, 101, "优秀")]

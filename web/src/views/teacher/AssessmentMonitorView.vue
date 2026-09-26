@@ -257,6 +257,31 @@ const loadAttempts = async () => {
   }
 }
 
+const exportingScore = ref(false)
+const exportScoreSheet = async () => {
+  if (!selectedPaperId.value || exportingScore.value) return
+  exportingScore.value = true
+  try {
+    const res = await assessmentApi.exportScoreSheet(selectedPaperId.value)
+    const blob = res.data as Blob
+    if (blob.type && blob.type.includes('json')) {
+      ElMessage.error('导出成绩单失败')
+      return
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const encoded = /filename\*=UTF-8''([^;]+)/.exec(res.headers?.['content-disposition'] || '')
+    link.href = url
+    link.download = encoded ? decodeURIComponent(encoded[1]) : '成绩单.pdf'
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    // 错误已由拦截器提示
+  } finally {
+    exportingScore.value = false
+  }
+}
+
 const loadQuestionMap = async (paperId: string) => {
   questionMap.value = {}
   try {
@@ -502,6 +527,13 @@ onMounted(loadPapers)
         <span>{{ selectedPaper ? selectedPaper.title : '未选择试卷' }}</span>
         <span v-if="selectedPaper" class="text-gray-300 dark:text-zinc-600">|</span>
         <span v-if="selectedPaper">共 {{ attempts.length }} 人作答</span>
+        <button
+          class="ml-auto rounded bg-gray-900 px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+          :disabled="!selectedPaperId || exportingScore"
+          @click="exportScoreSheet"
+        >
+          {{ exportingScore ? '正在导出…' : '导出成绩单 PDF' }}
+        </button>
       </div>
 
       <el-table v-if="attempts.length" :data="attempts" style="width: 100%">

@@ -393,6 +393,10 @@ export const assessmentApi = {
     return request.get(`/assessment/papers/${paperId}/attempts`)
   },
 
+  exportScoreSheet(paperId: string) {
+    return request.get(`/assessment/papers/${paperId}/score-sheet.pdf`, { responseType: 'blob' })
+  },
+
   getPaperAnalytics(paperId: string) {
     return request.get(`/assessment/papers/${paperId}/analytics`)
   },

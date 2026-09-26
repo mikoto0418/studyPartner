@@ -1,7 +1,10 @@
 from typing import List, Optional
 from uuid import UUID
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Body, Depends, Path
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_staff, require_student
@@ -186,6 +189,27 @@ async def list_paper_attempts(
     return BaseResponse.success(
         data=[AttemptMonitorOut(**a) for a in attempts],
         message="获取成功",
+    )
+
+
+@router.get(
+    "/papers/{paper_id}/score-sheet.pdf",
+    summary="导出成绩单 PDF（只含已保存分数）",
+)
+async def export_score_sheet(
+    paper_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.score_sheet import render_score_sheet_pdf, score_sheet_filename
+
+    sheet = await AssessmentService.build_score_sheet(db, paper_id, current_user.id)
+    pdf = render_score_sheet_pdf(sheet)
+    filename = quote(score_sheet_filename(sheet["title"]))
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
     )
 
 
