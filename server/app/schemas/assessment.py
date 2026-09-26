@@ -19,7 +19,7 @@ class AssessmentQuestionIn(BaseModel):
     options: Optional[List[dict]] = None
     answer: Optional[Any] = None
     analysis: Optional[str] = None
-    # 编程题：语言三选一；test_cases 里 is_sample=true 的会下发学生，其余仅判题
+    # 编程题：语言三选一；test_cases 只用于判题，不下发学生
     language: Optional[str] = None
     test_cases: Optional[List[dict]] = None
     starter_code: Optional[str] = None
@@ -108,10 +108,9 @@ class StudentQuestionOut(BaseModel):
     options: Optional[List[dict]] = None
     # 未设置分值时为 None，学生端应显示「未设置」而不是 0 分
     score: Optional[float] = None
-    # 编程题：语言、起始代码、以及只有样例的测试用例（隐藏用例不下发）
+    # 编程题：语言与起始代码。测试用例一律不下发，学生只能靠自测验证。
     language: Optional[str] = None
     starter_code: Optional[str] = None
-    sample_cases: Optional[List[dict]] = None
 
     class Config:
         from_attributes = True
@@ -129,19 +128,6 @@ class StudentQuestionOut(BaseModel):
             else:
                 out.append(opt)
         return out
-
-    @field_validator("sample_cases", mode="before")
-    @classmethod
-    def _only_samples(cls, value):
-        """只放样例用例。隐藏用例一旦下发，学生直接照着输出打表就能满分。"""
-        if not value or not isinstance(value, list):
-            return None
-        out = [
-            {"input": c.get("input", ""), "expected_output": c.get("expected_output", "")}
-            for c in value
-            if isinstance(c, dict) and c.get("is_sample")
-        ]
-        return out or None
 
 
 class StudentPaperOut(BaseModel):
@@ -200,8 +186,7 @@ class StudentReviewQuestionOut(BaseModel):
     reference_answer: Optional[Any] = None
     analysis: Optional[str] = None
     language: Optional[str] = None
-    sample_cases: Optional[List[dict]] = None
-    # 编程题只回通过数，不回隐藏用例内容
+    # 编程题只回通过数，不回用例内容
     judge_summary: Optional[dict] = None
 
 

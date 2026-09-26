@@ -65,10 +65,10 @@ export interface StudentPaper {
 
 export interface CodeRunCase {
   index: number
+  /** null = 自测没有期望输出可比，只说明跑成没跑成 */
   passed?: boolean | null
   status: string
   input: string
-  expected_output: string
   actual_output: string
   stderr: string
   time_ms?: number | null
@@ -105,8 +105,7 @@ export interface StudentReview {
     reference_answer: any
     analysis?: string | null
     language?: string | null
-    sample_cases?: Array<{ input: string; expected_output: string }> | null
-    /** 只含通过数，不含隐藏用例内容 */
+    /** 只含通过数，不含用例内容 */
     judge_summary?: { status: string; passed: number; total: number } | null
   }>
 }
@@ -224,7 +223,6 @@ export interface ClassExamAnalytics {
 export interface CodeTestCase {
   input: string
   expected_output: string
-  is_sample?: boolean
 }
 
 export interface StudentQuestion {
@@ -239,8 +237,6 @@ export interface StudentQuestion {
   /** 编程题：python / javascript / java */
   language?: string | null
   starter_code?: string | null
-  /** 只含样例用例，隐藏用例不会下发 */
-  sample_cases?: Array<{ input: string; expected_output: string }> | null
 }
 
 export interface StudentAttempt {
@@ -311,7 +307,6 @@ export interface AttemptAnswer {
       actual: string
       stderr: string
       time_ms?: number | null
-      is_sample?: boolean
     }>
   } | null
   /** AI 预批阅建议，教师确认前只是参考值 */

@@ -78,7 +78,7 @@ SYSTEM_PROMPT = """你是一名专业的教育题目结构化提取助手。请�
       "answer": "答案（选择题填正确选项字母或数字，判断题填 true/false 或 对/错，主观题填参考答案或空字符串，编程题填可AC的标准代码）",
       "analysis": "答案解析",
       "language": "编程题的语言：python|javascript|java（非编程题省略）",
-      "test_cases": [{"input": "标准输入", "expected_output": "期望输出", "is_sample": true}],
+      "test_cases": [{"input": "标准输入", "expected_output": "期望输出"}],
       "starter_code": "给学生预填的代码骨架（可选）",
       "score": 每题分值数字（原文明确标注了分值才填；原文没有就省略该字段或填 null，不要自己估一个）,
       "tags": ["可选标签"]
@@ -90,8 +90,8 @@ SYSTEM_PROMPT = """你是一名专业的教育题目结构化提取助手。请�
    code 题必须额外给出 language 与 test_cases：
    - language 只能是 python、javascript、java 之一。原文指定了其他语言（C/C++/Go/Rust）时，
      也要落到这三个里最接近的，并在 analysis 里注明原语言。
-   - test_cases 是 [{"input": "标准输入", "expected_output": "期望的标准输出", "is_sample": true/false}]，
-     至少给 2 条；其中 is_sample=true 的会展示给学生，最多 2 条是样例。
+   - test_cases 是 [{"input": "标准输入", "expected_output": "期望的标准输出"}]，至少给 2 条。
+     这些用例只用于判题，不会展示给学生，所以不要写进题干里。
      原文没给样例输入输出时，按题意自己构造能验证解题正确性的用例。
    - answer 填一份可AC的标准代码。starter_code 填给学生预填的代码骨架（没有就省略）。
 4. 数学公式一律输出为 LaTeX：行内公式用 \\(...\\)，独立公式用 \\[...\\]。
@@ -273,16 +273,18 @@ def normalize_test_cases(raw: Any) -> List[dict]:
     """收敛测试用例形状。
 
     模型可能给成 {"1": "2"}、[["1","2"]] 或 [{"input":..,"output":..}]。
-    落库前必须统一成 [{input, expected_output, is_sample}]：
-    读侧按这个形状渲染，形状不对会在教师校对页或学生答题页直接 500。
+    落库前必须统一成 [{input, expected_output}]：判题按这个形状读，
+    形状不对会在交卷结算时静默跑到空用例上。
+
+    历史数据里可能带 is_sample 字段，这里直接丢掉 —— 用例一律不下发学生，
+    留着只会让人误以为某几条是样例。
     """
     if not isinstance(raw, (list, tuple)):
         return []
     out: List[dict] = []
-    for index, item in enumerate(raw):
+    for item in raw:
         text_in: Any = None
         expected: Any = None
-        sample: Optional[bool] = None
         if isinstance(item, dict):
             text_in = item.get("input")
             if text_in is None:
@@ -292,10 +294,6 @@ def normalize_test_cases(raw: Any) -> List[dict]:
                 expected = item.get("output")
             if expected is None:
                 expected = item.get("expected")
-            if "is_sample" in item:
-                sample = bool(item.get("is_sample"))
-            elif "sample" in item:
-                sample = bool(item.get("sample"))
             if text_in is None and expected is None:
                 # {"1": "2"} 这种把输入当键的写法
                 pairs = [(k, v) for k, v in item.items() if k not in ("is_sample", "sample")]
@@ -311,13 +309,8 @@ def normalize_test_cases(raw: Any) -> List[dict]:
             {
                 "input": "" if text_in is None else str(text_in),
                 "expected_output": "" if expected is None else str(expected),
-                "is_sample": sample if sample is not None else index < 2,
             }
         )
-    # 模型没标任何样例时，把前两条当样例展示，保证学生至少看到一组输入输出
-    if out and not any(case["is_sample"] for case in out):
-        for case in out[:2]:
-            case["is_sample"] = True
     return out
 
 

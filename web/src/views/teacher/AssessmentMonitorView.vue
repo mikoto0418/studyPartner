@@ -887,7 +887,6 @@ onMounted(loadPapers)
               >
                 <p class="font-semibold" :class="c.passed ? 'text-emerald-600' : 'text-red-500'">
                   用例 {{ c.index + 1 }} · {{ c.passed ? '通过' : caseStatusLabel(c.status) }}
-                  <span v-if="c.is_sample" class="ml-1 text-gray-400">（样例）</span>
                 </p>
                 <p class="mt-0.5 text-gray-500 dark:text-zinc-400">
                   输入 <code class="font-mono">{{ c.input || '（空）' }}</code>

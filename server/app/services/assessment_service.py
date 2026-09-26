@@ -2130,7 +2130,6 @@ class AssessmentService:
                         "actual": case.actual[:500],
                         "stderr": case.stderr[:500],
                         "time_ms": case.time_ms,
-                        "is_sample": case.is_sample,
                     }
                     for case in result.cases
                 ],
@@ -2295,21 +2294,8 @@ class AssessmentService:
         return out
 
     @staticmethod
-    def _sample_cases(question: AssessmentQuestion) -> Optional[List[dict]]:
-        """只保留 is_sample 的用例。
-
-        隐藏用例一旦下发，学生照着期望输出打表就能拿满分，判题形同虚设。
-        """
-        cases = [
-            {"input": c.get("input") or "", "expected_output": c.get("expected_output") or ""}
-            for c in (question.test_cases or [])
-            if isinstance(c, dict) and c.get("is_sample")
-        ]
-        return cases or None
-
-    @staticmethod
     def _student_question_payload(question: AssessmentQuestion) -> Dict[str, Any]:
-        """学生端题目。test_cases 原样带上，由 StudentQuestionOut 的校验器只放行样例。"""
+        """学生端题目。编程题只给语言和起始代码，测试用例一律不下发。"""
         return {
             "id": question.id,
             "order_index": question.order_index,
@@ -2320,7 +2306,6 @@ class AssessmentService:
             "score": question.score,
             "language": question.language,
             "starter_code": question.starter_code,
-            "sample_cases": question.test_cases,
         }
 
     @staticmethod
@@ -2350,10 +2335,10 @@ class AssessmentService:
         code: str,
         stdin_text: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """编程题自测。只跑样例，或跑学生自己填的输入。
+        """编程题自测：给一个裸的运行环境，跑一次把输出回给学生。
 
-        每次调用都记一次 Redis 计数，超过上限直接拒绝：自测要真的编译运行，
-        不限额的话一个学生就能靠连点把沙箱占满，拖垮整场考试。
+        不给任何样例，也不比对期望输出 —— 判题用例是教师侧的信息，
+        学生能看到就等于提前拿到答案。限额只是为了别让连点占满沙箱。
         """
         from app.services import judge_service
 
@@ -2392,7 +2377,6 @@ class AssessmentService:
             judge_service.dry_run,
             question.language or "python",
             code,
-            AssessmentService._sample_cases(question),
             stdin_text,
         )
         return {
@@ -2460,7 +2444,6 @@ class AssessmentService:
                     "stem_images": question.stem_images,
                     "options": AssessmentService._public_options(question.options),
                     "language": question.language,
-                    "sample_cases": AssessmentService._sample_cases(question),
                     "max_score": question.score,
                     "student_answer": row.answer if row else None,
                     "score": float(row.score) if graded else None,
@@ -2468,7 +2451,7 @@ class AssessmentService:
                     "is_correct": row.is_correct if graded else None,
                     "reference_answer": question.answer,
                     "analysis": question.analysis,
-                    # 只回通过数，不回隐藏用例的输入输出：否则学生能照着输出打表
+                    # 只回通过数，不回用例的输入输出：学生能读到用例就等于拿到答案
                     "judge_summary": (
                         {
                             "status": judge.get("status"),
@@ -2478,7 +2461,7 @@ class AssessmentService:
                         if isinstance(judge, dict) and judge
                         else None
                     ),
-                }
+                },
             )
 
         finished = attempt.status == "submitted"

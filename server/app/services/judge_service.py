@@ -66,7 +66,6 @@ class CaseResult:
     actual: str = ""
     stderr: str = ""
     time_ms: Optional[int] = None
-    is_sample: bool = False
 
 
 @dataclass
@@ -232,21 +231,18 @@ def judge_code(
     language: str,
     source: str,
     test_cases: List[Dict[str, Any]],
-    *,
-    include_hidden: bool = True,
 ) -> JudgeResult:
-    """跑全部（或仅样例）用例，返回逐用例结果与汇总。"""
+    """跑全部用例，返回逐用例结果与汇总。
+
+    用例是教师侧的信息，只在这里被读取；任何面向学生的接口都不该带出内容。
+    """
     try:
         spec = language_spec(language)
     except ValueError as exc:
         return JudgeResult(ok=False, status="judge_error", message=str(exc))
 
     cases: List[CaseResult] = []
-    visible = [
-        (i, tc)
-        for i, tc in enumerate(test_cases)
-        if include_hidden or tc.get("is_sample")
-    ]
+    visible = list(enumerate(test_cases))
     if not visible:
         return JudgeResult(
             ok=False,
@@ -300,7 +296,6 @@ def judge_code(
                 actual=actual[:4000],
                 stderr=(raw.get("stderr") or "")[:2000],
                 time_ms=raw.get("time_ms"),
-                is_sample=bool(tc.get("is_sample")),
             )
         )
 
@@ -339,13 +334,14 @@ class DryRunResult:
 def dry_run(
     language: str,
     source: str,
-    sample_cases: List[Dict[str, Any]],
     stdin_text: Optional[str] = None,
 ) -> DryRunResult:
-    """学生自测：只跑样例用例，或跑一段学生自己填的输入。
+    """学生自测：在沙箱里跑一次，把标准输出给回去。
 
-    绝不接触隐藏用例 —— 学生反复调用这个接口去试出隐藏用例的答案，
-    判题就失去意义了。调用方传进来的 sample_cases 必须已经筛过。
+    只提供一个裸的运行环境，不比对任何期望输出，也绝不接触用例数据 ——
+    判题用例是教师侧的信息，学生能读到就等于拿到了答案。
+
+    空输入也是合法输入：很多题不需要读入，直接跑就行。
     """
     try:
         spec = language_spec(language)
@@ -363,54 +359,26 @@ def dry_run(
     if spec["binary"] and not compiled_id:
         return DryRunResult(status="compile_error", message="编译产物缺失")
 
-    custom = stdin_text is not None
-    planned = (
-        [{"input": stdin_text or "", "expected_output": None}]
-        if custom
-        else [
-            {"input": c.get("input") or "", "expected_output": c.get("expected_output") or ""}
-            for c in sample_cases
-        ]
-    )
-    if not planned:
-        return DryRunResult(status="judge_error", message="这道题没有可用来自测的样例输入")
+    try:
+        raw = run_case(language, source, stdin_text or "", compiled_id)
+    except JudgeUnavailable as exc:
+        return DryRunResult(status="judge_error", message=str(exc))
 
-    cases: List[DryRunCase] = []
-    overall = "ok"
-    for index, case in enumerate(planned):
-        try:
-            raw = run_case(language, source, case["input"], compiled_id)
-        except JudgeUnavailable as exc:
-            return DryRunResult(status="judge_error", message=str(exc))
-        state = _status_of(raw)
-        actual = raw.get("stdout") or ""
-        expected = case.get("expected_output")
-        passed: Optional[bool] = None
-        if state == "time_limit":
-            passed = False
-            overall = "time_limit" if overall == "ok" else overall
-        elif state == "runtime_error":
-            passed = False
-            overall = "runtime_error" if overall == "ok" else overall
-        elif expected is not None:
-            passed = _normalize(actual) == _normalize(expected)
-            if not passed and overall == "ok":
-                overall = "wrong_answer"
-        cases.append(
-            DryRunCase(
-                index=index,
-                passed=passed,
-                status=state,
-                input_text=case["input"],
-                expected=expected or "",
-                actual=actual[:4000],
-                stderr=(raw.get("stderr") or "")[:2000],
-                time_ms=raw.get("time_ms"),
-            )
+    state = _status_of(raw)
+    cases = [
+        DryRunCase(
+            index=0,
+            passed=None,  # 没有期望输出可比，只说跑成没跑成
+            status=state,
+            input_text=stdin_text or "",
+            expected="",
+            actual=(raw.get("stdout") or "")[:4000],
+            stderr=(raw.get("stderr") or "")[:2000],
+            time_ms=raw.get("time_ms"),
         )
-
+    ]
     return DryRunResult(
-        status=overall,
-        message="自测完成" if overall == "ok" else "自测发现问题",
+        status=state,
+        message="自测完成" if state == "ok" else "自测未通过",
         cases=cases,
     )

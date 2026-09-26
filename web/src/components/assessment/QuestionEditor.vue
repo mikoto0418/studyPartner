@@ -36,7 +36,7 @@ const testCases = computed<any[]>(() => {
 
 function addTestCase() {
   if (!Array.isArray(props.item.test_cases)) props.item.test_cases = []
-  props.item.test_cases.push({ input: '', expected_output: '', is_sample: true })
+  props.item.test_cases.push({ input: '', expected_output: '' })
 }
 
 function removeTestCase(idx: number) {
@@ -135,7 +135,7 @@ function onScoreInput(e: Event) {
             </button>
           </div>
           <p class="ui-field-help">
-            学生只看到「样例」用例；其余用例用于判题。程序需从标准输入读取数据、把结果打到标准输出，逐行比较（忽略行尾空白）。
+            用例只用于判题，不会下发给学生 —— 学生靠「自测」自己验证。程序需从标准输入读取数据、把结果打到标准输出，逐行比较（忽略行尾空白）。
           </p>
           <div
             v-for="(tc, ti) in testCases"
@@ -145,10 +145,6 @@ function onScoreInput(e: Event) {
             <div class="mb-2 flex items-center justify-between">
               <span class="text-[10px] font-semibold text-gray-500">用例 {{ ti + 1 }}</span>
               <div class="flex items-center gap-3">
-                <label class="flex items-center gap-1.5 text-[10px] text-gray-500">
-                  <input v-model="tc.is_sample" type="checkbox" />
-                  <span>作为样例展示给学生</span>
-                </label>
                 <button class="ui-icon-button h-7 w-7" title="删除用例" @click="removeTestCase(Number(ti))">
                   <Trash2 class="h-3 w-3" />
                 </button>

@@ -75,6 +75,105 @@ class JudgeShapeTests(unittest.TestCase):
         self.assertIn("SyntaxError", result.compile_output)
 
 
+    def test_partial_pass_is_not_accepted(self):
+        calls = {"n": 0}
+
+        def fake_post(payload):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return [{"status": "Accepted", "exitStatus": 0, "files": {}, "fileIds": {}}]
+            out = "6" if calls["n"] == 2 else "0"
+            return [{"status": "Accepted", "exitStatus": 0,
+                     "files": {"stdout": out}, "time": 1000000}]
+
+        original = judge_service._post
+        try:
+            judge_service._post = fake_post
+            result = judge_code(
+                "python", "print(1)",
+                [{"input": "3", "expected_output": "6"}, {"input": "10", "expected_output": "55"}],
+            )
+        finally:
+            judge_service._post = original
+        self.assertEqual(result.status, "wrong_answer")
+        self.assertEqual((result.passed, result.total), (1, 2))
+
+
+class DryRunTests(unittest.TestCase):
+    """自测只给运行环境，不比对任何期望输出。"""
+
+    def _fake(self, stdout="42", status="Accepted", exit_status=0, stderr=""):
+        calls = {"n": 0}
+
+        def fake_post(payload):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return [{"status": "Accepted", "exitStatus": 0, "files": {}, "fileIds": {}}]
+            return [{"status": status, "exitStatus": exit_status,
+                     "files": {"stdout": stdout, "stderr": stderr}, "time": 1000000}]
+
+        return fake_post
+
+    def test_returns_stdout_without_comparing(self):
+        original = judge_service._post
+        try:
+            judge_service._post = self._fake(stdout="hello")
+            result = judge_service.dry_run("python", "print('hello')")
+        finally:
+            judge_service._post = original
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.cases[0].actual, "hello")
+        # 没有期望输出可比，passed 必须是 None 而不是 False
+        self.assertIsNone(result.cases[0].passed)
+
+    def test_empty_stdin_is_a_valid_run(self):
+        original = judge_service._post
+        try:
+            judge_service._post = self._fake(stdout="5")
+            result = judge_service.dry_run("python", "print(5)")
+        finally:
+            judge_service._post = original
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.cases[0].input_text, "")
+
+    def test_compile_error_surfaces_output(self):
+        original = judge_service._post
+        try:
+            judge_service._post = lambda payload: [
+                {"status": "Nonzero Exit Status", "exitStatus": 1,
+                 "files": {"stderr": "SyntaxError: bad"}}
+            ]
+            result = judge_service.dry_run("python", "def broken(:")
+        finally:
+            judge_service._post = original
+        self.assertEqual(result.status, "compile_error")
+        self.assertIn("SyntaxError", result.compile_output)
+
+    def test_runtime_error_is_reported(self):
+        original = judge_service._post
+        try:
+            judge_service._post = self._fake(
+                status="Nonzero Exit Status", exit_status=1, stderr="boom"
+            )
+            result = judge_service.dry_run("python", "raise SystemExit(1)")
+        finally:
+            judge_service._post = original
+        self.assertEqual(result.status, "runtime_error")
+        self.assertIn("boom", result.cases[0].stderr)
+
+    def test_sandbox_down_is_judge_error(self):
+        def boom(payload):
+            raise judge_service.JudgeUnavailable("down")
+
+        original = judge_service._post
+        try:
+            judge_service._post = boom
+            result = judge_service.dry_run("python", "print(1)")
+        finally:
+            judge_service._post = original
+        self.assertEqual(result.status, "judge_error")
+
+
 class NormalizeTests(unittest.TestCase):
     def test_strips_line_trailing_spaces_and_blank_lines(self):
         self.assertEqual(judge_service._normalize("a  \nb\n\n\n"), "a\nb")

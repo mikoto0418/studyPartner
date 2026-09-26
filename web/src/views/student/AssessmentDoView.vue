@@ -13,8 +13,7 @@ import {
   LayoutGrid,
   Play,
   FileText,
-  CircleCheck,
-  CircleX
+  CircleCheck
 } from 'lucide-vue-next'
 import {
   assessmentApi,
@@ -338,12 +337,11 @@ const currentRunResult = computed<CodeRunResult | null>(
 
 const runStatusLabel = (status: string) => {
   const map: Record<string, string> = {
-    ok: '自测通过',
-    wrong_answer: '输出与期望不符',
+    ok: '运行完成',
     compile_error: '编译或语法未通过',
     runtime_error: '运行时报错',
     time_limit: '超时',
-    judge_error: '判题服务异常'
+    judge_error: '判题服务不可用'
   }
   return map[status] || status
 }
@@ -365,7 +363,7 @@ const runCode = async () => {
     })
     runResults.value = { ...runResults.value, [q.id]: res.data }
     if (res.data?.status === 'ok') {
-      ElMessage.success(stdin && stdin.length ? '自测运行完成' : '样例全部通过')
+      ElMessage.success('自测运行完成，请看下方输出')
     } else if (res.data?.status === 'judge_error') {
       ElMessage.error(res.data?.message || '判题服务不可用')
     } else {
@@ -665,7 +663,7 @@ onUnmounted(() => {
         </li>
         <li class="flex items-start gap-2 rounded-lg bg-gray-50 px-3 py-2 dark:bg-zinc-900/60">
           <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-500" />
-          <span>编程题可以随时点「运行自测」，用样例或自定义输入验证，不计入成绩</span>
+          <span>编程题可以随时点「运行自测」，自己填输入验证，不计入成绩</span>
         </li>
         <li class="flex items-start gap-2 rounded-lg bg-gray-50 px-3 py-2 dark:bg-zinc-900/60">
           <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-500" />
@@ -830,22 +828,8 @@ onUnmounted(() => {
               <span>从标准输入读数据，结果打印到标准输出</span>
             </div>
 
-            <div v-if="currentQuestion.sample_cases?.length" class="space-y-2">
-              <p class="text-[11px] font-semibold text-gray-400">样例</p>
-              <div
-                v-for="(c, ci) in currentQuestion.sample_cases"
-                :key="ci"
-                class="grid gap-3 rounded-lg border border-gray-100 px-4 py-3 text-xs sm:grid-cols-2 dark:border-zinc-800"
-              >
-                <div>
-                  <p class="text-gray-400">输入</p>
-                  <pre class="mt-1 whitespace-pre-wrap break-words font-mono text-gray-700 dark:text-zinc-200">{{ c.input || '（空）' }}</pre>
-                </div>
-                <div>
-                  <p class="text-gray-400">期望输出</p>
-                  <pre class="mt-1 whitespace-pre-wrap break-words font-mono text-gray-700 dark:text-zinc-200">{{ c.expected_output || '（空）' }}</pre>
-                </div>
-              </div>
+            <div v-if="currentQuestion.starter_code" class="rounded-lg border border-gray-100 px-4 py-3 text-xs dark:border-zinc-800">
+              <p class="text-gray-400">起始代码已预填，按题意补完即可</p>
             </div>
 
             <textarea
@@ -864,8 +848,8 @@ onUnmounted(() => {
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p class="text-xs font-semibold text-gray-800 dark:text-zinc-100">自测</p>
-                  <p class="mt-0.5 text-[11px] text-gray-400">
-                    自测只跑样例，不会影响成绩。留空输入则逐个跑样例，填了就按你的输入跑一次。
+                  <p class="mt-0.5 text-[11px] leading-relaxed text-gray-400">
+                    只提供运行环境，不提供测试数据。填一段输入跑一次，看输出对不对。自测不影响成绩。
                   </p>
                 </div>
                 <button
@@ -879,12 +863,12 @@ onUnmounted(() => {
               </div>
 
               <label class="mt-3 block space-y-1">
-                <span class="text-[11px] text-gray-400">自定义输入（可选）</span>
+                <span class="text-[11px] text-gray-400">标准输入（可选，留空表示程序不读入数据）</span>
                 <textarea
                   :value="runInputs[currentQuestion.id] || ''"
                   rows="3"
                   spellcheck="false"
-                  placeholder="留空表示按上面的样例逐个运行"
+                  placeholder="按题目格式填，例如：3"
                   class="ui-field font-mono text-xs"
                   @input="runInputs = { ...runInputs, [currentQuestion!.id]: ($event.target as HTMLTextAreaElement).value }"
                 ></textarea>
@@ -909,25 +893,21 @@ onUnmounted(() => {
                   :key="c.index"
                   class="rounded bg-gray-50 px-3 py-2 text-[11px] dark:bg-zinc-900/60"
                 >
-                  <p
-                    class="flex items-center gap-1.5 font-semibold"
-                    :class="c.passed === false ? 'text-red-500' : c.passed === true ? 'text-emerald-600' : 'text-gray-500'"
-                  >
-                    <CircleCheck v-if="c.passed === true" class="h-3 w-3" />
-                    <CircleX v-else-if="c.passed === false" class="h-3 w-3" />
-                    用例 {{ c.index + 1 }}
-                    <span v-if="c.passed === null" class="font-normal text-gray-400">（自定义输入，不比对期望输出）</span>
+                  <p class="font-semibold" :class="c.status === 'ok' ? 'text-emerald-600' : 'text-red-500'">
+                    {{ c.status === 'ok' ? '运行完成' : runStatusLabel(c.status) }}
+                    <span v-if="c.time_ms != null" class="ml-1 font-normal text-gray-400">{{ c.time_ms }} ms</span>
                   </p>
-                  <p class="mt-1 text-gray-500 dark:text-zinc-400">
-                    输入 <code class="font-mono">{{ c.input || '（空）' }}</code>
-                    <template v-if="c.expected_output">
-                      · 期望 <code class="font-mono">{{ c.expected_output }}</code>
-                    </template>
+                  <p v-if="c.input" class="mt-1 text-gray-500 dark:text-zinc-400">
+                    标准输入 <code class="font-mono">{{ c.input }}</code>
                   </p>
-                  <p class="mt-1 text-gray-700 dark:text-zinc-200">
-                    实际输出 <code class="font-mono">{{ c.actual_output || '（无输出）' }}</code>
-                  </p>
-                  <p v-if="c.stderr" class="mt-1 whitespace-pre-wrap break-words font-mono text-red-500">{{ c.stderr }}</p>
+                  <div class="mt-1">
+                    <p class="text-gray-400">标准输出</p>
+                    <pre class="mt-0.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-white p-2 font-mono text-gray-800 dark:bg-zinc-950 dark:text-zinc-100">{{ c.actual_output || '（无输出）' }}</pre>
+                  </div>
+                  <div v-if="c.stderr" class="mt-1">
+                    <p class="text-gray-400">标准错误</p>
+                    <pre class="mt-0.5 whitespace-pre-wrap break-words font-mono text-red-500">{{ c.stderr }}</pre>
+                  </div>
                 </div>
               </div>
             </div>

@@ -41,8 +41,8 @@ class AssessmentQuestion(BaseModel):
     options = Column(JSONB, nullable=True)  # 选择题选项
     answer = Column(JSONB, nullable=True)
     analysis = Column(Text, nullable=True)
-    # 编程题专用：language=python/javascript/java，test_cases=[{input, expected_output, is_sample}]，
-    # test_cases 里带 is_sample 的用例会下发给学生，其余仅用于判题
+    # 编程题专用：language=python/javascript/java，
+    # test_cases=[{input, expected_output}] 只用于判题，绝不下发学生
     language = Column(String(30), nullable=True)
     test_cases = Column(JSONB, nullable=True)
     starter_code = Column(Text, nullable=True)
