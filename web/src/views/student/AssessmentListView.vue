@@ -47,6 +47,37 @@ const formatDate = (iso?: string | null) => {
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`
 }
 
+// 错题本是学生自己的：交卷后把「判过且没拿满」的题导成 zip（docx / json / html / assets）。
+// 后端按当前登录学生取数据，前端不传学号。
+const exportingNotebookFor = ref('')
+
+const exportMyNotebook = async (paper: StudentPaper) => {
+  if (exportingNotebookFor.value) return
+  exportingNotebookFor.value = paper.id
+  try {
+    const res = await assessmentApi.exportMyNotebook(paper.id)
+    const blob = res.data as Blob
+    if (blob.type && blob.type.includes('json')) {
+      ElMessage.error('导出错题本失败')
+      return
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const encoded = /filename\*=UTF-8''([^;]+)/.exec(res.headers?.['content-disposition'] || '')
+    link.href = url
+    link.download = encoded ? decodeURIComponent(encoded[1]) : '错题本.zip'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => URL.revokeObjectURL(url), 4000)
+    ElMessage.success('错题本已导出')
+  } catch {
+    ElMessage.error('导出错题本失败')
+  } finally {
+    exportingNotebookFor.value = ''
+  }
+}
+
 const startPaper = (paper: StudentPaper) => {
   if (paper.attempt_status === 'submitted' || paper.attempt_status === 'pending_review') {
     router.push(`/student/assessment/${paper.id}/review`)
@@ -122,6 +153,14 @@ onMounted(loadPapers)
         </div>
 
         <div class="mt-4 flex items-center justify-end text-xs font-semibold text-blue-600 dark:text-blue-400">
+          <button
+            v-if="paper.attempt_status === 'submitted' || paper.attempt_status === 'pending_review'"
+            class="mr-auto text-[11px] font-medium text-gray-500 transition hover:text-blue-600 disabled:opacity-50 dark:text-zinc-400"
+            :disabled="exportingNotebookFor === paper.id"
+            @click.stop="exportMyNotebook(paper)"
+          >
+            {{ exportingNotebookFor === paper.id ? '导出中…' : '导出错题本' }}
+          </button>
           <span>{{ paper.attempt_status === 'submitted' || paper.attempt_status === 'pending_review' ? '查看成绩' : '进入' }}</span>
           <ChevronRight class="h-4 w-4 transition group-hover:translate-x-0.5" />
         </div>

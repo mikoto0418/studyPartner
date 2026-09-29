@@ -4,14 +4,15 @@
 """
 import asyncio
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 
-BASE = "http://127.0.0.1:8001/api/v1"
-CLASS_ID = "2bd0817c-6345-40ce-8322-8e76afb56cbc"
+BASE = os.environ.get("E2E_BASE", "http://127.0.0.1:8001/api/v1")
+CLASS_ID = os.environ.get("E2E_CLASS_ID", "2bd0817c-6345-40ce-8322-8e76afb56cbc")
 
 results = []
 

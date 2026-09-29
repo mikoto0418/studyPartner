@@ -64,15 +64,18 @@ const testingConnection = computed(() => testingTarget.value !== null)
 
 const taskRows = computed(() =>
   taskTypes.map((task) => {
+    // 只认数据库里该任务自己的通道行。以前用全局对话通道兜底，会把没有专属配置的
+    // 任务（如 assessment_grading）也显示成「已启用」，而后端对它要求专属通道
+    // （require_task_config=True），一调用就报 no task-specific provider。页面状态
+    // 必须跟后端一致，否则管理员会以为能用。
     const config = configs.value.find((item) => item.task_type === task.value)
-    const isEmbedding = task.value === 'knowledge_embedding'
     return {
       ...task,
-      model: config?.model_name || (isEmbedding ? embeddingModel.value : chatModel.value),
-      baseUrl: config?.base_url || (isEmbedding ? embeddingBaseUrl.value : chatBaseUrl.value),
-      enabled: config?.enabled ?? enabled.value,
+      model: config?.model_name ?? '',
+      baseUrl: config?.base_url ?? '',
+      enabled: config?.enabled ?? false,
       rpm: config?.rpm_limit,
-      hasKey: config?.has_api_key ?? (isEmbedding ? hasExistingEmbeddingKey.value : hasExistingChatKey.value)
+      hasKey: config?.has_api_key ?? false
     }
   })
 )
@@ -349,8 +352,8 @@ onMounted(() => {
               <tr v-for="item in taskRows" :key="item.value" class="text-gray-600 dark:text-zinc-300">
                 <td class="py-3 font-semibold">{{ item.label }} <span class="font-mono text-[9px] text-gray-400">({{ item.value }})</span></td>
                 <td class="py-3 text-[10px] text-gray-500">{{ item.channel }}</td>
-                <td class="py-3 font-mono text-[10px] text-gray-500 dark:text-zinc-400">{{ item.model }}</td>
-                <td class="py-3 font-mono text-[10px] text-gray-400 max-w-[220px] truncate">{{ item.baseUrl }}</td>
+                <td class="py-3 font-mono text-[10px] text-gray-500 dark:text-zinc-400">{{ item.model || '—' }}</td>
+                <td class="py-3 font-mono text-[10px] text-gray-400 max-w-[220px] truncate">{{ item.baseUrl || '—' }}</td>
                 <td class="py-3">
                   <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold" :class="item.enabled && item.hasKey ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-400' : 'bg-gray-100 text-gray-500 dark:bg-zinc-800 dark:text-zinc-400'">
                     {{ item.enabled && item.hasKey ? '已启用' : '未配置' }}

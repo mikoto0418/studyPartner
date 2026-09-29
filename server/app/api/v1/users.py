@@ -3,7 +3,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 from app.core.database import get_db
 from app.schemas.common import BaseResponse, PageData
-from app.schemas.user import UserOut, UserCreate, UserUpdate, StudentProfileOut, StudentProfileUpdate
+from app.schemas.user import (
+    UserOut,
+    UserCreate,
+    UserUpdate,
+    StudentProfileOut,
+    StudentProfileUpdate,
+    UserBulkCreateReq,
+    UserBulkCreateOut,
+)
 from app.services.user_service import UserService
 from app.api.deps import get_current_user, require_admin, require_staff
 from app.models.user import User
@@ -58,6 +66,28 @@ async def create_user(
 ):
     user = await UserService.create_user(db, user_in)
     return BaseResponse.success(data=UserOut.model_validate(user), message="创建成功")
+
+@router.post("/bulk", response_model=BaseResponse[UserBulkCreateOut], summary="批量创建学生账号（可选并入班级）")
+async def bulk_create_users(
+    req: UserBulkCreateReq,
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db)
+):
+    # 开号是「按班分配」的一环，所以放给教师：教师只能把新建账号加进自己名下的
+    # 班级，管理员不受班级归属限制。
+    from app.services.learning_path_service import LearningPathService
+
+    created, skipped = await UserService.bulk_create_students(db, req.students)
+    if req.class_id and created:
+        owner_id = None if "admin" in current_user.role_codes else current_user.id
+        await LearningPathService.add_class_members(
+            db, req.class_id, owner_id, [UUID(item["user_id"]) for item in created]
+        )
+    return BaseResponse.success(
+        data=UserBulkCreateOut(created=created, skipped=skipped),
+        message=f"已创建 {len(created)} 个账号" + (f"，{len(skipped)} 条未创建" if skipped else ""),
+    )
+
 
 @router.put("/{user_id}", response_model=BaseResponse[UserOut], summary="更新用户")
 async def update_user(

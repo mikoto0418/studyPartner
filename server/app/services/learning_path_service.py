@@ -162,7 +162,11 @@ class LearningPathService:
         return data
 
     @staticmethod
-    async def add_class_members(db: AsyncSession, class_id: UUID, teacher_id: UUID, student_ids: List[UUID]) -> ClassGroup:
+    async def add_class_members(
+        db: AsyncSession, class_id: UUID, teacher_id: Optional[UUID], student_ids: List[UUID]
+    ) -> ClassGroup:
+        # teacher_id 传 None 表示调用方是管理员：不校验班级归属（get_class 支持 None）。
+        # 教师一律照旧校验，只能往自己名下的班级加人。
         await LearningPathService.get_class(db, class_id, teacher_id)
         unique_ids = list(dict.fromkeys(student_ids))
         await LearningPathService._validate_student_ids(db, unique_ids)

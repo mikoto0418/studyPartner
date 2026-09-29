@@ -355,6 +355,229 @@ export interface BehaviorEventOut {
   occurred_at?: string | null
 }
 
+/**
+ * 导入试卷用的「标准包」模板：paper.json 的内容示例。
+ *
+ * 包结构（zip）：
+ *   你的包.zip
+ *   ├── paper.json   ← 下面这段就是它的示例
+ *   └── assets/      ← 题目图片，文件名建议 image-1.jpg、image-2.jpg …
+ *
+ * 图片编号规则：题干里的 [[IMG:n]] 是「全卷统一编号」，不是每题从 1 开始；
+ * 题目 images 里的 index 必须和它一致（详见 IMPORT_PACKAGE_GUIDE）。
+ *
+ * 注意：走「上传 Word/PDF → AI 拆题」时平台会自动抽图挂好，老师不用手写 images。
+ */
+export const IMPORT_TEMPLATE_JSON = `{
+  "paper": {
+    "title": "示例卷名（必填）",
+    "description": "可选：考试说明、分值分布、提交方式等，可整段写在这里"
+  },
+  "questions": [
+    {
+      "order_index": 0,
+      "question_type": "code",
+      "stem": "开启编程之旅：打印输出 hello world。图示：[[IMG:1]]",
+      "images": [{ "asset": "assets/image-1.jpg", "index": 1 }],
+      "language": "c",
+      "starter_code": "",
+      "test_cases": [],
+      "answer": "",
+      "analysis": "",
+      "score": 5
+    },
+    {
+      "order_index": 1,
+      "question_type": "single",
+      "stem": "下面哪个是变量声明？图示：[[IMG:2]]",
+      "images": [{ "asset": "assets/image-2.jpg", "index": 2 }],
+      "options": [
+        { "key": "A", "text": "int a;" },
+        { "key": "B", "text": "a = 1" }
+      ],
+      "answer": "A",
+      "analysis": "只有 A 是声明。",
+      "score": 5
+    },
+    {
+      "order_index": 2,
+      "question_type": "code",
+      "stem": "进阶：给出下图（图 1-图 5）中各段代码的时间复杂度。图 1：[[IMG:3]]；图 2：[[IMG:4]]；图 3：[[IMG:5]]；图 4：[[IMG:6]]；图 5：[[IMG:7]]",
+      "images": [
+        { "asset": "assets/image-3.jpg", "index": 3 },
+        { "asset": "assets/image-4.jpg", "index": 4 },
+        { "asset": "assets/image-5.jpg", "index": 5 },
+        { "asset": "assets/image-6.jpg", "index": 6 },
+        { "asset": "assets/image-7.jpg", "index": 7 }
+      ],
+      "language": "c",
+      "starter_code": "",
+      "test_cases": [],
+      "answer": "",
+      "analysis": "",
+      "score": 10
+    }
+  ]
+}`
+
+/** 「导入包」说明文案。同时写进 zip 的 使用说明.txt，并在问号抽屉里展示。 */
+export const IMPORT_PACKAGE_GUIDE = `【导入包说明】
+
+一、包长什么样（zip）
+  你的包.zip
+  ├── paper.json        ← 题目内容（本模板就是它的示例）
+  └── assets/           ← 题目图片，文件名建议 image-1.jpg、image-2.jpg …
+       ├── image-1.jpg
+       └── image-2.jpg
+
+二、图片怎么对应到题干
+  1. 题干里要插图的位置写占位符 [[IMG:n]]。n 是「全卷统一编号」，不是每题从 1 开始：
+     第 1 题用 image-1.jpg，第 3 题接着用 image-3.jpg。
+  2. 在题目的 images 里写 { "asset": "assets/image-N.jpg", "index": N }，
+     其中 index 必须和 [[IMG:n]] 的 n 一致。
+  3. 一道题要多张图，就在 images 里按顺序写多条（见模板第 3 题，一题 5 张图）。
+
+三、两种导入方式（发题工作台 →「导入 JSON/压缩包」）
+  · 纯 JSON：图片改写成外链，images 写成 { "url": "https://…", "index": n }。
+  · zip 包：图片放 assets/，JSON 里用相对路径 assets/…（推荐，不依赖外网）。
+
+四、老师不用自己抠图
+  走「上传 Word/PDF → AI 拆题」时，平台会自动把文档里的图抽出来挂到对应题目，
+  不需要手写 images。本模板只在「由程序/脚本生成标准包」时才需要照填。
+
+五、其它字段
+  · question_type：single / multiple / judge / fill / short / essay / code
+  · code 题可给 language、starter_code、test_cases（[{ "input": "3", "expected_output": "6" }]）
+  · score 留空表示「分值待定」，导入后整卷满分显示为未知，不会记 0 分`
+
+/** 下载导入 JSON 模板文件（浏览器端直接生成，不需要后端） */
+export function downloadImportTemplate(filename = 'paper-template.json') {
+  const blob = new Blob([IMPORT_TEMPLATE_JSON], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  setTimeout(() => URL.revokeObjectURL(url), 4000)
+}
+
+let crcTableCache: Uint32Array | null = null
+function crcTable(): Uint32Array {
+  if (crcTableCache) return crcTableCache
+  const table = new Uint32Array(256)
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    table[n] = c >>> 0
+  }
+  crcTableCache = table
+  return table
+}
+
+function crc32(bytes: Uint8Array): number {
+  const table = crcTable()
+  let crc = 0xffffffff
+  for (let i = 0; i < bytes.length; i++) {
+    crc = (crc >>> 8) ^ table[(crc ^ bytes[i]) & 0xff]
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+/**
+ * 把若干文本文件打成一个 zip（STORED 不压缩）。
+ * 这里手写而不是引依赖：骨架只有几个文本文件，压缩与否无所谓，能少一个依赖就少一个。
+ */
+function buildStoredZip(files: { name: string; content: string }[]): Blob {
+  const encoder = new TextEncoder()
+  const localParts: Uint8Array[] = []
+  const centralParts: Uint8Array[] = []
+  let offset = 0
+  for (const file of files) {
+    const nameBytes = encoder.encode(file.name)
+    const data = encoder.encode(file.content)
+    const crc = crc32(data)
+
+    const local = new Uint8Array(30 + nameBytes.length)
+    const lv = new DataView(local.buffer)
+    lv.setUint32(0, 0x04034b50, true)
+    lv.setUint16(4, 20, true)
+    lv.setUint16(6, 0x0800, true) // 文件名按 UTF-8
+    lv.setUint16(8, 0, true) // 不压缩
+    lv.setUint16(10, 0, true)
+    lv.setUint16(12, 0x21, true) // 1980-01-01
+    lv.setUint32(14, crc, true)
+    lv.setUint32(18, data.length, true)
+    lv.setUint32(22, data.length, true)
+    lv.setUint16(26, nameBytes.length, true)
+    lv.setUint16(28, 0, true)
+    local.set(nameBytes, 30)
+    localParts.push(local, data)
+
+    const central = new Uint8Array(46 + nameBytes.length)
+    const cv = new DataView(central.buffer)
+    cv.setUint32(0, 0x02014b50, true)
+    cv.setUint16(4, 20, true)
+    cv.setUint16(6, 20, true)
+    cv.setUint16(8, 0x0800, true)
+    cv.setUint16(10, 0, true)
+    cv.setUint16(12, 0, true)
+    cv.setUint16(14, 0x21, true)
+    cv.setUint32(16, crc, true)
+    cv.setUint32(20, data.length, true)
+    cv.setUint32(24, data.length, true)
+    cv.setUint16(28, nameBytes.length, true)
+    cv.setUint16(30, 0, true)
+    cv.setUint16(32, 0, true)
+    cv.setUint16(34, 0, true)
+    cv.setUint16(36, 0, true)
+    cv.setUint32(38, 0, true)
+    cv.setUint32(42, offset, true)
+    central.set(nameBytes, 46)
+    centralParts.push(central)
+
+    offset += local.length + data.length
+  }
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0)
+  const end = new Uint8Array(22)
+  const ev = new DataView(end.buffer)
+  ev.setUint32(0, 0x06054b50, true)
+  ev.setUint16(4, 0, true)
+  ev.setUint16(6, 0, true)
+  ev.setUint16(8, files.length, true)
+  ev.setUint16(10, files.length, true)
+  ev.setUint32(12, centralSize, true)
+  ev.setUint32(16, offset, true)
+  ev.setUint16(20, 0, true)
+
+  return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' })
+}
+
+/** 下载「标准包」骨架：paper.json + assets/放图提示 + 使用说明.txt */
+export function downloadImportPackageTemplate(filename = 'paper-import-template.zip') {
+  const blob = buildStoredZip([
+    { name: 'paper.json', content: IMPORT_TEMPLATE_JSON },
+    {
+      name: 'assets/把图片放进这个文件夹.txt',
+      content:
+        '把题目图片放在 assets/ 目录下，文件名建议 image-1.jpg、image-2.jpg ……\n' +
+        '然后在 paper.json 里用 { "asset": "assets/image-N.jpg", "index": N } 引用，\n' +
+        'index 要和题干里 [[IMG:N]] 的编号一致。详见 使用说明.txt。\n'
+    },
+    { name: '使用说明.txt', content: IMPORT_PACKAGE_GUIDE }
+  ])
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  setTimeout(() => URL.revokeObjectURL(url), 4000)
+}
+
 export const assessmentApi = {
   uploadFile(file: File, source = 'assessment_upload') {
     const formData = new FormData()
@@ -364,6 +587,16 @@ export const assessmentApi = {
         'Content-Type': 'multipart/form-data'
       }
     })
+  },
+
+  /** 从标准 JSON / 压缩包导入试卷（不走 AI 拆题） */
+  importPaper(fileId: string, title?: string) {
+    return request.post('/assessment/papers/import', { file_id: fileId, title })
+  },
+
+  /** 把一张卷导出成「标准包」：paper.json + assets/ 的 zip（改完可再导回来） */
+  exportPaperPackage(paperId: string) {
+    return request.get(`/assessment/papers/${paperId}/package-export`, { responseType: 'blob' })
   },
 
   createPaper(data: { file_id: string; title: string; description?: string }) {
@@ -468,16 +701,33 @@ export const assessmentApi = {
     return request.get(`/assessment/papers/${paperId}/score-sheet.pdf`, { responseType: 'blob' })
   },
 
+  /** 学生导出自己的错题本；传 template 可自定义 JSON 模板（页眉/页脚/字段） */
+  exportMyNotebook(paperId: string, template?: Record<string, any>) {
+    return request.get(`/assessment/papers/${paperId}/my-notebook-export`, {
+      params: template ? { template: JSON.stringify(template) } : undefined,
+      responseType: 'blob'
+    })
+  },
+
   getPaperAnalytics(paperId: string) {
     return request.get(`/assessment/papers/${paperId}/analytics`)
   },
 
-  listAttemptBehavior(attemptId: string) {
-    return request.get(`/assessment/attempts/${attemptId}/behavior`)
+  listAttemptBehavior(
+    attemptId: string,
+    params?: { event_type?: string; question_id?: string; offset?: number; limit?: number }
+  ) {
+    return request.get(`/assessment/attempts/${attemptId}/behavior`, { params })
   },
 
   getAttemptInsights(attemptId: string) {
     return request.get(`/assessment/attempts/${attemptId}/insights`)
+  },
+
+  updateGradingPreference(paperId: string, gradingPreference: { mode: string; extra?: string } | null) {
+    return request.put(`/assessment/papers/${paperId}/grading-preference`, {
+      grading_preference: gradingPreference
+    })
   },
 
   getClassExamAnalytics(classId: string) {

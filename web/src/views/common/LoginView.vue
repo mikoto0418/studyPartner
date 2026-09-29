@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { User, Lock, Mail, Key, ShieldCheck, ArrowRight, CornerUpLeft } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
@@ -15,6 +15,12 @@ const mode = ref<'login' | 'register' | 'reset'>('login')
 // Roles: 'student' | 'teacher' | 'admin'
 const activeRole = ref<'student' | 'teacher' | 'admin'>('student')
 
+const roleLabels: Record<string, string> = {
+  student: '学生',
+  teacher: '教师',
+  admin: '管理员'
+}
+
 // Form State
 const username = ref('')
 const email = ref('')
@@ -22,6 +28,13 @@ const password = ref('')
 const confirmPassword = ref('')
 const code = ref('')
 const loading = ref(false)
+// 登录入口角色不匹配时的提示。这类拦截需要用户切入口后才能继续，用页面内提示更醒目
+const loginError = ref('')
+
+// 切换登录入口时清掉上一次的角色不匹配提示
+watch(activeRole, () => {
+  loginError.value = ''
+})
 
 // Cooldown state for verification email code
 const cooldown = ref(0)
@@ -70,6 +83,7 @@ const handleSendCode = async () => {
 }
 
 const handleLogin = async () => {
+  loginError.value = ''
   if (!username.value || !password.value) {
     ElMessage.warning('请填写账号和密码')
     return
@@ -83,18 +97,25 @@ const handleLogin = async () => {
     })
     
     const data = response.data
-    
+    const userRole = data.user.roles[0]?.code || 'student'
+
+    // 登录入口角色必须与账号真实角色一致，避免从错误入口进入
+    if (activeRole.value !== userRole) {
+      const actualLabel = roleLabels[userRole] || userRole
+      loginError.value = `该账号是${actualLabel}账号，请改用「${actualLabel}」入口登录`
+      return
+    }
+
     // Store session info
     authStore.login({
       token: data.access_token,
-      role: data.user.roles[0]?.code || 'student',
+      role: userRole,
       username: data.user.username,
       displayName: data.user.display_name === '未设置姓名' ? null : data.user.display_name || data.user.nickname || null
     })
 
     ElMessage.success('登录成功')
-    
-    const userRole = data.user.roles[0]?.code || 'student'
+
     if (userRole === 'admin') {
       router.push('/admin/overview')
     } else if (userRole === 'teacher') {
@@ -288,6 +309,15 @@ const switchMode = (newMode: 'login' | 'register' | 'reset') => {
               required
             />
           </div>
+        </div>
+
+        <!-- 登录入口角色不匹配提示 -->
+        <div
+          v-if="loginError"
+          class="flex items-start gap-1.5 px-3 py-2 text-xs text-red-300 border rounded-lg border-red-500/40 bg-red-500/10"
+        >
+          <ShieldCheck class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+          <span>{{ loginError }}</span>
         </div>
 
         <!-- Action Button -->

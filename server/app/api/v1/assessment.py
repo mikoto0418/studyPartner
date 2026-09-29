@@ -1,9 +1,10 @@
+import json
 from typing import List, Optional
 from uuid import UUID
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Body, Depends, Path
+from fastapi import APIRouter, Body, Depends, Path, Query
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,10 +15,12 @@ from app.schemas.assessment import (
     AssessmentPaperCreateReq,
     AssessmentPaperOut,
     AssessmentPublishReq,
+    AssessmentImportReq,
     AssessmentQuestionOut,
     AttemptMonitorOut,
     BehaviorBatchReq,
     BehaviorEventOut,
+    GradingPreferenceUpdateReq,
     ParseStatusOut,
     QuestionsSaveReq,
     StudentAnswersReq,
@@ -154,6 +157,26 @@ async def save_questions(
 
 
 @router.post(
+    "/papers/import",
+    response_model=BaseResponse[AssessmentPaperOut],
+    summary="从标准 JSON / 压缩包导入试卷（不走 AI 拆题）",
+)
+async def import_paper_package(
+    req: AssessmentImportReq = Body(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.paper_import import import_paper_from_package
+
+    paper = await import_paper_from_package(
+        db, req.file_id, current_user.id, req.title
+    )
+    return BaseResponse.success(
+        data=AssessmentPaperOut.model_validate(paper), message="导入成功"
+    )
+
+
+@router.post(
     "/papers/{paper_id}/publish",
     response_model=BaseResponse[AssessmentPaperOut],
     summary="发布试卷（立即或预约）",
@@ -176,6 +199,25 @@ async def publish_paper(
         req.require_fullscreen,
     )
     return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="发布成功")
+
+
+@router.put(
+    "/papers/{paper_id}/grading-preference",
+    response_model=BaseResponse[AssessmentPaperOut],
+    summary="调整主观题批阅尺度（发布后同样可改）",
+)
+async def update_grading_preference(
+    paper_id: UUID = Path(...),
+    req: GradingPreferenceUpdateReq = Body(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    paper = await AssessmentService.update_grading_preference(
+        db, paper_id, current_user.id, req.grading_preference
+    )
+    return BaseResponse.success(
+        data=AssessmentPaperOut.model_validate(paper), message="批阅尺度已更新"
+    )
 
 
 @router.get(
@@ -217,16 +259,116 @@ async def export_score_sheet(
 
 
 @router.get(
+    "/papers/{paper_id}/students/{student_id}/notebook-export",
+    summary="导出单个学生的错题本（zip：docx / json / html / assets）",
+)
+async def export_student_notebook(
+    paper_id: UUID = Path(...),
+    student_id: UUID = Path(...),
+    template: Optional[str] = Query(
+        None, description="可选，URL 编码的 JSON 模板；不传用内置默认模板"
+    ),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.notebook_export import build_notebook_zip
+
+    parsed_template = None
+    if template:
+        try:
+            parsed_template = json.loads(template)
+        except (ValueError, TypeError):
+            # 模板坏掉就退回默认模板，不该让导出整个失败
+            parsed_template = None
+
+    notebook = await AssessmentService.build_student_notebook(
+        db, paper_id, student_id, current_user.id
+    )
+    filename, payload = build_notebook_zip(notebook, parsed_template)
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.get(
+    "/papers/{paper_id}/my-notebook-export",
+    summary="学生导出自己的错题本（zip：docx / json / html / assets）",
+)
+async def export_my_notebook(
+    paper_id: UUID = Path(...),
+    template: Optional[str] = Query(
+        None, description="可选，URL 编码的 JSON 模板；不传用内置默认模板"
+    ),
+    current_user: User = Depends(require_student),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.notebook_export import build_notebook_zip
+
+    parsed_template = None
+    if template:
+        try:
+            parsed_template = json.loads(template)
+        except (ValueError, TypeError):
+            parsed_template = None
+
+    # 学号固定取当前登录用户，不收前端传的 student_id —— 否则学生可导出别人的错题本
+    notebook = await AssessmentService.build_student_notebook(
+        db, paper_id, current_user.id, for_student=True
+    )
+    filename, payload = build_notebook_zip(notebook, parsed_template)
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.get(
+    "/papers/{paper_id}/package-export",
+    summary="导出题目包（zip：paper.json + assets/）",
+)
+async def export_paper_package(
+    paper_id: UUID = Path(...),
+    current_user: User = Depends(require_staff),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.paper_import import build_paper_package
+
+    filename, payload = await build_paper_package(db, paper_id, current_user.id)
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.get(
     "/attempts/{attempt_id}/behavior",
     response_model=BaseResponse[List[BehaviorEventOut]],
     summary="教师查看某次作答的行为事件明细",
 )
 async def list_attempt_behavior(
     attempt_id: UUID = Path(...),
+    event_type: Optional[str] = Query(None, description="只看某类事件，例如 answer_edit"),
+    question_id: Optional[str] = Query(None, description="只看某道题的记录"),
+    offset: int = Query(0, ge=0, description="起始位置，配合 limit 做分页"),
+    limit: Optional[int] = Query(
+        None, ge=1, le=200, description="不传返回全部（兼容旧调用）；传了则按页返回"
+    ),
     current_user: User = Depends(require_staff),
     db: AsyncSession = Depends(get_db),
 ):
-    events = await AssessmentService.list_attempt_behavior(db, attempt_id, current_user.id)
+    events = await AssessmentService.list_attempt_behavior(
+        db,
+        attempt_id,
+        current_user.id,
+        event_type=event_type,
+        question_id=question_id,
+        offset=offset,
+        limit=limit,
+    )
     return BaseResponse.success(
         data=[BehaviorEventOut(**e) for e in events],
         message="获取成功",

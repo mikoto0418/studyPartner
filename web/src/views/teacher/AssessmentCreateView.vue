@@ -22,7 +22,7 @@ import {
 } from 'lucide-vue-next'
 import QuestionEditor from '../../components/assessment/QuestionEditor.vue'
 import RichStem from '../../components/assessment/RichStem.vue'
-import { assessmentApi } from '../../api/modules/assessment'
+import { assessmentApi, downloadImportTemplate, downloadImportPackageTemplate } from '../../api/modules/assessment'
 import { learningPathApi } from '../../api/modules/learning_path'
 import { userApi } from '../../api/modules/user'
 import { useAuthStore } from '../../stores/auth'
@@ -292,7 +292,13 @@ function prettySize(bytes?: number) {
 function acceptFile(file: File) {
   const name = file.name.toLowerCase()
   if (!ACCEPTED_EXTS.some((ext) => name.endsWith(ext))) {
-    ElMessage.warning('仅支持 PDF / DOCX / Markdown / TXT 文件')
+    // 这里只收「要拆题的文档」。JSON / zip 是走「导入 JSON/压缩包」那条路，
+    // 提示里必须点明，否则很容易传错入口还看不出原因。
+    if (name.endsWith('.json') || name.endsWith('.zip')) {
+      ElMessage.warning('JSON / 压缩包请用右边的「导入 JSON/压缩包」，这里只收要拆题的文档')
+      return
+    }
+    ElMessage.warning('仅支持 PDF / DOCX / Markdown / TXT 文件（JSON / zip 请用「导入 JSON/压缩包」）')
     return
   }
   selectedFile.value = file
@@ -309,6 +315,78 @@ function onDrop(e: DragEvent) {
   dragActive.value = false
   const f = e.dataTransfer?.files?.[0]
   if (f) acceptFile(f)
+}
+
+// ---- 导入 JSON / 压缩包：直接建卷，不走 AI 拆题 ----
+// 与「上传文件 → AI 拆题」是两条并存的入口：想省拆题就把标准包直接导进来。
+const importing = ref(false)
+const importInput = ref<HTMLInputElement | null>(null)
+
+function onPickImport(e: Event) {
+  const input = e.target as HTMLInputElement
+  const f = input.files?.[0]
+  if (f) doImport(f)
+  input.value = ''
+}
+
+async function doImport(f: File) {
+  importing.value = true
+  try {
+    const uploaded = await assessmentApi.uploadFile(f, 'assessment_import')
+    const fileId = uploaded.data?.id
+    if (!fileId) {
+      ElMessage.error('文件上传失败')
+      return
+    }
+    const res = await assessmentApi.importPaper(fileId)
+    const paper = res.data
+    if (!paper) {
+      ElMessage.error('导入失败：返回为空')
+      return
+    }
+    paperId.value = paper.id
+    title.value = paper.title
+    parseError.value = ''
+    await loadQuestions()
+    activeStep.value = 2
+    ElMessage.success(`已导入「${paper.title}」，共 ${paper.question_count} 题`)
+  } catch (error: any) {
+    // 后端会把原因写在 message 里（没有 paper.json、questions 为空等），别吞掉
+    const detail = String(error?.message || '').trim()
+    ElMessage.error(detail || '导入失败，请检查文件格式')
+  } finally {
+    importing.value = false
+  }
+}
+
+// ---- 导出题目包：paper.json + assets/ 的 zip，改完可以再导回来 ----
+const exportingPackage = ref(false)
+
+async function exportPackage() {
+  if (!paperId.value || exportingPackage.value) return
+  exportingPackage.value = true
+  try {
+    const res = await assessmentApi.exportPaperPackage(paperId.value)
+    const blob = res.data as Blob
+    if (blob.type && blob.type.includes('json')) {
+      ElMessage.error('导出题目包失败')
+      return
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const encoded = /filename\*=UTF-8''([^;]+)/.exec(res.headers?.['content-disposition'] || '')
+    link.href = url
+    link.download = encoded ? decodeURIComponent(encoded[1]) : '题目包.zip'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    setTimeout(() => URL.revokeObjectURL(url), 4000)
+    ElMessage.success('题目包已导出')
+  } catch {
+    ElMessage.error('导出题目包失败')
+  } finally {
+    exportingPackage.value = false
+  }
 }
 
 async function startParse() {
@@ -557,8 +635,10 @@ function buildPublishTarget() {
     }
   }
   if (publishType.value === 'mentor') {
+    // 用独立的 mentor 类型，不能复用 student：复用会被后端当「手填学号」处理，
+    // 要求该生必须在教师所带班级里，于是从列表里选对了人也会报「检测不到学生」。
     return {
-      type: 'student',
+      type: 'mentor',
       ids: [...selectedGuidedStudentIds.value],
       whitelist: [],
       blacklist: []
@@ -786,6 +866,8 @@ async function resendPaper(paper: any) {
     if (t.student_ids) {
       selectedStudentIds.value = [...t.student_ids]
     }
+  } else if (t.type === 'mentor') {
+    selectedGuidedStudentIds.value = t.ids ? [...t.ids] : []
   } else {
     if (t.ids && t.ids.length) targetIds.value = t.ids.join(', ')
   }
@@ -1016,6 +1098,43 @@ onUnmounted(() => {
                   />
                   <span>选择文件</span>
                 </label>
+                <button
+                  class="ui-button-secondary ml-2"
+                  :disabled="importing"
+                  @click="importInput?.click()"
+                >
+                  {{ importing ? '导入中…' : '导入 JSON/压缩包' }}
+                </button>
+                <button
+                  class="ml-2 text-[11px] font-medium text-gray-500 transition hover:text-blue-600 dark:text-zinc-400"
+                  title="下载 paper-template.json，填好后再点左边的导入"
+                  @click="downloadImportTemplate()"
+                >
+                  下载 JSON 模板
+                </button>
+                <button
+                  class="ml-2 text-[11px] font-medium text-gray-500 transition hover:text-blue-600 dark:text-zinc-400"
+                  title="下载 paper.json + assets/ 的压缩包骨架，图片直接放 assets/ 里"
+                  @click="downloadImportPackageTemplate()"
+                >
+                  下载压缩包骨架
+                </button>
+                <button
+                  v-if="paperId"
+                  class="ml-2 text-[11px] font-medium text-gray-500 transition hover:text-blue-600 disabled:opacity-50 dark:text-zinc-400"
+                  title="把当前卷导出成 paper.json + assets/ 的 zip，改完可再导回来"
+                  :disabled="exportingPackage"
+                  @click="exportPackage"
+                >
+                  {{ exportingPackage ? '导出中…' : '导出题目包' }}
+                </button>
+                <input
+                  ref="importInput"
+                  type="file"
+                  class="hidden"
+                  accept=".json,.zip"
+                  @change="onPickImport"
+                />
               </div>
 
               <div
@@ -1279,11 +1398,11 @@ onUnmounted(() => {
             <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
               <div>
                 <label class="ui-field-label mb-1">预约发布时间（可选）</label>
-                <el-date-picker v-model="publishAt" type="datetime" class="w-full" placeholder="留空表示立即发布" />
+                <el-date-picker v-model="publishAt" type="datetime" class="w-full" style="width: 100%" placeholder="留空表示立即发布" />
               </div>
               <div>
                 <label class="ui-field-label mb-1">截止时间（可选）</label>
-                <el-date-picker v-model="dueAt" type="datetime" class="w-full" placeholder="交卷截止时间" />
+                <el-date-picker v-model="dueAt" type="datetime" class="w-full" style="width: 100%" placeholder="交卷截止时间" />
               </div>
               <div>
                 <label class="ui-field-label mb-1">限时（分钟，可选）</label>
@@ -1296,14 +1415,14 @@ onUnmounted(() => {
                   placeholder="不填则不限时，从进入试卷开始计时"
                   @input="timeLimitMinutes = ($event.target as HTMLInputElement).value ? Number(($event.target as HTMLInputElement).value) : null"
                 />
-                <p class="mt-1 text-[11px] text-gray-400">和截止时间都填时，先到的那个收卷。</p>
-              </div>
+                </div>
             </div>
+            <p class="text-[11px] text-gray-400">开考后限时与截止时间都填时，先到的那个收卷；只填其中一个就按那一个算。</p>
 
             <div class="rounded-lg border border-gray-100 p-4 dark:border-zinc-800">
               <p class="text-xs font-semibold text-gray-900 dark:text-zinc-50">作答环境</p>
               <p class="mt-1 text-[11px] leading-relaxed text-gray-400">
-                开启后学生进入作答页即被强制全屏，退出全屏会遮住卷面并计违规，连续退出 3 次自动交卷。
+                开启后学生进入作答页即被强制全屏，退出全屏会遮住卷面并计违规，累计退出 3 次自动交卷。
                 关闭则允许窗口化作答，复制粘贴等限制照常生效。
               </p>
               <label class="mt-3 flex items-center gap-2 text-xs text-gray-700 dark:text-zinc-200">

@@ -80,7 +80,26 @@ services:
     networks:
       - sp-network
 
-  # 5. Backend Server (FastAPI)
+  # 5. Judge Sandbox (go-judge)
+  # 编程题在这里编译运行学生代码。go-judge 依赖 Linux 容器嵌套，需要 privileged
+  # 与足够的 /dev/shm。Docker Desktop(Windows/WSL2) 下常因 cgroup 限制起不来，
+  # 正式部署请用 Linux 宿主机。
+  judge:
+    build:
+      context: ./judge
+      dockerfile: Dockerfile
+    container_name: sp-judge
+    restart: unless-stopped
+    privileged: true
+    shm_size: 256m
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "5050:5050"
+    networks:
+      - sp-network
+
+  # 6. Backend Server (FastAPI)
   backend:
     build:
       context: ./server
@@ -105,10 +124,13 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - MINIO_ENDPOINT=minio:9000
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - JUDGE_BASE_URL=${JUDGE_BASE_URL:-http://judge:5050}
+      - JUDGE_AUTH_TOKEN=${JUDGE_AUTH_TOKEN:-}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_me_generate_with_openssl_rand_hex_32}
       - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
       - SILICONFLOW_BASE_URL=${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
@@ -135,10 +157,12 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+      judge:
+        condition: service_started
     networks:
       - sp-network
 
-  # 6. Celery Worker
+  # 7. Celery Worker
   worker:
     build:
       context: ./server
@@ -161,10 +185,13 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - MINIO_ENDPOINT=minio:9000
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - JUDGE_BASE_URL=${JUDGE_BASE_URL:-http://judge:5050}
+      - JUDGE_AUTH_TOKEN=${JUDGE_AUTH_TOKEN:-}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_me_generate_with_openssl_rand_hex_32}
       - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
       - SILICONFLOW_BASE_URL=${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
@@ -191,10 +218,12 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+      judge:
+        condition: service_started
     networks:
       - sp-network
 
-  # 7. Celery Beat Scheduler
+  # 8. Celery Beat Scheduler
   beat:
     build:
       context: ./server
@@ -217,10 +246,13 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - MINIO_ENDPOINT=minio:9000
+      - MINIO_PUBLIC_ENDPOINT=${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
+      - JUDGE_BASE_URL=${JUDGE_BASE_URL:-http://judge:5050}
+      - JUDGE_AUTH_TOKEN=${JUDGE_AUTH_TOKEN:-}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_me_generate_with_openssl_rand_hex_32}
       - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY:-}
       - SILICONFLOW_BASE_URL=${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
@@ -246,6 +278,8 @@ services:
       minio:
         condition: service_started
       qdrant:
+        condition: service_started
+      judge:
         condition: service_started
     networks:
       - sp-network

@@ -714,7 +714,7 @@ onUnmounted(() => {
         </li>
         <li class="flex items-start gap-2 rounded-lg bg-gray-50 px-3 py-2 dark:bg-zinc-900/60">
           <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-500" />
-          <span>作答期间禁止复制、粘贴、右键与切换窗口{{ requireFullscreen ? '，连续退出全屏 3 次自动交卷' : '' }}</span>
+          <span>作答期间禁止复制、粘贴、右键与切换窗口{{ requireFullscreen ? '，累计退出全屏 3 次自动交卷' : '' }}</span>
         </li>
         <li v-if="timeLimitMinutes" class="flex items-start gap-2 rounded-lg bg-gray-50 px-3 py-2 dark:bg-zinc-900/60">
           <span class="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-amber-500" />
@@ -1028,7 +1028,7 @@ onUnmounted(() => {
       <h3 class="text-lg font-semibold text-white">已退出全屏模式</h3>
       <p class="mt-2 max-w-sm text-sm text-zinc-300">
         <template v-if="antiCheat.fullscreenExitCount.value > 0">
-          在线考试要求保持全屏。已退出 {{ antiCheat.fullscreenExitCount.value }} 次，连续退出将被自动交卷。
+          在线考试要求保持全屏。已退出 {{ antiCheat.fullscreenExitCount.value }} 次，累计退出将被自动交卷。
         </template>
         <template v-else>
           在线考试要求保持全屏，当前不在全屏状态，作答已暂停。请点击下方按钮回到全屏继续作答。

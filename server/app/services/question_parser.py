@@ -164,23 +164,49 @@ def _append_block(blocks: List[dict], lines: List[str], start: int, end: int) ->
         blocks.append({"line_start": start, "line_end": end - 1, "text": text})
 
 
+_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think(?:ing)?>", re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    """剥掉推理模型塞进正文的思维链。
+
+    推理模型（如 MiniMax-M1）会把  thinking… 连同推导过程一起放进
+    content，思维链里常出现花括号。若直接按「首个 { 到最后一个 }」截取，截出来
+    的是思维链里的片段，必然解析失败，整块题目丢失。
+    """
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    # 只有开标签没有闭标签：说明思维链还没结束（输出被截断），后面不会再有正式 JSON。
+    opener = _THINK_OPEN_RE.search(cleaned)
+    if opener:
+        cleaned = cleaned[: opener.start()]
+    return cleaned
+
+
 def normalize_ai_json(content: str) -> dict:
-    """容错地把 LLM 输出解析为 JSON 对象。"""
+    """容错地把 LLM 输出解析为 JSON 对象。
+
+    先剥思维链，再逐字符找「能构成合法 JSON 对象」的那个 { 起点：正文里可能先
+    出现与结果无关的花括号（思维链残留、公式等），raw_decode 能从第一个真正
+    合法的对象起解析，且不会因为对象后面还跟着解释文字而整体失败。
+    """
     if not content:
         return {}
-    text = content.strip()
+    text = _strip_reasoning(content.strip())
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fenced:
         text = fenced.group(1).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return {}
-    try:
-        data = json.loads(text[start:end + 1])
-        return data if isinstance(data, dict) else {}
-    except json.JSONDecodeError:
-        return {}
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            data, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
 
 
 _OPTION_PREFIX_RE = re.compile(r"^\s*[（(]?([A-Za-z])[）).、．:：]\s*")

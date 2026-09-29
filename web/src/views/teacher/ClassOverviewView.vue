@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { BarChart3, Clock, FileText, Plus, RefreshCw, ShieldAlert, Target, TrendingUp, Users } from 'lucide-vue-next'
+import { BarChart3, Clock, FileText, Plus, RefreshCw, ShieldAlert, Target, TrendingUp, UserPlus, Users } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import type { EChartsOption } from 'echarts'
 import { learningPathApi } from '../../api/modules/learning_path'
 import type { ClassOut } from '../../api/modules/learning_path'
-import type { UserOut } from '../../api/modules/user'
+import { userApi, type UserOut } from '../../api/modules/user'
 import { assessmentApi, type ClassExamAnalytics } from '../../api/modules/assessment'
 import BaseChart from '../../components/common/BaseChart.vue'
 import StudentPickerDialog from '../../components/common/StudentPickerDialog.vue'
@@ -217,6 +217,74 @@ const studentRateOption = computed<EChartsOption>(() => {
   }
 })
 
+// ---------- 批量建号（按班级分配）----------
+// 客户的诉求是「哪个班给他分配一个号」：所以选中班级后才允许开号，建完直接进班。
+const bulkVisible = ref(false)
+const bulkText = ref('')
+const bulkSubmitting = ref(false)
+const bulkCreated = ref<Array<{ student_id: string; name: string; username: string; password: string }>>([])
+const bulkSkipped = ref<Array<{ student_id: string; reason: string }>>([])
+
+const bulkCreatedText = computed(() =>
+  bulkCreated.value
+    .map((r) => `${r.student_id}  ${r.name}  账号 ${r.username}  密码 ${r.password}`)
+    .join('\n')
+)
+const bulkSkippedText = computed(() =>
+  bulkSkipped.value.map((r) => `${r.student_id || '(空行)'}：${r.reason}`).join('\n')
+)
+const selectedClassName = computed(
+  () => classes.value.find((c) => c.id === selectedClassId.value)?.name || '未选择'
+)
+
+const openBulkDialog = () => {
+  if (!selectedClassId.value) {
+    ElMessage.warning('请先在左侧选中要建号的班级')
+    return
+  }
+  bulkText.value = ''
+  bulkCreated.value = []
+  bulkSkipped.value = []
+  bulkVisible.value = true
+}
+
+// 每行：学号,姓名[,年级,专业]。逗号兼容中英文与制表符，方便直接从表格里粘。
+const parseBulkRows = () => {
+  const rows: Array<{ student_id: string; name: string; grade?: string; major?: string }> = []
+  bulkText.value.split(/\r?\n/).forEach((line) => {
+    const parts = line.split(/[,，\t]+/).map((s) => s.trim())
+    if (!parts[0]) return
+    rows.push({
+      student_id: parts[0],
+      name: parts[1] || parts[0],
+      grade: parts[2] || undefined,
+      major: parts[3] || undefined
+    })
+  })
+  return rows
+}
+
+const submitBulk = async () => {
+  const students = parseBulkRows()
+  if (!students.length) {
+    ElMessage.warning('请先粘贴名单，每行格式：学号,姓名[,年级,专业]')
+    return
+  }
+  bulkSubmitting.value = true
+  try {
+    const res = await userApi.bulkCreateUsers({ students, class_id: selectedClassId.value })
+    const data = res.data || {}
+    bulkCreated.value = data.created || []
+    bulkSkipped.value = data.skipped || []
+    ElMessage.success(`已创建 ${bulkCreated.value.length} 个账号`)
+    if (bulkCreated.value.length) await loadData()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
 onMounted(loadData)
 </script>
 
@@ -228,14 +296,57 @@ onMounted(loadData)
           <h3 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">班级考试看板</h3>
           <p class="mt-1 text-[10px] text-gray-400">以班级为单位查看考试概况</p>
         </div>
-        <button
-          title="创建班级"
-          class="rounded bg-gray-900 p-2 text-white dark:bg-zinc-100 dark:text-zinc-900"
-          @click="createDialogVisible = true"
-        >
-          <Plus class="h-4 w-4" />
-        </button>
+        <div class="flex items-center gap-1.5">
+          <button
+            title="批量建号"
+            class="rounded border border-gray-200 p-2 text-gray-600 dark:border-zinc-700 dark:text-zinc-300"
+            @click="openBulkDialog"
+          >
+            <UserPlus class="h-4 w-4" />
+          </button>
+          <button
+            title="创建班级"
+            class="rounded bg-gray-900 p-2 text-white dark:bg-zinc-100 dark:text-zinc-900"
+            @click="createDialogVisible = true"
+          >
+            <Plus class="h-4 w-4" />
+          </button>
+        </div>
       </div>
+
+      <el-dialog v-model="bulkVisible" title="批量建号（建完直接进班）" width="620px">
+        <p class="mb-2 text-[11px] leading-relaxed text-gray-500 dark:text-zinc-400">
+          每行一个学生，格式 <span class="font-mono">学号,姓名[,年级,专业]</span>；账号与初始密码默认都用学号。
+          当前目标班级：<span class="font-semibold">{{ selectedClassName }}</span>
+        </p>
+        <el-input
+          v-model="bulkText"
+          type="textarea"
+          :rows="8"
+          placeholder="20260001,张三,2026级,计算机&#10;20260002,李四"
+        />
+        <div
+          v-if="bulkCreated.length || bulkSkipped.length"
+          class="mt-3 max-h-56 overflow-y-auto rounded border border-gray-100 p-2 dark:border-zinc-800"
+        >
+          <p class="mb-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+            已创建 {{ bulkCreated.length }} 个账号
+          </p>
+          <pre class="whitespace-pre-wrap font-mono text-[11px] text-gray-600 dark:text-zinc-300">{{ bulkCreatedText }}</pre>
+          <template v-if="bulkSkipped.length">
+            <p class="mt-2 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+              未创建 {{ bulkSkipped.length }} 条
+            </p>
+            <pre class="whitespace-pre-wrap font-mono text-[11px] text-gray-500 dark:text-zinc-400">{{ bulkSkippedText }}</pre>
+          </template>
+        </div>
+        <template #footer>
+          <button class="ui-button-secondary" @click="bulkVisible = false">关闭</button>
+          <button class="ui-button-primary ml-2" :disabled="bulkSubmitting" @click="submitBulk">
+            {{ bulkSubmitting ? '正在创建…' : '开始创建' }}
+          </button>
+        </template>
+      </el-dialog>
 
       <div v-loading="loading" class="mt-4 flex-1 space-y-2 overflow-y-auto">
         <button

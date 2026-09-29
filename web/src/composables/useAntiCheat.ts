@@ -386,12 +386,33 @@ export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFull
   }
 
   // ---------- 全屏 ----------
-  const isFullscreen = () => !!document.fullscreenElement
+  // 状态回读必须覆盖所有前缀：请求侧支持 webkit/ms 前缀，如果回读只看无前缀的
+  // document.fullscreenElement，在只有前缀 API 生效的浏览器 / 内嵌 WebView 里就会
+  // 「请求成功但回读为 null」，学生被永久挡在「开始前请确认」页，怎么点都进不去。
+  const getFullscreenElement = (): Element | null =>
+    document.fullscreenElement ||
+    (document as any).webkitFullscreenElement ||
+    (document as any).msFullscreenElement ||
+    null
+
+  const isFullscreen = () => !!getFullscreenElement()
+
+  // 全屏请求在极端情况下既不 resolve 也不 reject（被策略静默拦截、内嵌 WebView）。
+  // 原来直接 await，会永久挂起：starting 卡在 true，按钮停在「正在进入…」，
+  // 再点也被 starting 拦住没反应。加超时兜底，超时后仍按真实状态判定。
+  const FULLSCREEN_ENTER_TIMEOUT_MS = 1500
+  const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> =>
+    Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error('fullscreen-request-timeout')), ms)
+      })
+    ])
 
   /**
    * 请求进入全屏，返回是否真的进去了。
    *
-   * 两个坑必须同时堵住：
+   * 三个坑必须同时堵住：
    * 1) requestFullscreen 会因「用户拒绝」「非用户手势」而 reject。早期实现把异常
    *    吞掉后照样放行，学生点「拒绝」就能全程窗口化作答。
    * 2) 更隐蔽的一种：某些浏览器/内嵌 WebView 下 requestFullscreen() 会直接
@@ -399,37 +420,38 @@ export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFull
    *    禁用、iframe 未开 allowfullscreen 等）。只看 promise 是否 resolve 就会
    *    误判成「已进入全屏」，于是完整作答期间都没有全屏，而退出计数恒为 0，
    *    所有基于退出全屏的拦截全部失效。所以必须回读真实状态。
+   * 3) 请求 promise 可能永不落地；且不能传 navigationUI: 'hide' —— 浏览器无法
+   *    隐藏导航 UI 时会直接拒绝这次请求。两个问题都会表现成「偶发进不去全屏」。
    */
   const enterFullscreen = async (): Promise<boolean> => {
     if (!enforceFullscreen) {
       fullscreenActive.value = true
       return true
     }
-    const request =
-      document.documentElement.requestFullscreen ||
-      (document.documentElement as any).webkitRequestFullscreen ||
-      (document.documentElement as any).msRequestFullscreen
+    if (getFullscreenElement()) {
+      fullscreenActive.value = true
+      return true
+    }
+    const root = document.documentElement as any
+    const request = root.requestFullscreen || root.webkitRequestFullscreen || root.msRequestFullscreen
     if (!request) {
       fullscreenActive.value = false
       push('fullscreen_denied', { reason: 'unsupported' })
       return false
     }
+    let rejected = false
     try {
-      if (!document.fullscreenElement) {
-        await request.call(document.documentElement, { navigationUI: 'hide' })
-      }
+      await withTimeout(Promise.resolve().then(() => request.call(root)), FULLSCREEN_ENTER_TIMEOUT_MS)
     } catch (err) {
-      fullscreenActive.value = false
-      push('fullscreen_denied', { reason: 'rejected' })
-      return false
+      rejected = true
     }
-    // 等到下一帧再回读：部分浏览器在 promise resolve 后才更新 fullscreenElement
-    if (!document.fullscreenElement) {
+    // 回读真实状态：promise resolve 不代表真进去了，reject / 超时也不代表一定没进去
+    if (!getFullscreenElement()) {
       await new Promise((resolve) => window.setTimeout(resolve, 120))
     }
-    if (!document.fullscreenElement) {
+    if (!getFullscreenElement()) {
       fullscreenActive.value = false
-      push('fullscreen_denied', { reason: 'not_entered' })
+      push('fullscreen_denied', { reason: rejected ? 'rejected' : 'not_entered' })
       return false
     }
     fullscreenActive.value = true
@@ -445,6 +467,9 @@ export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFull
       fullscreenExitCount.value += 1
       push('fullscreen_exit', { count: fullscreenExitCount.value })
       onFullscreenExit(fullscreenExitCount.value)
+      // 必须用累计次数判定。曾经改成「连续退出」（回到全屏即归零），结果学生
+      // 退出 → 点「恢复全屏」→ 再退出，计数永远回到 0，这条拦截被彻底关掉：
+      // 实测一次作答退出 22 次、累计到 4，都没触发自动交卷。
       if (fullscreenExitCount.value >= maxFullscreenExits) {
         onMaxViolations()
       }
@@ -671,6 +696,9 @@ export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFull
     document.addEventListener('mouseup', onMouseUp, true)
     document.addEventListener('dragstart', onDragStart, true)
     document.addEventListener('fullscreenchange', onFullscreenChange)
+    // 前缀事件同样要听：老 Safari / 内嵌 WebView 只派发 webkitfullscreenchange，
+    // 漏掉它的话，退出全屏完全检测不到，退出计数恒为 0、遮罩与自动交卷全部失效。
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange)
     window.addEventListener('focus', onFocus)
     window.addEventListener('blur', onBlur)
     window.addEventListener('scroll', onScroll, true)
@@ -685,7 +713,14 @@ export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFull
     currentQuestion = findCurrentQuestion()
     questionStartedAt = ts()
     if (enforceFullscreen) {
-      enterFullscreen()
+      // 调用方已经在用户手势里请求过全屏。这里再发一次请求不在用户激活上下文里，
+      // 会被浏览器拒绝，还会把 fullscreenActive 错置为 false，导致刚开考就弹
+      // 「已退出全屏」遮罩（假违规），并留下一条虚假的 fullscreen_denied 证据。
+      // 所以只同步真实状态。首次进入发生在 startTracking 之前，fullscreenchange
+      // 监听当时还没挂上，那条进入事件必然收不到，这里补记一条。
+      const inFullscreen = isFullscreen()
+      fullscreenActive.value = inFullscreen
+      if (inFullscreen) push('fullscreen_enter', {})
     } else {
       fullscreenActive.value = true
       push('fullscreen_skipped', {})
@@ -742,6 +777,7 @@ export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFull
     document.removeEventListener('mouseup', onMouseUp, true)
     document.removeEventListener('dragstart', onDragStart, true)
     document.removeEventListener('fullscreenchange', onFullscreenChange)
+    document.removeEventListener('webkitfullscreenchange', onFullscreenChange)
     window.removeEventListener('focus', onFocus)
     window.removeEventListener('blur', onBlur)
     window.removeEventListener('scroll', onScroll, true)
@@ -763,10 +799,14 @@ export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFull
 
   const exitFullscreen = async () => {
     if (!enforceFullscreen) return
+    if (!isFullscreen()) return
+    const exit =
+      document.exitFullscreen ||
+      (document as any).webkitExitFullscreen ||
+      (document as any).msExitFullscreen
+    if (!exit) return
     try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen()
-      }
+      await exit.call(document)
     } catch (err) {
       // 忽略退出失败
     }

@@ -1,11 +1,12 @@
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 from sqlalchemy import select, and_, update, func, false, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.models.user import User, Role, StudentProfile, UserRole
-from app.schemas.user import UserCreate, UserUpdate, StudentProfileUpdate
+from app.schemas.user import UserCreate, UserUpdate, StudentProfileUpdate, StudentAccountIn
 from app.core.security import get_password_hash
 from app.core.exceptions import ValidationError, NotFoundError
 
@@ -85,6 +86,80 @@ class UserService:
         await db.commit()
         # Reload to load relationship attributes
         return await cls.get_user(db, db_user.id)
+
+    @classmethod
+    async def bulk_create_students(
+        cls, db: AsyncSession, students: List[StudentAccountIn]
+    ) -> tuple[List[dict], List[dict]]:
+        """按名单批量开学生账号，返回 (created, skipped)。
+
+        单条失败（重名、学号已被占用、学号太短）只记进 skipped 并给出原因，
+        不中断整批 —— 一次导几十个人的时候，不该因为一行有问题就全部回滚。
+        """
+        created: List[dict] = []
+        skipped: List[dict] = []
+        seen: set = set()
+        for item in students:
+            student_no = (item.student_id or "").strip()
+            if not student_no:
+                skipped.append({"student_id": "", "reason": "学号为空"})
+                continue
+            if student_no in seen:
+                skipped.append({"student_id": student_no, "reason": "名单里重复出现"})
+                continue
+            seen.add(student_no)
+
+            username = (item.username or student_no).strip()
+            password = (item.password or student_no).strip()
+            if len(password) < 6:
+                skipped.append({
+                    "student_id": student_no,
+                    "reason": "默认密码（学号）不足 6 位，请在名单里显式指定密码",
+                })
+                continue
+
+            # 邮箱有唯一约束且必须是合法地址：从学号里剔掉非法字符，实在没有可用字符
+            # 就退化成随机本地名，避免整条因为邮箱格式挂掉。域名不能用 .local /
+            # .test / .example 这类保留域名，email-validator 会直接判为非法。
+            local = re.sub(r"[^A-Za-z0-9._-]", "", student_no) or f"stu{uuid4().hex[:8]}"
+            try:
+                user = await cls.create_user(
+                    db,
+                    UserCreate(
+                        username=username,
+                        email=f"{local}@stu.example.com",
+                        nickname=item.name,
+                        password=password,
+                        role_codes=["student"],
+                    ),
+                )
+            except ValidationError as exc:
+                skipped.append({"student_id": student_no, "reason": str(getattr(exc, "message", exc))})
+                continue
+            except Exception as exc:  # noqa: BLE001 - 单条异常不应拖垮整批
+                skipped.append({"student_id": student_no, "reason": f"创建失败：{exc}"})
+                continue
+
+            # 学号不在 UserCreate 里，得单独落到学生档案上；否则之后按学号发卷、
+            # 按学号搜索都找不到人（现有 create_user 建的档案学号是空的）。
+            profile_res = await db.execute(
+                select(StudentProfile).where(StudentProfile.user_id == user.id)
+            )
+            profile = profile_res.scalars().first()
+            if profile:
+                profile.student_id = student_no
+                profile.grade = item.grade
+                profile.major = item.major
+                await db.commit()
+
+            created.append({
+                "student_id": student_no,
+                "name": item.name,
+                "username": username,
+                "password": password,
+                "user_id": str(user.id),
+            })
+        return created, skipped
 
     @classmethod
     async def update_user(cls, db: AsyncSession, db_user: User, user_in: UserUpdate) -> User:

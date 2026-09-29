@@ -1,7 +1,7 @@
 import hashlib
 import io
 import logging
-from typing import List
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,65 @@ def parse_document(file_bytes: bytes, filename: str) -> str:
     except Exception as e:
         logger.error(f"Failed to parse document {filename}: {e}", exc_info=True)
         raise ValueError(f"文档内容解析失败: {str(e)}")
+
+def _parse_docx_with_images(file_bytes: bytes) -> Tuple[str, List[dict]]:
+    """一次遍历 docx 正文，按出现顺序同时产出文字与内嵌图片。"""
+    import docx
+    from docx.oxml.ns import qn
+
+    document = docx.Document(io.BytesIO(file_bytes))
+    part = document.part
+    lines: List[str] = []
+    images: List[dict] = []
+
+    for paragraph in document.paragraphs:
+        buffer: List[str] = []
+        for run in paragraph.runs:
+            for child in run._r:
+                # 内联图片有两套标记：DrawingML 的 w:drawing 与老式 VML 的 w:pict
+                if child.tag in (qn("w:drawing"), qn("w:pict")):
+                    rel_id = None
+                    for blip in child.iter(qn("a:blip")):
+                        rel_id = blip.get(qn("r:embed"))
+                        if rel_id:
+                            break
+                    if not rel_id:
+                        for data_el in child.iter(qn("v:imagedata")):
+                            rel_id = data_el.get(qn("r:id"))
+                            if rel_id:
+                                break
+                    blob = None
+                    if rel_id:
+                        try:
+                            blob = part.related_parts[rel_id].blob
+                        except Exception:
+                            blob = None
+                    # 取不到就两边都不产出：宁可没标记，也不能让编号错位
+                    if not blob:
+                        continue
+                    images.append({"data": blob, "ext": _guess_image_ext(blob) or "png"})
+                    buffer.append(f"[[IMG:{len(images)}]]")
+                elif child.tag == qn("w:t"):
+                    buffer.append(child.text or "")
+        lines.append("".join(buffer))
+    return "\n".join(lines), images
+
+def parse_document_with_images(file_bytes: bytes, filename: str) -> Tuple[str, List[dict]]:
+    """一次遍历同时产出「带 [[IMG:n]] 占位符的文本」与「按同一编号排列的图片」。
+
+    docx 必须成对产出：分成 parse_document + extract_images 两次调用时，文本侧拿不到
+    图片位置，而图片侧是按 word/media/ 文件名排序（image1、image10、image2…），并不是
+    文档顺序 —— 两边编号一旦错位，图就会挂到别的题上。编号从 1 开始，与占位符一一对应。
+    """
+    ext = (filename.split(".")[-1] or "").lower()
+    if ext == "docx":
+        try:
+            return _parse_docx_with_images(file_bytes)
+        except Exception as e:
+            logger.error(f"Failed to parse docx with images {filename}: {e}", exc_info=True)
+            raise ValueError(f"文档内容解析失败: {str(e)}")
+    # pdf 的图片位置信息弱，暂时沿用旧的两段式（顺位可能不准，另行处理）
+    return parse_document(file_bytes, filename), extract_images(file_bytes, filename)
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
     """Slices plain text into chunks with a sliding window overlap"""

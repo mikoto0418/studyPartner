@@ -62,6 +62,11 @@ class Settings(BaseSettings):
 
     # ========== MinIO ==========
     MINIO_ENDPOINT: str = "127.0.0.1:9000"
+    # 对外（浏览器可访问）的地址，只用于「签下载直链」。预签名 URL 的签名跟 Host
+    # 绑定：拿容器内地址（minio:9000）签出来的链接，浏览器解析不了主机名、签名也对
+    # 不上，图片/文件全都加载不出来。留空则退回 MINIO_ENDPOINT（保持旧行为）。
+    # 正式部署必须改成真实的对外地址。
+    MINIO_PUBLIC_ENDPOINT: str = "http://localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_SECURE: bool = False

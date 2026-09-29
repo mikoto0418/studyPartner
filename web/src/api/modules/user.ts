@@ -67,6 +67,21 @@ export const userApi = {
     return request.post('/users/', data)
   },
 
+  /** 批量建学生账号；传 class_id 则顺带把新建的学生加入该班级 */
+  bulkCreateUsers(data: {
+    students: Array<{
+      student_id: string
+      name: string
+      grade?: string
+      major?: string
+      username?: string
+      password?: string
+    }>
+    class_id?: string
+  }) {
+    return request.post('/users/bulk', data)
+  },
+
   updateUser(id: string, data: any) {
     return request.put(`/users/${id}`, data)
   },

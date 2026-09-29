@@ -49,6 +49,29 @@ class UserCreate(UserBase):
     password: str = Field(..., min_length=6, description="密码")
     role_codes: List[str] = Field(default=["student"], description="角色编码列表")
 
+class StudentAccountIn(BaseModel):
+    """批量开号名单里的一行：学号 + 姓名，年级 / 专业选填。"""
+
+    student_id: str = Field(..., min_length=1, description="学号，默认同时作为登录账号与初始密码")
+    name: str = Field(..., min_length=1, description="姓名")
+    grade: Optional[str] = None
+    major: Optional[str] = None
+    username: Optional[str] = Field(None, description="不填则用学号")
+    password: Optional[str] = Field(None, min_length=6, description="不填则用学号")
+
+
+class UserBulkCreateReq(BaseModel):
+    students: List[StudentAccountIn] = Field(default_factory=list)
+    class_id: Optional[UUID] = Field(None, description="填了就顺带把新建的学生加入该班级")
+
+
+class UserBulkCreateOut(BaseModel):
+    """created 里带回明文初始密码，供教师下发；skipped 给出没建成功的原因。"""
+
+    created: List[dict] = Field(default_factory=list)
+    skipped: List[dict] = Field(default_factory=list)
+
+
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     nickname: Optional[str] = None

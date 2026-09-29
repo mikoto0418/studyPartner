@@ -70,6 +70,19 @@ class AssessmentPublishReq(BaseModel):
     grading_preference: Optional[dict] = None
 
 
+class GradingPreferenceUpdateReq(BaseModel):
+    """发布后调整主观题批阅尺度。只对之后新的 AI 预批生效，不触碰已保存的分数。"""
+
+    grading_preference: Optional[dict] = None
+
+
+class AssessmentImportReq(BaseModel):
+    """从标准 JSON / 压缩包导入试卷（不走 AI 拆题）。"""
+
+    file_id: UUID = Field(..., description="已上传的 paper.json 或 zip 的文件 id")
+    title: Optional[str] = Field(None, description="不填则用 JSON 里的 paper.title")
+
+
 class ParseStatusOut(BaseModel):
     parse_status: str
     parse_progress: Optional[dict] = None

@@ -103,6 +103,61 @@ const selectedPaper = computed(
   () => papers.value.find((p) => p.id === selectedPaperId.value) || null
 )
 
+// 成绩列表筛选：一个班里几十号人时，靠它定位「待批改」「可疑」或某个学生，
+// 不用在整张表里翻。只在客户端过滤，不额外打接口 —— 列表本来一次就取全了。
+const filterStatus = ref('')
+const filterKeyword = ref('')
+const onlySuspicious = ref(false)
+
+const hasActiveFilter = computed(
+  () => Boolean(filterStatus.value) || Boolean(filterKeyword.value.trim()) || onlySuspicious.value
+)
+
+const filteredAttempts = computed(() => {
+  const keyword = filterKeyword.value.trim().toLowerCase()
+  return attempts.value.filter((row) => {
+    if (filterStatus.value && row.status !== filterStatus.value) return false
+    if (onlySuspicious.value && !row.suspicious) return false
+    if (keyword) {
+      const name = String(row.student_name || '').toLowerCase()
+      const account = String(row.username || '').toLowerCase()
+      if (!name.includes(keyword) && !account.includes(keyword)) return false
+    }
+    return true
+  })
+})
+
+const resetFilters = () => {
+  filterStatus.value = ''
+  filterKeyword.value = ''
+  onlySuspicious.value = false
+}
+
+// 发布后仍可调整批阅尺度：只影响之后发起的 AI 预批，已保存的分数与建议分一概不动。
+const gradingMode = ref('standard')
+const savingGrading = ref(false)
+
+const syncGradingMode = () => {
+  gradingMode.value = selectedPaper.value?.grading_preference?.mode || 'standard'
+}
+
+const saveGradingPreference = async () => {
+  if (!selectedPaperId.value) return
+  savingGrading.value = true
+  try {
+    const res = await assessmentApi.updateGradingPreference(selectedPaperId.value, {
+      mode: gradingMode.value
+    })
+    const idx = papers.value.findIndex((p) => p.id === selectedPaperId.value)
+    if (idx >= 0 && res.data) papers.value[idx] = res.data
+    ElMessage.success('批阅尺度已更新，仅影响之后新的 AI 预批')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    savingGrading.value = false
+  }
+}
+
 const eventLabel = (t: string) => EVENT_LABELS[t] || t
 const isFlag = (t: string) => FLAG_TYPES.has(t)
 
@@ -316,26 +371,99 @@ const loadQuestionMap = async (paperId: string) => {
 const onPaperChange = () => {
   loadAttempts()
   loadQuestionMap(selectedPaperId.value)
+  syncGradingMode()
 }
+
+// 按题画像是默认视图，只需要聚合接口，不再一次性把整份行为事件拉进抽屉 ——
+// 长卷的 answer_edit 能有上千条，全量拉取会把抽屉和网络一起拖垮。时间线和
+// 逐题编辑明细都改成「用到才拉、按页拉」。
+const BEHAVIOR_PAGE_SIZE = 100
+const EDIT_PAGE_SIZE = 50
+
+const timelineLoading = ref(false)
+const timelineLoaded = ref(false)
+const timelineHasMore = ref(false)
+const editCache = ref<Record<string, BehaviorEventOut[]>>({})
+const editHasMore = ref<Record<string, boolean>>({})
+const editLoading = ref<Record<string, boolean>>({})
 
 const openBehavior = async (attempt: AttemptMonitor) => {
   currentAttempt.value = attempt
   behaviorDrawer.value = true
   behaviorLoading.value = true
   behaviorEvents.value = []
+  timelineLoaded.value = false
+  timelineHasMore.value = false
+  editCache.value = {}
+  editHasMore.value = {}
+  editLoading.value = {}
   insights.value = null
   try {
-    // 两个接口一起取：默认展示按题画像，切到时间线无需二次请求
-    const [eventsRes, insightsRes] = await Promise.all([
-      assessmentApi.listAttemptBehavior(attempt.id),
-      assessmentApi.getAttemptInsights(attempt.id).catch(() => ({ data: null }))
-    ])
-    behaviorEvents.value = eventsRes.data || []
+    const insightsRes = await assessmentApi.getAttemptInsights(attempt.id).catch(() => ({ data: null }))
     insights.value = insightsRes.data
-  } catch {
-    behaviorEvents.value = []
   } finally {
     behaviorLoading.value = false
+  }
+  if (behaviorView.value === 'timeline') {
+    await loadTimeline(true)
+  }
+}
+
+const loadTimeline = async (reset = false) => {
+  if (!currentAttempt.value) return
+  if (reset) {
+    behaviorEvents.value = []
+    timelineLoaded.value = false
+  }
+  timelineLoading.value = true
+  try {
+    const res = await assessmentApi.listAttemptBehavior(currentAttempt.value.id, {
+      offset: behaviorEvents.value.length,
+      limit: BEHAVIOR_PAGE_SIZE
+    })
+    const rows: BehaviorEventOut[] = res.data || []
+    behaviorEvents.value = [...behaviorEvents.value, ...rows]
+    timelineHasMore.value = rows.length === BEHAVIOR_PAGE_SIZE
+    timelineLoaded.value = true
+  } catch {
+    timelineHasMore.value = false
+  } finally {
+    timelineLoading.value = false
+  }
+}
+
+const switchBehaviorView = (view: 'timeline' | 'byQuestion') => {
+  behaviorView.value = view
+  if (view === 'timeline' && !timelineLoaded.value && !timelineLoading.value) {
+    loadTimeline(true)
+  }
+}
+
+const loadQuestionEdits = async (questionId: string, reset = false) => {
+  if (!currentAttempt.value || editLoading.value[questionId]) return
+  const existing = reset ? [] : editCache.value[questionId] || []
+  editLoading.value = { ...editLoading.value, [questionId]: true }
+  try {
+    const res = await assessmentApi.listAttemptBehavior(currentAttempt.value.id, {
+      event_type: 'answer_edit',
+      question_id: questionId,
+      offset: existing.length,
+      limit: EDIT_PAGE_SIZE
+    })
+    const rows: BehaviorEventOut[] = res.data || []
+    editCache.value = { ...editCache.value, [questionId]: [...existing, ...rows] }
+    editHasMore.value = { ...editHasMore.value, [questionId]: rows.length === EDIT_PAGE_SIZE }
+  } catch {
+    // 展开失败不该阻断画像，静默即可
+  } finally {
+    editLoading.value = { ...editLoading.value, [questionId]: false }
+  }
+}
+
+const onQuestionDetailsToggle = (questionId: string, event: Event) => {
+  const el = event.target as HTMLDetailsElement | null
+  if (el?.open && !(editCache.value[questionId] || []).length) {
+    loadQuestionEdits(questionId)
   }
 }
 
@@ -361,12 +489,9 @@ const insightRows = computed(() => {
   }))
 })
 
-// 原始 BehaviorEvent 仍完整保存在后端；在按题画像里按题筛出编辑历史，
-// 让教师可以展开查看精确的新增/删除内容，而不只看到字符数摘要。
-const answerEditsForQuestion = (questionId: string) =>
-  behaviorEvents.value.filter(
-    (event) => event.event_type === 'answer_edit' && String(event.payload?.question_id || '') === questionId
-  )
+// 逐题编辑明细改为「展开时才按题分页拉」，结果缓存在 editCache 里，
+// 不再从整份事件数组中筛。
+const answerEditsForQuestion = (questionId: string) => editCache.value[questionId] || []
 
 const editMethodLabel: Record<string, string> = {
   typing: '键盘输入',
@@ -499,7 +624,10 @@ const submitGrades = async () => {
   }
 }
 
-onMounted(loadPapers)
+onMounted(async () => {
+  await loadPapers()
+  syncGradingMode()
+})
 </script>
 
 <template>
@@ -542,17 +670,45 @@ onMounted(loadPapers)
         <FileText class="h-3.5 w-3.5" />
         <span>{{ selectedPaper ? selectedPaper.title : '未选择试卷' }}</span>
         <span v-if="selectedPaper" class="text-gray-300 dark:text-zinc-600">|</span>
-        <span v-if="selectedPaper">共 {{ attempts.length }} 人作答</span>
-        <button
-          class="ml-auto rounded bg-gray-900 px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-          :disabled="!selectedPaperId || exportingScore"
-          @click="exportScoreSheet"
-        >
-          {{ exportingScore ? '正在导出…' : '导出成绩单 PDF' }}
-        </button>
+        <span v-if="selectedPaper">共 {{ attempts.length }} 人作答<span v-if="hasActiveFilter">，筛出 {{ filteredAttempts.length }} 人</span></span>
+        <div class="ml-auto flex items-center gap-2">
+          <span class="text-[11px] text-gray-500 dark:text-zinc-400">批阅尺度</span>
+          <el-select
+            v-model="gradingMode"
+            size="small"
+            class="w-28"
+            :disabled="!selectedPaperId || savingGrading"
+            @change="saveGradingPreference"
+          >
+            <el-option label="宽松" value="lenient" />
+            <el-option label="标准" value="standard" />
+            <el-option label="严格" value="strict" />
+          </el-select>
+          <button
+            class="rounded bg-gray-900 px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+            :disabled="!selectedPaperId || exportingScore"
+            @click="exportScoreSheet"
+          >
+            {{ exportingScore ? '正在导出…' : '导出成绩单 PDF' }}
+          </button>
+        </div>
       </div>
 
-      <el-table v-if="attempts.length" :data="attempts" style="width: 100%">
+      <div v-if="attempts.length" class="mb-4 flex flex-wrap items-center gap-2 text-xs">
+        <el-select v-model="filterStatus" placeholder="全部状态" clearable class="w-36">
+          <el-option label="作答中" value="in_progress" />
+          <el-option label="待批改" value="pending_review" />
+          <el-option label="已交卷" value="submitted" />
+        </el-select>
+        <el-input v-model="filterKeyword" placeholder="按姓名 / 账号搜索" clearable class="w-56" />
+        <label class="flex items-center gap-1.5 text-gray-600 dark:text-zinc-300">
+          <input v-model="onlySuspicious" type="checkbox" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-600" />
+          <span>只看可疑</span>
+        </label>
+        <button v-if="hasActiveFilter" class="ui-button-secondary" @click="resetFilters">清空筛选</button>
+      </div>
+
+      <el-table v-if="attempts.length" :data="filteredAttempts" style="width: 100%">
         <el-table-column label="学生" min-width="140">
           <template #default="{ row }">
             <div class="flex flex-col">
@@ -637,14 +793,14 @@ onMounted(loadPapers)
         <button
           class="flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition"
           :class="behaviorView === 'byQuestion' ? 'bg-white text-gray-900 shadow-sm dark:bg-zinc-900 dark:text-zinc-50' : 'text-gray-500 dark:text-zinc-400'"
-          @click="behaviorView = 'byQuestion'"
+          @click="switchBehaviorView('byQuestion')"
         >
           按题画像
         </button>
         <button
           class="flex-1 rounded-md px-3 py-1.5 text-xs font-semibold transition"
           :class="behaviorView === 'timeline' ? 'bg-white text-gray-900 shadow-sm dark:bg-zinc-900 dark:text-zinc-50' : 'text-gray-500 dark:text-zinc-400'"
-          @click="behaviorView = 'timeline'"
+          @click="switchBehaviorView('timeline')"
         >
           事件时间线
         </button>
@@ -701,9 +857,13 @@ onMounted(loadPapers)
                 <span v-if="q.deleted_chars">· 删除 {{ q.deleted_chars }} 字</span>
               </div>
 
-              <details v-if="answerEditsForQuestion(q.question_id).length" class="mt-2 rounded-md bg-gray-50 px-2.5 py-2 dark:bg-zinc-950/40">
+              <details
+                v-if="q.edit_count > 0"
+                class="mt-2 rounded-md bg-gray-50 px-2.5 py-2 dark:bg-zinc-950/40"
+                @toggle="onQuestionDetailsToggle(q.question_id, $event)"
+              >
                 <summary class="cursor-pointer text-[10px] font-semibold text-blue-600 dark:text-blue-300">
-                  查看新增 / 删除内容（{{ answerEditsForQuestion(q.question_id).length }} 段）
+                  查看新增 / 删除内容（{{ q.edit_count }} 段）
                 </summary>
                 <div class="mt-2 max-h-72 space-y-2 overflow-y-auto">
                   <article
@@ -726,6 +886,17 @@ onMounted(loadPapers)
                       <pre class="mt-0.5 whitespace-pre-wrap break-words rounded bg-emerald-50/70 p-1.5 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300">{{ edit.payload.inserted_text }}</pre>
                     </div>
                   </article>
+                </div>
+                <div v-if="editLoading[q.question_id]" class="mt-2 text-center text-[10px] text-gray-400">
+                  正在加载…
+                </div>
+                <div v-else-if="editHasMore[q.question_id]" class="mt-2 text-center">
+                  <button
+                    class="text-[10px] font-semibold text-blue-600 dark:text-blue-300"
+                    @click="loadQuestionEdits(q.question_id)"
+                  >
+                    加载更多
+                  </button>
                 </div>
               </details>
 
@@ -771,7 +942,13 @@ onMounted(loadPapers)
             </div>
           </div>
 
-          <div v-if="!behaviorEvents.length && !behaviorLoading" class="py-12 text-center text-sm text-gray-400">
+          <div v-if="timelineHasMore" class="mt-3 text-center">
+            <button class="ui-button-secondary" :disabled="timelineLoading" @click="loadTimeline()">
+              {{ timelineLoading ? '加载中…' : '加载更多' }}
+            </button>
+          </div>
+
+          <div v-if="!behaviorEvents.length && !timelineLoading" class="py-12 text-center text-sm text-gray-400">
             暂无行为记录
           </div>
         </template>
