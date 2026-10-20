@@ -220,7 +220,7 @@ const router = createRouter({
 
 router.beforeEach((to, _from, next) => {
   if (to.meta.title) {
-    document.title = `${to.meta.title} - AI伴学协同平台`
+    document.title = `${to.meta.title} - MemoryPath 学迹`
   }
 
   const token = localStorage.getItem('sp_token')

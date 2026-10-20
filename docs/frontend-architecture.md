@@ -1,6 +1,6 @@
 # 前端架构设计文档
 
-> AI 伴学与智能体协同平台 · Frontend Architecture Document
+> MemoryPath 学迹 · AI 伴学与智能体协同平台 · Frontend Architecture Document
 
 版本：V1.0
 适用阶段：MVP
@@ -1022,8 +1022,8 @@ export function setupGuards(router: Router) {
 
     // 5. 设置页面标题
     document.title = to.meta.title
-      ? `${to.meta.title} - AI 伴学平台`
-      : 'AI 伴学平台'
+      ? `${to.meta.title} - MemoryPath 学迹`
+      : 'MemoryPath 学迹'
 
     next()
   })
@@ -1100,7 +1100,7 @@ get homeRoute(): string {
                 bg-gradient-to-br from-blue-500 to-indigo-600">
       <div class="text-center text-white">
         <AppLogo size="lg" />
-        <h1 class="mt-6 text-3xl font-bold">AI 伴学平台</h1>
+        <h1 class="mt-6 text-3xl font-bold">MemoryPath 学迹</h1>
         <p class="mt-2 text-lg opacity-80">智能学习 · 持续成长</p>
       </div>
     </div>
@@ -1227,7 +1227,7 @@ export function useSidebarMenu(role: UserRole): MenuItem[] {
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ ≡（折叠按钮）   AI 伴学平台       🔍 搜索      🔔(3)  👤 张三 ▼  │
+│ ≡（折叠按钮）   MemoryPath 学迹    🔍 搜索      🔔(3)  👤 张三 ▼  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -2470,11 +2470,11 @@ export function toggleTodoComplete(id: number) {
 ```bash
 # .env.development
 VITE_API_BASE_URL=http://localhost:8000/api/v1
-VITE_APP_TITLE=AI 伴学平台 (Dev)
+VITE_APP_TITLE=MemoryPath 学迹 (Dev)
 
 # .env.production
 VITE_API_BASE_URL=/api/v1
-VITE_APP_TITLE=AI 伴学平台
+VITE_APP_TITLE=MemoryPath 学迹
 ```
 
 ---

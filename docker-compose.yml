@@ -93,7 +93,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - APP_NAME=AI伴学与智能体协同平台
+      - APP_NAME=MemoryPath 学迹
       - APP_ENV=development
       - APP_DEBUG=true
       - ENABLE_INLINE_SCHEDULER=false
@@ -146,7 +146,7 @@ services:
     volumes:
       - ./server:/code
     environment:
-      - APP_NAME=AI伴学与智能体协同平台
+      - APP_NAME=MemoryPath 学迹
       - APP_ENV=development
       - APP_DEBUG=true
       - ENABLE_INLINE_SCHEDULER=false
@@ -199,7 +199,7 @@ services:
     volumes:
       - ./server:/code
     environment:
-      - APP_NAME=AI伴学与智能体协同平台
+      - APP_NAME=MemoryPath 学迹
       - APP_ENV=development
       - APP_DEBUG=true
       - ENABLE_INLINE_SCHEDULER=false

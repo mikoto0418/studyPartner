@@ -1,19 +1,60 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { User, Lock, Mail, Key, ShieldCheck, ArrowRight, CornerUpLeft } from 'lucide-vue-next'
+import {
+  ArrowRight,
+  CornerUpLeft,
+  Key,
+  Lock,
+  Mail,
+  Moon,
+  ShieldCheck,
+  Sun,
+  User
+} from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { authApi } from '../../api/modules/auth'
 import { useAuthStore } from '../../stores/auth'
+import { useTheme } from '../../composables/useTheme'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const { isDark, toggleTheme } = useTheme()
 
 // Modes: 'login' | 'register' | 'reset'
 const mode = ref<'login' | 'register' | 'reset'>('login')
 
 // Roles: 'student' | 'teacher' | 'admin'
 const activeRole = ref<'student' | 'teacher' | 'admin'>('student')
+
+const roleOptions = [
+  { value: 'student', label: '学生' },
+  { value: 'teacher', label: '教师' },
+  { value: 'admin', label: '管理员' }
+] as const
+
+const visibleRoles = computed(() =>
+  roleOptions.filter((role) => mode.value === 'login' || role.value !== 'admin')
+)
+
+const headings = computed(() => {
+  if (mode.value === 'register') {
+    return {
+      title: '创建学迹账号',
+      desc: '注册后即可保存学习行为与学情记忆，让伴学智能体从第一天开始了解你。'
+    }
+  }
+  if (mode.value === 'reset') {
+    return {
+      title: '重置登录密码',
+      desc: '验证注册邮箱后重设密码，既有的学习数据与学情记忆不受影响。'
+    }
+  }
+  return {
+    title: '登录 MemoryPath',
+    desc: '使用学迹账号进入 AI 伴学与智能体协同空间。'
+  }
+})
 
 // Form State
 const username = ref('')
@@ -200,339 +241,374 @@ const switchMode = (newMode: 'login' | 'register' | 'reset') => {
 </script>
 
 <template>
-  <div class="relative flex flex-col items-center justify-center w-screen h-screen bg-slate-950 text-zinc-50 overflow-hidden font-sans">
-    
-    <!-- Background Animated Gradients -->
-    <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-900/20 via-slate-950 to-slate-950 z-0"></div>
-    <div class="absolute -top-40 -left-40 w-96 h-96 rounded-full bg-indigo-500/10 blur-[120px] pointer-events-none"></div>
-    <div class="absolute -bottom-40 -right-40 w-96 h-96 rounded-full bg-violet-600/10 blur-[120px] pointer-events-none"></div>
-
-    <!-- Core Card Wrapper (Glassmorphism) -->
-    <div class="w-full max-w-md p-8 bg-slate-900/50 backdrop-blur-md border border-slate-800 rounded-2xl shadow-2xl z-10 transition-all duration-300">
-      
-      <!-- Brand Header -->
-      <div class="flex flex-col items-center justify-center space-y-2 mb-6">
-        <div class="w-10 h-10 rounded-lg bg-gradient-to-tr from-blue-600 to-violet-600 flex items-center justify-center text-white font-extrabold text-xl shadow-md">
-          SP
-        </div>
-        <h1 class="text-2xl font-bold tracking-tight bg-gradient-to-r from-blue-400 to-indigo-200 bg-clip-text text-transparent">
-          AI伴学与智能体协同平台
-        </h1>
-        <p class="text-xs text-slate-400">
-          极简智能学习协同空间 · 工业级升级版
-        </p>
-      </div>
-
-      <!-- ROLE TAB SELECTOR (Login & Register Modes only) -->
-      <div v-if="mode !== 'reset'" class="flex w-full bg-slate-950/60 p-1 rounded-lg mb-6 border border-slate-800/80 text-xs">
-        <button
-          @click="activeRole = 'student'"
-          class="flex-1 py-1.5 rounded-md text-center transition-all focus:outline-none"
-          :class="activeRole === 'student' ? 'bg-blue-600/80 text-white font-medium shadow-sm' : 'text-slate-400 hover:text-slate-200'"
-        >
-          学生{{ mode === 'register' ? '注册' : '登录' }}
-        </button>
-        <button
-          @click="activeRole = 'teacher'"
-          class="flex-1 py-1.5 rounded-md text-center transition-all focus:outline-none"
-          :class="activeRole === 'teacher' ? 'bg-blue-600/80 text-white font-medium shadow-sm' : 'text-slate-400 hover:text-slate-200'"
-        >
-          教师{{ mode === 'register' ? '注册' : '登录' }}
-        </button>
-        <button
-          v-if="mode === 'login'"
-          @click="activeRole = 'admin'"
-          class="flex-1 py-1.5 rounded-md text-center transition-all focus:outline-none"
-          :class="activeRole === 'admin' ? 'bg-blue-600/80 text-white font-medium shadow-sm' : 'text-slate-400 hover:text-slate-200'"
-        >
-          管理员
-        </button>
-      </div>
-
-      <!-- ================= LOGIN FORM ================= -->
-      <form v-if="mode === 'login'" @submit.prevent="handleLogin" class="space-y-4">
-        <!-- Account input -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">账号</label>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <User class="w-4 h-4" />
-            </span>
-            <input
-              v-model="username"
-              type="text"
-              placeholder="用户名或邮箱"
-              class="w-full pl-9 pr-3 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <!-- Password input -->
-        <div class="space-y-1.5">
-          <div class="flex justify-between items-center">
-            <label class="text-xs text-slate-400 font-medium">密码</label>
-            <button type="button" @click="switchMode('reset')" class="text-xs text-blue-500 hover:underline">忘记密码?</button>
-          </div>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <Lock class="w-4 h-4" />
-            </span>
-            <input
-              v-model="password"
-              type="password"
-              placeholder="请输入密码"
-              class="w-full pl-9 pr-3 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <!-- Action Button -->
-        <button
-          type="submit"
-          class="w-full mt-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium rounded-lg text-sm shadow-md transition-all duration-150 transform active:scale-[0.98] flex items-center justify-center space-x-1"
-          :disabled="loading"
-        >
-          <span v-if="loading">正在登录...</span>
-          <span v-else class="flex items-center space-x-1">
-            <span>进入协同空间</span>
-            <ArrowRight class="w-4 h-4" />
-          </span>
-        </button>
-
-        <div class="text-center pt-2">
-          <span class="text-xs text-slate-500">还没有账号? </span>
-          <button type="button" @click="switchMode('register')" class="text-xs text-blue-400 hover:underline">立即注册</button>
-        </div>
-      </form>
-
-      <!-- ================= REGISTER FORM ================= -->
-      <form v-else-if="mode === 'register'" @submit.prevent="handleRegister" class="space-y-4">
-        <!-- Username -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">用户名</label>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <User class="w-4 h-4" />
-            </span>
-            <input
-              v-model="username"
-              type="text"
-              placeholder="您的个性用户名"
-              class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <!-- Email -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">电子邮箱</label>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <Mail class="w-4 h-4" />
-            </span>
-            <input
-              v-model="email"
-              type="email"
-              placeholder="请输入绑定邮箱"
-              class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <!-- Verification Code -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">邮箱验证码</label>
-          <div class="flex space-x-2">
-            <div class="relative flex-1 flex items-center">
-              <span class="absolute left-3 text-slate-500">
-                <Key class="w-4 h-4" />
-              </span>
-              <input
-                v-model="code"
-                type="text"
-                maxlength="6"
-                placeholder="6位验证码"
-                class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-                :disabled="loading"
-                required
-              />
-            </div>
-            <button
-              type="button"
-              @click="handleSendCode"
-              class="px-3 text-xs border border-slate-800 bg-slate-950 text-blue-400 hover:bg-slate-900 rounded-lg font-medium transition-all disabled:opacity-50"
-              :disabled="cooldown > 0 || loading"
-            >
-              {{ cooldown > 0 ? `${cooldown}s` : '发送验证码' }}
-            </button>
-          </div>
-        </div>
-
-        <!-- Password -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">设定密码</label>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <Lock class="w-4 h-4" />
-            </span>
-            <input
-              v-model="password"
-              type="password"
-              placeholder="最少 6 位密码"
-              class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <!-- Confirm Password -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">确认密码</label>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <ShieldCheck class="w-4 h-4" />
-            </span>
-            <input
-              v-model="confirmPassword"
-              type="password"
-              placeholder="请再次输入密码"
-              class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <button
-          type="submit"
-          class="w-full py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium rounded-lg text-sm transition-all"
-          :disabled="loading"
-        >
-          确认注册并进入系统
-        </button>
-
-        <div class="text-center pt-1">
-          <button type="button" @click="switchMode('login')" class="inline-flex items-center text-xs text-slate-400 hover:text-slate-200 space-x-1">
-            <CornerUpLeft class="w-3.5 h-3.5" />
-            <span>返回登录</span>
-          </button>
-        </div>
-      </form>
-
-      <!-- ================= RESET PASSWORD FORM ================= -->
-      <form v-else-if="mode === 'reset'" @submit.prevent="handleResetPassword" class="space-y-4">
-        <p class="text-xs text-slate-400 mb-2 leading-relaxed">
-          请输入您的注册邮箱，我们将向该邮箱发送一个 6 位验证码以重置密码。
-        </p>
-        
-        <!-- Email -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">注册邮箱</label>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <Mail class="w-4 h-4" />
-            </span>
-            <input
-              v-model="email"
-              type="email"
-              placeholder="请输入绑定邮箱"
-              class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <!-- Code -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">邮箱验证码</label>
-          <div class="flex space-x-2">
-            <div class="relative flex-1 flex items-center">
-              <span class="absolute left-3 text-slate-500">
-                <Key class="w-4 h-4" />
-              </span>
-              <input
-                v-model="code"
-                type="text"
-                maxlength="6"
-                placeholder="6位验证码"
-                class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-                :disabled="loading"
-                required
-              />
-            </div>
-            <button
-              type="button"
-              @click="handleSendCode"
-              class="px-3 text-xs border border-slate-800 bg-slate-950 text-blue-400 hover:bg-slate-900 rounded-lg font-medium transition-all disabled:opacity-50"
-              :disabled="cooldown > 0 || loading"
-            >
-              {{ cooldown > 0 ? `${cooldown}s` : '发送验证码' }}
-            </button>
-          </div>
-        </div>
-
-        <!-- New Password -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">设定新密码</label>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <Lock class="w-4 h-4" />
-            </span>
-            <input
-              v-model="password"
-              type="password"
-              placeholder="最少 6 位新密码"
-              class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <!-- Confirm New Password -->
-        <div class="space-y-1.5">
-          <label class="text-xs text-slate-400 font-medium">确认新密码</label>
-          <div class="relative flex items-center">
-            <span class="absolute left-3 text-slate-500">
-              <ShieldCheck class="w-4 h-4" />
-            </span>
-            <input
-              v-model="confirmPassword"
-              type="password"
-              placeholder="请再次输入新密码"
-              class="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-all"
-              :disabled="loading"
-              required
-            />
-          </div>
-        </div>
-
-        <button
-          type="submit"
-          class="w-full py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium rounded-lg text-sm transition-all"
-          :disabled="loading"
-        >
-          确定重置密码
-        </button>
-
-        <div class="text-center pt-1">
-          <button type="button" @click="switchMode('login')" class="inline-flex items-center text-xs text-slate-400 hover:text-slate-200 space-x-1">
-            <CornerUpLeft class="w-3.5 h-3.5" />
-            <span>返回登录</span>
-          </button>
-        </div>
-      </form>
-
+  <div class="relative flex min-h-screen w-full overflow-hidden bg-gray-50 font-sans text-gray-900 transition-colors dark:bg-zinc-950 dark:text-zinc-50">
+    <!-- 背景：克制的蓝色光晕 + 细网格，与平台整体视觉保持一致 -->
+    <div class="pointer-events-none absolute inset-0 overflow-hidden">
+      <div class="absolute -left-32 -top-32 h-96 w-96 rounded-full bg-blue-500/10 blur-3xl"></div>
+      <div class="absolute -bottom-40 -right-24 h-[28rem] w-[28rem] rounded-full bg-indigo-500/10 blur-3xl"></div>
+      <div
+        class="absolute inset-0 opacity-40 dark:opacity-20"
+        style="background-image: linear-gradient(to right, rgba(148, 163, 184, 0.14) 1px, transparent 1px), linear-gradient(to bottom, rgba(148, 163, 184, 0.14) 1px, transparent 1px); background-size: 48px 48px; mask-image: radial-gradient(ellipse at center, black 25%, transparent 75%); -webkit-mask-image: radial-gradient(ellipse at center, black 25%, transparent 75%)"
+      ></div>
     </div>
+
+    <!-- 左侧品牌区：直接铺满 MemoryPath 学迹主视觉（浅色 / 深色两版） -->
+    <aside
+      class="relative z-10 hidden flex-shrink-0 overflow-hidden border-r border-gray-200/80 dark:border-zinc-800/80 lg:block"
+      style="width: min(69vh, 52vw)"
+    >
+      <img
+        src="/brand/login-hero-light.webp"
+        alt="MemoryPath 学迹 · AI 伴学与智能体协同平台：让每一次学习，都留下可追溯的痕迹"
+        class="absolute inset-0 h-full w-full object-cover dark:hidden"
+      />
+      <img
+        src="/brand/login-hero-dark.webp"
+        alt="MemoryPath 学迹 · AI 伴学与智能体协同平台：让每一次学习，都留下可追溯的痕迹"
+        class="absolute inset-0 hidden h-full w-full object-cover dark:block"
+      />
+    </aside>
+
+    <!-- 右侧表单区 -->
+    <main class="relative z-10 flex flex-1 flex-col items-center justify-center px-5 py-10 sm:px-8">
+      <button
+        type="button"
+        class="ui-icon-button absolute right-5 top-5"
+        :title="isDark ? '切换到浅色模式' : '切换到深色模式'"
+        @click="toggleTheme"
+      >
+        <Sun v-if="isDark" class="h-4 w-4" />
+        <Moon v-else class="h-4 w-4" />
+      </button>
+
+      <div class="w-full max-w-[380px]">
+        <!-- 移动端品牌头 -->
+        <div class="mb-8 flex items-center gap-3 lg:hidden">
+          <img
+            src="/brand/mp-logo.png"
+            alt="MemoryPath 学迹"
+            class="h-9 w-9 flex-shrink-0"
+          />
+          <div class="leading-tight">
+            <p class="text-sm font-semibold tracking-tight text-gray-900 dark:text-zinc-50">MemoryPath</p>
+            <p class="text-[10px] text-gray-400 dark:text-zinc-500">学迹 · AI 伴学与智能体协同平台</p>
+          </div>
+        </div>
+
+        <div class="mb-6 space-y-1.5">
+          <h2 class="text-xl font-semibold tracking-tight text-gray-900 dark:text-zinc-50">{{ headings.title }}</h2>
+          <p class="text-xs leading-relaxed text-gray-400 dark:text-zinc-500">{{ headings.desc }}</p>
+        </div>
+
+        <!-- 角色切换（重置密码时隐藏） -->
+        <div
+          v-if="mode !== 'reset'"
+          class="mb-5 flex rounded-md border border-gray-200 bg-gray-100/70 p-1 dark:border-zinc-800 dark:bg-zinc-900"
+        >
+          <button
+            v-for="role in visibleRoles"
+            :key="role.value"
+            type="button"
+            class="flex-1 rounded px-2 py-1.5 text-xs font-semibold transition-colors"
+            :class="activeRole === role.value
+              ? 'bg-white text-blue-700 shadow-sm dark:bg-zinc-800 dark:text-blue-300'
+              : 'text-gray-500 hover:text-gray-800 dark:text-zinc-400 dark:hover:text-zinc-200'"
+            @click="activeRole = role.value"
+          >
+            {{ role.label }}
+          </button>
+        </div>
+
+        <!-- ================= 登录 ================= -->
+        <form v-if="mode === 'login'" class="space-y-4" @submit.prevent="handleLogin">
+          <div class="space-y-1.5">
+            <label for="login-username" class="ui-field-label">账号</label>
+            <div class="relative flex items-center">
+              <User class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="login-username"
+                v-model="username"
+                type="text"
+                autocomplete="username"
+                placeholder="用户名或邮箱"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between">
+              <label for="login-password" class="ui-field-label">密码</label>
+              <button
+                type="button"
+                class="text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
+                @click="switchMode('reset')"
+              >
+                忘记密码？
+              </button>
+            </div>
+            <div class="relative flex items-center">
+              <Lock class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="login-password"
+                v-model="password"
+                type="password"
+                autocomplete="current-password"
+                placeholder="请输入密码"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            :disabled="loading"
+            class="mt-1 flex w-full items-center justify-center gap-1.5 rounded-md bg-blue-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <span v-if="loading">正在登录...</span>
+            <template v-else>
+              <span>进入 MemoryPath</span>
+              <ArrowRight class="h-4 w-4" />
+            </template>
+          </button>
+
+          <div class="pt-1 text-center text-xs text-gray-500 dark:text-zinc-400">
+            还没有账号？
+            <button type="button" class="font-semibold text-blue-600 hover:underline dark:text-blue-400" @click="switchMode('register')">
+              立即注册
+            </button>
+          </div>
+        </form>
+
+        <!-- ================= 注册 ================= -->
+        <form v-else-if="mode === 'register'" class="space-y-4" @submit.prevent="handleRegister">
+          <div class="space-y-1.5">
+            <label for="register-username" class="ui-field-label">用户名</label>
+            <div class="relative flex items-center">
+              <User class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="register-username"
+                v-model="username"
+                type="text"
+                autocomplete="username"
+                placeholder="你的个性用户名"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="register-email" class="ui-field-label">电子邮箱</label>
+            <div class="relative flex items-center">
+              <Mail class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="register-email"
+                v-model="email"
+                type="email"
+                autocomplete="email"
+                placeholder="用于接收验证码"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="register-code" class="ui-field-label">邮箱验证码</label>
+            <div class="flex items-center gap-2">
+              <div class="relative flex flex-1 items-center">
+                <Key class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+                <input
+                  id="register-code"
+                  v-model="code"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  maxlength="6"
+                  placeholder="6 位验证码"
+                  :disabled="loading"
+                  required
+                  class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+                />
+              </div>
+              <button
+                type="button"
+                :disabled="cooldown > 0 || loading"
+                class="shrink-0 rounded-md border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-blue-600 transition hover:border-blue-200 hover:bg-blue-50 disabled:pointer-events-none disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-blue-400 dark:hover:border-blue-900 dark:hover:bg-blue-950/20"
+                @click="handleSendCode"
+              >
+                {{ cooldown > 0 ? `${cooldown}s` : '发送验证码' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="register-password" class="ui-field-label">设定密码</label>
+            <div class="relative flex items-center">
+              <Lock class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="register-password"
+                v-model="password"
+                type="password"
+                autocomplete="new-password"
+                placeholder="最少 6 位密码"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="register-confirm" class="ui-field-label">确认密码</label>
+            <div class="relative flex items-center">
+              <ShieldCheck class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="register-confirm"
+                v-model="confirmPassword"
+                type="password"
+                autocomplete="new-password"
+                placeholder="请再次输入密码"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            :disabled="loading"
+            class="mt-1 flex w-full items-center justify-center rounded-md bg-blue-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ loading ? '正在创建账号...' : '创建账号并登录' }}
+          </button>
+
+          <div class="pt-1 text-center">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 text-xs font-medium text-gray-400 transition hover:text-gray-600 dark:text-zinc-500 dark:hover:text-zinc-300"
+              @click="switchMode('login')"
+            >
+              <CornerUpLeft class="h-3.5 w-3.5" />
+              返回登录
+            </button>
+          </div>
+        </form>
+
+        <!-- ================= 重置密码 ================= -->
+        <form v-else-if="mode === 'reset'" class="space-y-4" @submit.prevent="handleResetPassword">
+          <div class="space-y-1.5">
+            <label for="reset-email" class="ui-field-label">注册邮箱</label>
+            <div class="relative flex items-center">
+              <Mail class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="reset-email"
+                v-model="email"
+                type="email"
+                autocomplete="email"
+                placeholder="请输入绑定邮箱"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="reset-code" class="ui-field-label">邮箱验证码</label>
+            <div class="flex items-center gap-2">
+              <div class="relative flex flex-1 items-center">
+                <Key class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+                <input
+                  id="reset-code"
+                  v-model="code"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="one-time-code"
+                  maxlength="6"
+                  placeholder="6 位验证码"
+                  :disabled="loading"
+                  required
+                  class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+                />
+              </div>
+              <button
+                type="button"
+                :disabled="cooldown > 0 || loading"
+                class="shrink-0 rounded-md border border-gray-200 bg-white px-3 py-2.5 text-xs font-semibold text-blue-600 transition hover:border-blue-200 hover:bg-blue-50 disabled:pointer-events-none disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-blue-400 dark:hover:border-blue-900 dark:hover:bg-blue-950/20"
+                @click="handleSendCode"
+              >
+                {{ cooldown > 0 ? `${cooldown}s` : '发送验证码' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="reset-password" class="ui-field-label">设定新密码</label>
+            <div class="relative flex items-center">
+              <Lock class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="reset-password"
+                v-model="password"
+                type="password"
+                autocomplete="new-password"
+                placeholder="最少 6 位新密码"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <label for="reset-confirm" class="ui-field-label">确认新密码</label>
+            <div class="relative flex items-center">
+              <ShieldCheck class="pointer-events-none absolute left-3 h-4 w-4 text-gray-400 dark:text-zinc-500" />
+              <input
+                id="reset-confirm"
+                v-model="confirmPassword"
+                type="password"
+                autocomplete="new-password"
+                placeholder="请再次输入新密码"
+                :disabled="loading"
+                required
+                class="w-full rounded-md border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:placeholder:text-zinc-600 dark:focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            :disabled="loading"
+            class="mt-1 flex w-full items-center justify-center rounded-md bg-blue-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {{ loading ? '正在提交...' : '重置密码' }}
+          </button>
+
+          <div class="pt-1 text-center">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 text-xs font-medium text-gray-400 transition hover:text-gray-600 dark:text-zinc-500 dark:hover:text-zinc-300"
+              @click="switchMode('login')"
+            >
+              <CornerUpLeft class="h-3.5 w-3.5" />
+              返回登录
+            </button>
+          </div>
+        </form>
+
+        <p class="mt-8 text-center text-[10px] leading-relaxed text-gray-400 dark:text-zinc-600">
+          © 2026 MemoryPath 学迹 · AI 伴学与智能体协同平台
+        </p>
+      </div>
+    </main>
   </div>
 </template>

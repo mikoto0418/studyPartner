@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    APP_NAME: str = "AI伴学与智能体协同平台"
+    APP_NAME: str = "MemoryPath 学迹"
     APP_ENV: str = "development"
     APP_DEBUG: bool = True
     ENABLE_INLINE_SCHEDULER: bool = False

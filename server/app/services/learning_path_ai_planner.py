@@ -75,7 +75,7 @@ class LearningPathWebResearcher:
         errors: List[str] = []
         headers = {
             "Accept": "application/vnd.github+json, text/html, text/plain;q=0.9, */*;q=0.8",
-            "User-Agent": "StudyPartner-LearningPathPlanner/1.0",
+            "User-Agent": "MemoryPath-LearningPathPlanner/1.0",
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
