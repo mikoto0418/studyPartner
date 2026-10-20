@@ -12,7 +12,7 @@
 
 ```mermaid
 gantt
-    title AI 伴学与智能体协同平台 MVP 开发路线图
+    title MemoryPath 学迹 MVP 开发路线图
     dateFormat  YYYY-MM-DD
     axisFormat  %m/%d
 

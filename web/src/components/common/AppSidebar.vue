@@ -123,15 +123,11 @@ onUnmounted(() => {
     <div class="space-y-4">
       <div class="flex items-center justify-between gap-2 px-1">
         <div class="flex min-w-0 items-center gap-2.5 overflow-hidden">
-          <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md bg-blue-600 text-base font-bold text-white shadow-sm">
-            A
+          <img src="/brand/mp-logo.png" alt="MemoryPath 学迹" class="h-9 w-9 flex-shrink-0" />
+          <div v-if="!collapsed" class="min-w-0 leading-tight">
+            <p class="truncate text-sm font-semibold tracking-tight text-gray-900 dark:text-zinc-50">MemoryPath</p>
+            <p class="truncate text-[10px] text-gray-400 dark:text-zinc-500">学迹 · AI 伴学平台</p>
           </div>
-          <span
-            v-if="!collapsed"
-            class="truncate text-sm font-semibold text-gray-900 transition-all duration-200 dark:text-zinc-50"
-          >
-            AI伴学协同平台
-          </span>
         </div>
 
         <button

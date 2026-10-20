@@ -1,6 +1,6 @@
 # 系统架构设计文档
 
-> AI 伴学与智能体协同平台 · System Architecture Design Document
+> MemoryPath 学迹 · AI 伴学与智能体协同平台 · System Architecture Design Document
 
 版本：V1.0
 文档状态：初稿
@@ -33,7 +33,7 @@
 
 ### 1.1 平台定位
 
-**AI 伴学与智能体协同平台** 是一个通用型 AI 辅助学习平台，旨在为学习者提供一个具备记忆、复盘、建议、协同和知识沉淀能力的智能学习环境。平台不绑定任何特定机构，可灵活部署于个人学习、学校教学、培训机构、企业内训等多种场景。
+**MemoryPath 学迹** 是一个通用型 AI 辅助学习平台，旨在为学习者提供一个具备记忆、复盘、建议、协同和知识沉淀能力的智能学习环境。平台不绑定任何特定机构，可灵活部署于个人学习、学校教学、培训机构、企业内训等多种场景。
 
 ### 1.2 核心理念
 
@@ -64,7 +64,7 @@ C4Context
     Person(teacher, "老师", "发布任务/公告、查看学生学习状态")
     Person(admin, "管理员", "管理用户、配置系统、运维监控")
 
-    System(platform, "AI 伴学与智能体协同平台", "提供学习行为记录、AI 伴学、知识库、任务协同等能力")
+    System(platform, "MemoryPath 学迹", "提供学习行为记录、AI 伴学、知识库、任务协同等能力")
 
     System_Ext(siliconflow, "硅基流动 API", "OpenAI 兼容大模型接口")
     System_Ext(cloudflare, "Cloudflare", "DNS + Tunnel 隧道")
@@ -1933,7 +1933,7 @@ DINGTALK_WEBHOOK_URL=<webhook_url>
 TUNNEL_TOKEN=<tunnel_token>
 
 # ========== 应用配置 ==========
-APP_NAME=AI伴学与智能体协同平台
+APP_NAME=MemoryPath 学迹
 APP_ENV=production
 APP_DEBUG=false
 CORS_ORIGINS=https://platform.example.com

@@ -1,6 +1,6 @@
 # API 接口设计文档
 
-> AI 伴学与智能体协同平台 — RESTful API 设计规范
+> MemoryPath 学迹 · AI 伴学与智能体协同平台 — RESTful API 设计规范
 
 版本：V1.0
 更新日期：2026-06-02
@@ -4680,7 +4680,7 @@ data: {"type": "done", "content": "", "message_id": "msg_003", "conversation_id"
   "code": 0,
   "message": "success",
   "data": {
-    "platform_name": "AI 伴学平台",
+    "platform_name": "MemoryPath 学迹",
     "registration_enabled": false,
     "max_file_size_mb": 50,
     "allowed_file_types": [".pdf", ".doc", ".docx", ".md", ".txt", ".jpg", ".png"],
