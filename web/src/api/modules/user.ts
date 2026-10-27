@@ -32,6 +32,7 @@ export interface UserOut {
   updated_at: string
   roles: RoleOut[]
   student_profile?: StudentProfileOut
+  requires_identity_confirmation?: boolean
 }
 
 export interface PageData<T> {

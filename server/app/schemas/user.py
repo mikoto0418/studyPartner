@@ -1,7 +1,8 @@
 from datetime import datetime, date
 from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, EmailStr, Field, computed_field
+from pydantic import BaseModel, EmailStr, Field, computed_field, field_validator
+from pydantic_core import PydanticCustomError
 
 class RoleBase(BaseModel):
     code: str = Field(..., description="角色编码")
@@ -65,6 +66,7 @@ class UserOut(UserBase):
     updated_at: datetime
     roles: List[RoleOut] = []
     student_profile: Optional[StudentProfileOut] = None
+    requires_identity_confirmation: bool = False
 
     @computed_field
     @property
@@ -73,3 +75,17 @@ class UserOut(UserBase):
 
     class Config:
         from_attributes = True
+
+
+class IdentityConfirmation(BaseModel):
+    name: str = Field(..., min_length=1, max_length=50, description="本人真实姓名")
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value):
+        if not isinstance(value, str):
+            raise PydanticCustomError("identity_name", "请输入姓名")
+        value = value.strip()
+        if any(ord(char) < 32 for char in value):
+            raise PydanticCustomError("identity_name", "姓名不能包含换行或控制字符")
+        return value

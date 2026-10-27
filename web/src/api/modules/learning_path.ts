@@ -6,6 +6,7 @@ export interface ClassMemberOut {
   username?: string
   nickname?: string
   display_name?: string
+  requires_identity_confirmation?: boolean
   status: string
   joined_at?: string
 }

@@ -30,6 +30,11 @@ const classForm = ref({
 
 const displayNameOf = (student: UserOut) => student.display_name || student.nickname?.trim() || '未设置姓名'
 const selectedClassStudentNames = computed(() => selectedClassStudents.value.map(displayNameOf).join('、'))
+const roster = computed(() =>
+  [...(classes.value.find(item => item.id === selectedClassId.value)?.members || [])]
+    .sort((a, b) => (a.username || '').localeCompare(b.username || ''))
+)
+const pendingNames = computed(() => roster.value.filter(item => item.requires_identity_confirmation).length)
 
 const loadData = async () => {
   loading.value = true
@@ -276,7 +281,7 @@ onMounted(loadData)
           </div>
           <button
             class="inline-flex items-center gap-1.5 rounded border border-gray-200 px-3 py-1.5 text-xs text-gray-500 dark:border-zinc-800"
-            @click="selectedClassId && loadAnalytics(selectedClassId)"
+            @click="loadData"
           >
             <RefreshCw class="h-3.5 w-3.5" />
             <span>刷新</span>
@@ -297,6 +302,25 @@ onMounted(loadData)
             </div>
           </div>
         </div>
+
+        <section class="minimal-card bg-white p-5 dark:bg-zinc-900">
+          <h3 class="text-sm font-semibold">班级名单</h3>
+          <p class="mt-1 mb-3 text-xs text-gray-500">共 {{ roster.length }} 人，{{ pendingNames }} 人待填写姓名。点击上方刷新可更新名单。</p>
+          <div class="max-h-80 overflow-auto">
+            <table class="w-full text-left text-xs">
+              <thead><tr class="border-b border-gray-100 dark:border-zinc-800">
+                <th class="py-2">账号</th><th>姓名</th><th>登记状态</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="member in roster" :key="member.user_id" class="border-b border-gray-50 dark:border-zinc-800/50">
+                  <td class="py-2">{{ member.username }}</td>
+                  <td>{{ member.nickname || '未填写' }}</td>
+                  <td>{{ member.requires_identity_confirmation ? '待填写' : (member.nickname ? '已填写' : '未填写') }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         <section v-if="!hasData" class="minimal-card bg-white p-12 text-center dark:bg-zinc-900">
           <p class="text-sm text-gray-500 dark:text-zinc-400">这个班还没有收到任何试卷。</p>

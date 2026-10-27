@@ -33,6 +33,12 @@ pip-delete-this-directory.txt
 
 # Environment files
 .env
+.env.interview
+.1022-five-question-updated
+update-backups/
+1022-roster.csv
+docs/1022-accounts.csv
+1022-images.tar
 server/.env
 local.*.env
 *.pid

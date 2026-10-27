@@ -29,6 +29,7 @@ const typeLabel = (type: string) => {
 
 const formatAnswer = (value: any) => {
   if (value == null || value === '') return '未作答'
+  if (typeof value === 'object' && typeof value.code === 'string') return `[${value.language}]\n${value.code}`
   if (Array.isArray(value)) return value.length ? value.join('、') : '未作答'
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
@@ -83,7 +84,7 @@ onMounted(load)
           <p class="text-[11px] text-gray-400">
             {{ review.attempt.status === 'pending_review' ? '已判得分' : '得分' }}
           </p>
-          <p class="mt-1 text-2xl font-semibold text-gray-900 dark:text-zinc-50">{{ review.attempt.score ?? review.attempt.objective_score ?? 0 }}</p>
+          <p class="mt-1 text-2xl font-semibold text-gray-900 dark:text-zinc-50">{{ review.attempt.score ?? review.attempt.graded_score ?? review.attempt.objective_score ?? 0 }}</p>
         </div>
         <div class="px-6 py-5 text-center">
           <p class="text-[11px] text-gray-400">用时</p>
@@ -183,7 +184,8 @@ onMounted(load)
         </template>
       </div>
 
-      <div class="mt-2 rounded bg-emerald-50/70 px-3 py-2 dark:bg-emerald-950/20">
+      <p v-if="review?.paper.answers_available === false" class="mt-2 text-xs text-gray-400">参考答案与解析将在考试结束后开放。</p>
+      <div v-else class="mt-2 rounded bg-emerald-50/70 px-3 py-2 dark:bg-emerald-950/20">
         <p class="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">参考答案</p>
         <p class="mt-1 whitespace-pre-wrap text-sm text-emerald-900 dark:text-emerald-100">{{ formatAnswer(question.reference_answer) }}</p>
       </div>

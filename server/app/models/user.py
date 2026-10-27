@@ -46,6 +46,12 @@ class User(BaseModel):
     def role_codes(self) -> list[str]:
         return [r.code for r in self.roles]
 
+    @property
+    def requires_identity_confirmation(self) -> bool:
+        if "student" not in self.role_codes or not self.student_profile:
+            return False
+        return (self.student_profile.extra_info or {}).get("identity_required") is True
+
 class StudentProfile(BaseModel):
     __tablename__ = "student_profiles"
     

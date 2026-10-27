@@ -1,4 +1,5 @@
 from typing import List, Optional
+from datetime import datetime, timezone
 from uuid import UUID
 
 from urllib.parse import quote
@@ -43,6 +44,11 @@ from app.services.assessment_service import AssessmentService
 router = APIRouter()
 
 
+@router.get('/student/clock', summary='服务器系统时间，不依赖外网或学生电脑时钟')
+async def student_clock(current_user: User = Depends(require_student)):
+    return BaseResponse.success(data={'server_time': datetime.now(timezone.utc).isoformat()})
+
+
 @router.post("/papers", response_model=BaseResponse[AssessmentPaperOut], summary="创建发题任务并触发 AI 拆题")
 async def create_paper(
     req: AssessmentPaperCreateReq = Body(...),
@@ -50,7 +56,7 @@ async def create_paper(
     db: AsyncSession = Depends(get_db),
 ):
     paper = await AssessmentService.create_paper(db, current_user.id, req.file_id, req.title, req.description)
-    return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="拆题任务已提交")
+    return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="草稿已创建" if req.file_id is None else "拆题任务已提交")
 
 
 @router.post(
@@ -174,6 +180,7 @@ async def publish_paper(
         req.grading_preference,
         req.time_limit_minutes,
         req.require_fullscreen,
+        req.fullscreen_exit_auto_submit,
     )
     return BaseResponse.success(data=AssessmentPaperOut.model_validate(paper), message="发布成功")
 
@@ -446,7 +453,7 @@ async def student_code_dry_run(
     db: AsyncSession = Depends(get_db),
 ):
     data = await AssessmentService.code_dry_run(
-        db, attempt_id, current_user.id, question_id, req.code, req.stdin
+        db, attempt_id, current_user.id, question_id, req.code, req.stdin, req.language
     )
     return BaseResponse.success(data=CodeRunOut(**data), message=data["message"])
 
@@ -484,7 +491,7 @@ async def student_behavior_batch(
     db: AsyncSession = Depends(get_db),
 ):
     events = [
-        {"event_type": e.event_type, "payload": e.payload, "occurred_at": e.occurred_at}
+        {"event_id": e.event_id, "event_type": e.event_type, "payload": e.payload, "occurred_at": e.occurred_at}
         for e in req.events
     ]
     count = await AssessmentService.batch_save_behavior(

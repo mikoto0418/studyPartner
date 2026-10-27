@@ -7,7 +7,7 @@ from app.schemas.auth import (
     LoginRequest, TokenOut, RefreshTokenRequest, ChangePasswordRequest,
     SendCodeRequest, RegisterRequest, ResetPasswordRequest
 )
-from app.schemas.user import UserOut, UserCreate
+from app.schemas.user import IdentityConfirmation, UserOut, UserCreate
 from app.services.auth_service import AuthService
 from app.services.user_service import UserService
 from app.services.email_service import EmailService
@@ -52,6 +52,16 @@ async def change_password(
 async def get_me(current_user: User = Depends(get_current_user)):
     user_out = UserOut.model_validate(current_user)
     return BaseResponse.success(data=user_out, message="获取成功")
+
+
+@router.post("/identity", response_model=BaseResponse[UserOut], summary="首次登录确认本人姓名")
+async def confirm_identity(
+    body: IdentityConfirmation,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await UserService.confirm_identity(db, current_user, body.name)
+    return BaseResponse.success(data=UserOut.model_validate(user), message="姓名已保存")
 
 @router.post("/send-code", response_model=BaseResponse[bool], summary="发送邮箱验证码")
 async def send_code(

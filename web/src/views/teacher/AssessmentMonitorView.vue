@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ShieldAlert, Eye, Clock, FileText, PenLine, Sparkles, CheckCheck } from 'lucide-vue-next'
@@ -22,9 +22,27 @@ const papers = ref<AssessmentPaper[]>([])
 const selectedPaperId = ref<string>(String(route.query.paper_id || ''))
 const attempts = ref<AttemptMonitor[]>([])
 const attemptsLoading = ref(false)
+const attemptsError = ref('')
+const refreshedAt = ref<string | null>(null)
+let attemptsRequest = 0
+let disposed = false
+let refreshTimer: ReturnType<typeof setInterval> | undefined
+
+const answersDrawer = ref(false)
+const answersLoading = ref(false)
+const answersError = ref('')
+const viewedAttempt = ref<AttemptMonitor | null>(null)
+const viewedAnswers = ref<AttemptAnswer[]>([])
+const viewedQuestionId = ref('')
+const answersReadAt = ref<string | null>(null)
+let answerRequest = 0
+const viewedAnswer = computed(() => viewedAnswers.value.find((a) => a.question_id === viewedQuestionId.value) || null)
+const viewedAttemptStatus = computed(() => viewedAnswer.value?.attempt_status || viewedAttempt.value?.status)
 
 const behaviorDrawer = ref(false)
 const behaviorLoading = ref(false)
+const behaviorError = ref('')
+let behaviorRequest = 0
 const behaviorEvents = ref<BehaviorEventOut[]>([])
 // 抽屉内两种视图：timeline=原始事件时间线，byQuestion=按题聚合画像
 const behaviorView = ref<'timeline' | 'byQuestion'>('byQuestion')
@@ -34,6 +52,7 @@ const questionMap = ref<Record<string, number>>({})
 
 const gradeDrawer = ref(false)
 const gradeLoading = ref(false)
+const gradeError = ref('')
 const gradeSubmitting = ref(false)
 const gradeAiRunning = ref(false)
 const gradeAnswers = ref<AttemptAnswer[]>([])
@@ -56,9 +75,11 @@ const hasAiSuggestion = (a: AttemptAnswer) =>
 const EVENT_LABELS: Record<string, string> = {
   session_start: '开始作答',
   session_end: '结束作答',
+  page_leave: '离开答题页面',
+  page_return: '返回答题页面',
   fullscreen_enter: '进入全屏',
   fullscreen_exit: '退出全屏',
-  fullscreen_denied: '全屏被拒绝',
+  fullscreen_denied: '未能进入全屏',
   blocked_shortcut: '拦截快捷键',
   blocked_paste: '拦截粘贴',
   blocked_copy: '拦截复制',
@@ -71,7 +92,8 @@ const EVENT_LABELS: Record<string, string> = {
   blocked_drag: '拦截拖拽',
   blocked_exec: '拦截 execCommand',
   clipboard_read: '读取剪贴板',
-  devtools_open: '打开开发者工具',
+  devtools_open: '旧版开发者工具探测记录',
+  blocked_input: '旧版输入拦截记录',
   focus_gain: '回到页面',
   focus_loss: '离开页面',
   focus_dwell: '焦点停留',
@@ -80,31 +102,53 @@ const EVENT_LABELS: Record<string, string> = {
   visibility_visible: '回到前台'
 }
 
-const FLAG_TYPES = new Set([
-  'fullscreen_exit',
-  'fullscreen_denied',
-  'blocked_shortcut',
-  'blocked_paste',
-  'blocked_copy',
-  'blocked_cut',
-  'blocked_drop',
-  'blocked_contextmenu',
-  'blocked_insert',
-  'blocked_selection',
-  'blocked_drag',
-  'blocked_exec',
-  'clipboard_read',
-  'devtools_open',
-  'focus_loss',
-  'visibility_hidden'
-])
-
 const selectedPaper = computed(
   () => papers.value.find((p) => p.id === selectedPaperId.value) || null
 )
 
 const eventLabel = (t: string) => EVENT_LABELS[t] || t
-const isFlag = (t: string) => FLAG_TYPES.has(t)
+
+const codeText = (a: AttemptAnswer) => typeof a.answer?.code === 'string'
+  ? a.answer.code
+  : typeof a.answer === 'string' ? a.answer : ''
+
+const languageLabel = (a: AttemptAnswer) => {
+  const language = a.language || a.answer?.language
+  return ({ python: 'Python 3', java: 'Java 17', c: 'C17', cpp: 'C++17', javascript: 'JavaScript' } as Record<string, string>)[language] || language || '未选择语言'
+}
+
+const judgeLabel = (a: AttemptAnswer) => {
+  if (!a.has_saved_answer) return '尚未保存答案'
+  if (a.attempt_status === 'in_progress' || (!a.attempt_status && viewedAttemptStatus.value === 'in_progress')) return '草稿 · 尚未交卷判题'
+  const status = a.judge_summary?.status
+  if (!status) return a.graded ? `已评分 ${a.score} 分` : '等待判题 / 批改'
+  return ({ accepted: '全部通过', partial: '部分通过', wrong_answer: '答案不符', compile_error: '编译错误', runtime_error: '运行错误', time_limit: '运行超时', system_error: '判题服务异常', no_answer: '未提交代码' } as Record<string, string>)[status] || status
+}
+
+const copyCode = async (a: AttemptAnswer) => {
+  const code = codeText(a)
+  if (!code) return
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(code)
+    } else {
+      // 内网 HTTP 没有 Clipboard API，保留浏览器原生复制的兼容方式。
+      const textarea = document.createElement('textarea')
+      textarea.value = code
+      textarea.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
+      document.body.appendChild(textarea)
+      try {
+        textarea.select()
+        if (!document.execCommand('copy')) throw new Error('copy unavailable')
+      } finally {
+        textarea.remove()
+      }
+    }
+    ElMessage.success('代码已复制')
+  } catch {
+    ElMessage.warning('复制未成功，请选中代码后使用 Ctrl+C')
+  }
+}
 
 const formatTime = (v?: string | null) => {
   if (!v) return '—'
@@ -170,6 +214,7 @@ const caseStatusLabel = (status: string) => {
 
 const formatAnswer = (v: any) => {
   if (v == null || v === '') return '（未作答）'
+  if (typeof v === 'object' && typeof v.code === 'string') return `[${v.language}]\n${v.code}`
   if (Array.isArray(v)) return v.length ? v.join('、') : '（未作答）'
   if (typeof v === 'object') return JSON.stringify(v)
   return String(v)
@@ -216,7 +261,8 @@ const formatEventPayload = (e: BehaviorEventOut) => {
     const no = questionNo(p.question_id)
     if (no) parts.push(no)
     const method: Record<string, string> = {
-      typing: '键盘输入', ime: '输入法', non_key_input: '非键盘输入', delete: '删除'
+      typing: '键盘输入', ime: '输入法', non_key_input: '其他输入', delete: '删除',
+      editor_assist: '编辑器辅助输入', history: '撤销 / 重做'
     }
     const op: Record<string, string> = { insert: '新增', delete: '删除', replace: '替换' }
     parts.push(method[p.input_method] || '编辑')
@@ -233,6 +279,7 @@ const formatEventPayload = (e: BehaviorEventOut) => {
   if (p.input_type) parts.push(`类型 ${p.input_type}`)
   if (p.command) parts.push(`命令 ${p.command}`)
   if (p.source) parts.push(`来源 ${p.source}`)
+  if (p.episode_id) parts.push(`同次离开记录 ${String(p.episode_id).slice(0, 8)}`)
   return parts.length ? parts.join(' · ') : ''
 }
 
@@ -256,17 +303,57 @@ const loadPapers = async () => {
   }
 }
 
-const loadAttempts = async () => {
+const loadAttempts = async (quiet = false) => {
   if (!selectedPaperId.value) return
+  if (attemptsLoading.value) return
+  const paperId = selectedPaperId.value
+  const requestId = ++attemptsRequest
+  // 自动刷新不盖住表格，也不替换正在阅读的代码或批改内容。
   attemptsLoading.value = true
   try {
-    const res = await assessmentApi.listPaperAttempts(selectedPaperId.value)
+    const res = await assessmentApi.listPaperAttempts(paperId)
+    if (disposed || requestId !== attemptsRequest || paperId !== selectedPaperId.value) return
     attempts.value = res.data || []
+    refreshedAt.value = new Date().toISOString()
+    attemptsError.value = ''
   } catch {
-    attempts.value = []
+    if (disposed || requestId !== attemptsRequest || paperId !== selectedPaperId.value) return
+    attemptsError.value = quiet ? '自动刷新失败，已暂停。当前保留上次数据，请手动刷新重试。' : '加载失败，请刷新重试。当前数据可能不是最新状态。'
   } finally {
-    attemptsLoading.value = false
+    if (requestId === attemptsRequest) attemptsLoading.value = false
   }
+}
+
+const refreshAnswers = async () => {
+  if (!viewedAttempt.value || answersLoading.value) return
+  const attemptId = viewedAttempt.value.id
+  const requestId = ++answerRequest
+  answersLoading.value = true
+  answersError.value = ''
+  try {
+    const res = await assessmentApi.listAttemptAnswers(attemptId)
+    if (disposed || requestId !== answerRequest || viewedAttempt.value?.id !== attemptId) return
+    viewedAnswers.value = res.data || []
+    if (!viewedAnswers.value.some((a) => a.question_id === viewedQuestionId.value)) {
+      viewedQuestionId.value = viewedAnswers.value[0]?.question_id || ''
+    }
+    answersReadAt.value = new Date().toISOString()
+  } catch {
+    if (requestId === answerRequest && !disposed) answersError.value = '未能读取服务器答案。请重试；此处不会用自测记录代替已保存代码。'
+  } finally {
+    if (requestId === answerRequest) answersLoading.value = false
+  }
+}
+
+const openAnswers = (attempt: AttemptMonitor) => {
+  answerRequest++
+  viewedAttempt.value = { ...attempt }
+  viewedAnswers.value = []
+  viewedQuestionId.value = ''
+  answersReadAt.value = null
+  answersLoading.value = false
+  answersDrawer.value = true
+  refreshAnswers()
 }
 
 const exportingScore = ref(false)
@@ -302,6 +389,7 @@ const loadQuestionMap = async (paperId: string) => {
   questionMap.value = {}
   try {
     const res = await assessmentApi.listQuestions(paperId)
+    if (disposed || paperId !== selectedPaperId.value) return
     const items: any[] = res.data || []
     const map: Record<string, number> = {}
     items.forEach((q, i) => {
@@ -314,15 +402,25 @@ const loadQuestionMap = async (paperId: string) => {
 }
 
 const onPaperChange = () => {
+  attemptsRequest++
+  attemptsLoading.value = false
+  attempts.value = []
+  attemptsError.value = ''
+  refreshedAt.value = null
+  answersDrawer.value = false
+  behaviorDrawer.value = false
+  gradeDrawer.value = false
   loadAttempts()
   loadQuestionMap(selectedPaperId.value)
 }
 
 const openBehavior = async (attempt: AttemptMonitor) => {
+  const requestId = ++behaviorRequest
   currentAttempt.value = attempt
   behaviorDrawer.value = true
   behaviorLoading.value = true
   behaviorEvents.value = []
+  behaviorError.value = ''
   insights.value = null
   try {
     // 两个接口一起取：默认展示按题画像，切到时间线无需二次请求
@@ -330,12 +428,13 @@ const openBehavior = async (attempt: AttemptMonitor) => {
       assessmentApi.listAttemptBehavior(attempt.id),
       assessmentApi.getAttemptInsights(attempt.id).catch(() => ({ data: null }))
     ])
+    if (disposed || requestId !== behaviorRequest) return
     behaviorEvents.value = eventsRes.data || []
     insights.value = insightsRes.data
   } catch {
-    behaviorEvents.value = []
+    if (!disposed && requestId === behaviorRequest) behaviorError.value = '行为记录读取失败，请关闭后重新打开。'
   } finally {
-    behaviorLoading.value = false
+    if (requestId === behaviorRequest) behaviorLoading.value = false
   }
 }
 
@@ -371,7 +470,9 @@ const answerEditsForQuestion = (questionId: string) =>
 const editMethodLabel: Record<string, string> = {
   typing: '键盘输入',
   ime: '输入法提交',
-  non_key_input: '非键盘输入',
+  non_key_input: '其他输入',
+  editor_assist: '编辑器辅助输入',
+  history: '撤销 / 重做',
   delete: '删除'
 }
 const editOperationLabel: Record<string, string> = {
@@ -382,10 +483,12 @@ const editOperationLabel: Record<string, string> = {
 }
 
 const openGrading = async (attempt: AttemptMonitor) => {
+  if (attempt.status === 'in_progress') return
   gradingAttempt.value = attempt
   gradeDrawer.value = true
   gradeLoading.value = true
   gradeAnswers.value = []
+  gradeError.value = ''
   gradeScores.value = {}
   aiGradeErrors.value = {}
   try {
@@ -405,6 +508,7 @@ const openGrading = async (attempt: AttemptMonitor) => {
     gradeScores.value = scores
   } catch {
     gradeAnswers.value = []
+    gradeError.value = '答案读取失败，请关闭后重新打开。尚未对分数作出修改。'
   } finally {
     gradeLoading.value = false
   }
@@ -499,7 +603,20 @@ const submitGrades = async () => {
   }
 }
 
-onMounted(loadPapers)
+onMounted(() => {
+  loadPapers()
+  refreshTimer = setInterval(() => {
+    if (!document.hidden && !gradeDrawer.value && !attemptsError.value) loadAttempts(true)
+  }, 5_000)
+})
+
+onUnmounted(() => {
+  disposed = true
+  attemptsRequest++
+  answerRequest++
+  behaviorRequest++
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <template>
@@ -511,7 +628,7 @@ onMounted(loadPapers)
         </div>
         <div>
           <p class="text-sm font-semibold text-gray-900 dark:text-zinc-50">监考中心</p>
-          <p class="text-[11px] text-gray-400">查看学生作答情况与防作弊行为数据</p>
+          <p class="text-xs text-gray-500">查看服务器已保存的答案、交卷状态与需复核的行为记录</p>
         </div>
       </div>
 
@@ -530,19 +647,20 @@ onMounted(loadPapers)
             :value="p.id"
           />
         </el-select>
-        <button class="ui-button-secondary" @click="loadAttempts">
+        <button class="ui-button-secondary" :disabled="attemptsLoading" @click="loadAttempts()">
           <Clock class="h-3.5 w-3.5" />
           <span>刷新</span>
         </button>
       </div>
     </div>
 
-    <div v-loading="attemptsLoading || loading" class="surface-panel p-5">
+    <div v-loading="loading || (attemptsLoading && !refreshedAt)" class="surface-panel p-5">
       <div class="mb-4 flex flex-wrap items-center gap-3 text-xs text-gray-500 dark:text-zinc-400">
         <FileText class="h-3.5 w-3.5" />
         <span>{{ selectedPaper ? selectedPaper.title : '未选择试卷' }}</span>
         <span v-if="selectedPaper" class="text-gray-300 dark:text-zinc-600">|</span>
         <span v-if="selectedPaper">共 {{ attempts.length }} 人作答</span>
+        <span v-if="refreshedAt">更新于 {{ formatTime(refreshedAt) }} · 每 5 秒刷新</span>
         <button
           class="ml-auto rounded bg-gray-900 px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
           :disabled="!selectedPaperId || exportingScore"
@@ -552,7 +670,10 @@ onMounted(loadPapers)
         </button>
       </div>
 
-      <el-table v-if="attempts.length" :data="attempts" style="width: 100%">
+      <p v-if="attemptsError" role="alert" class="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ attemptsError }}</p>
+      <p class="mb-4 text-xs leading-relaxed text-gray-500 dark:text-zinc-400">离开页面、退出全屏或操作拦截是待复核记录，不代表已认定作弊；同一次离开产生的多条浏览器事件会合并统计。</p>
+
+      <el-table v-if="attempts.length" :data="attempts" row-key="id" style="width: 100%">
         <el-table-column label="学生" min-width="140">
           <template #default="{ row }">
             <div class="flex flex-col">
@@ -579,19 +700,16 @@ onMounted(loadPapers)
             <span>{{ formatDuration(row.duration_seconds) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="行为/违规" width="110">
+        <el-table-column label="离开 / 退出全屏" width="140">
           <template #default="{ row }">
-            <span class="text-gray-600 dark:text-zinc-300">{{ row.event_count }}</span>
+            <span class="text-gray-600 dark:text-zinc-300">{{ row.left_count ?? 0 }}</span>
             <span class="text-gray-300 dark:text-zinc-600"> / </span>
-            <span :class="row.flagged_count ? 'text-amber-600 dark:text-amber-400' : 'text-gray-300 dark:text-zinc-600'">
-              {{ row.flagged_count }}
-            </span>
+            <span class="text-gray-600 dark:text-zinc-300">{{ row.fullscreen_exit_count ?? 0 }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="可疑" width="70">
+        <el-table-column label="待复核" width="95">
           <template #default="{ row }">
-            <ShieldAlert v-if="row.suspicious" class="h-4 w-4 text-red-500" />
-            <span v-else class="text-gray-300 dark:text-zinc-600">—</span>
+            <span :class="row.flagged_count ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400'">{{ row.flagged_count }} 次</span>
           </template>
         </el-table-column>
         <el-table-column label="开始时间" width="160">
@@ -600,11 +718,9 @@ onMounted(loadPapers)
         <el-table-column label="提交时间" width="160">
           <template #default="{ row }">{{ formatTime(row.submitted_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="270" fixed="right">
           <template #default="{ row }">
-            <!-- 已交卷就要能打开：编程题全用例通过时会自动满分、待批数归零，
-                 只按待批数显示的话，教师再也看不到学生代码与判题明细，
-                 也没法覆盖那道自动给的分。 -->
+            <el-button size="small" text type="primary" :icon="FileText" @click="openAnswers(row)">查看代码</el-button>
             <el-button
               v-if="row.status !== 'in_progress'"
               size="small"
@@ -614,23 +730,89 @@ onMounted(loadPapers)
               @click="openGrading(row)"
             >
               <template v-if="row.pending_grade_count > 0">批改 ({{ row.pending_grade_count }})</template>
-              <template v-else>查看/批改</template>
+              <template v-else>批改</template>
             </el-button>
             <el-button size="small" text type="primary" :icon="Eye" @click="openBehavior(row)">
-              作答画像
+              行为记录
             </el-button>
           </template>
         </el-table-column>
       </el-table>
 
-      <div v-else class="py-12 text-center text-sm text-gray-400">
+      <div v-else-if="!attemptsError" class="py-12 text-center text-sm text-gray-400">
         暂无作答记录
       </div>
     </div>
 
     <el-drawer
+      v-model="answersDrawer"
+      :title="viewedAttempt ? `${viewedAttempt.student_name}（${viewedAttempt.username}）· 代码与答案` : '代码与答案'"
+      size="min(980px, 100vw)"
+    >
+      <div class="space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 p-3 dark:border-zinc-700">
+          <div class="space-y-1 text-xs text-gray-500 dark:text-zinc-400">
+            <p class="font-semibold text-gray-800 dark:text-zinc-100">{{ viewedAttemptStatus === 'in_progress' ? '服务器已保存草稿 · 尚未交卷' : '已交卷答案' }}</p>
+            <p>本窗口只读，手动刷新才更新内容，避免打断阅读和复制。</p>
+            <p v-if="answersReadAt">读取时间：{{ formatTime(answersReadAt) }}</p>
+          </div>
+          <el-button :loading="answersLoading" @click="refreshAnswers">刷新答案</el-button>
+        </div>
+        <p v-if="answersError" role="alert" class="rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ answersError }}</p>
+        <div v-loading="answersLoading">
+          <nav v-if="viewedAnswers.length" class="mb-4 flex flex-wrap gap-2" aria-label="选择学生答案的题目">
+            <button
+              v-for="a in viewedAnswers" :key="a.question_id"
+              class="rounded-md border px-3 py-2 text-sm"
+              :class="viewedQuestionId === a.question_id ? 'border-blue-600 bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-200' : 'border-gray-200 text-gray-600 dark:border-zinc-700 dark:text-zinc-300'"
+              :aria-pressed="viewedQuestionId === a.question_id"
+              @click="viewedQuestionId = a.question_id"
+            >第 {{ a.order_index + 1 }} 题<span v-if="!a.has_saved_answer" class="ml-1 text-xs text-gray-400">· 未保存</span></button>
+          </nav>
+          <article v-if="viewedAnswer" :key="viewedAnswer.question_id" class="space-y-3">
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              <span class="font-semibold text-gray-900 dark:text-zinc-100">第 {{ viewedAnswer.order_index + 1 }} 题 · {{ typeLabel(viewedAnswer.question_type) }}</span>
+              <span v-if="viewedAnswer.question_type === 'code'" class="rounded bg-gray-100 px-2 py-1 dark:bg-zinc-800">{{ languageLabel(viewedAnswer) }}</span>
+              <span class="rounded bg-blue-50 px-2 py-1 text-blue-700 dark:bg-blue-950/30 dark:text-blue-200">{{ judgeLabel(viewedAnswer) }}</span>
+              <span v-if="viewedAnswer.judge_summary && viewedAnswer.judge_summary.status !== 'no_answer'">用例 {{ viewedAnswer.judge_summary.passed }}/{{ viewedAnswer.judge_summary.total }}</span>
+              <span v-if="viewedAnswer.graded">得分 {{ viewedAnswer.score }} / {{ viewedAnswer.max_score ?? '待定' }}</span>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-zinc-400">服务器记录更新时间：{{ formatTime(viewedAnswer.saved_at) }}<span v-if="viewedAnswer.saved_at">（含保存、判题或评分更新）</span></p>
+            <details class="rounded-md border border-gray-200 p-3 dark:border-zinc-700">
+              <summary class="cursor-pointer text-xs font-semibold text-gray-600 dark:text-zinc-300">查看题目</summary>
+              <RichStem :stem="viewedAnswer.stem" class="mt-3 text-sm leading-relaxed" />
+            </details>
+            <div v-if="!viewedAnswer.has_saved_answer" class="rounded-lg border border-dashed border-gray-300 px-5 py-12 text-center dark:border-zinc-700">
+              <p class="text-sm font-semibold text-gray-700 dark:text-zinc-200">这道题尚未保存到服务器</p>
+              <p class="mt-2 text-xs text-gray-500">学生本机未同步的编辑不会出现在这里；运行自测不等于保存或交卷。</p>
+            </div>
+            <div v-else-if="viewedAnswer.question_type === 'code'" class="overflow-hidden rounded-lg border border-gray-200 dark:border-zinc-700">
+              <div class="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900">
+                <span class="text-xs text-gray-500">{{ viewedAttemptStatus === 'in_progress' ? '草稿源码' : '交卷源码' }} · {{ codeText(viewedAnswer).split('\n').length }} 行</span>
+                <button class="text-xs font-semibold text-blue-600 disabled:text-gray-400 dark:text-blue-300" :disabled="!codeText(viewedAnswer)" @click="copyCode(viewedAnswer)">复制代码</button>
+              </div>
+              <pre tabindex="0" aria-label="学生代码，只读" class="min-h-60 max-h-[60vh] overflow-auto bg-white p-4 font-mono text-sm leading-6 text-gray-900 dark:bg-zinc-950 dark:text-zinc-100">{{ codeText(viewedAnswer) || '（已保存空代码）' }}</pre>
+            </div>
+            <pre v-else class="overflow-auto whitespace-pre-wrap rounded-lg bg-gray-50 p-4 text-sm dark:bg-zinc-900">{{ formatAnswer(viewedAnswer.answer) }}</pre>
+            <details v-if="viewedAnswer.judge_detail" class="rounded-md border border-gray-200 p-3 dark:border-zinc-700">
+              <summary class="cursor-pointer text-xs font-semibold text-gray-600 dark:text-zinc-300">查看交卷判题明细</summary>
+              <p v-if="viewedAnswer.judge_detail.message" class="mt-3 text-sm">{{ viewedAnswer.judge_detail.message }}</p>
+              <pre v-if="viewedAnswer.judge_detail.compile_output" class="mt-3 max-h-52 overflow-auto whitespace-pre-wrap rounded bg-red-50 p-3 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-200">{{ viewedAnswer.judge_detail.compile_output }}</pre>
+              <details v-for="c in viewedAnswer.judge_detail.cases || []" :key="c.index" class="mt-2 rounded bg-gray-50 p-3 text-xs dark:bg-zinc-900">
+                <summary class="cursor-pointer" :class="c.passed ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'">用例 {{ c.index + 1 }} · {{ c.passed ? '通过' : caseStatusLabel(c.status) }}<span v-if="c.time_ms != null"> · {{ c.time_ms }} ms</span></summary>
+                <div class="mt-2 grid gap-2 md:grid-cols-3"><div v-for="(value, label) in { 输入: c.input, 期望: c.expected, 实际: c.actual }" :key="label"><p class="mb-1 text-gray-500">{{ label }}</p><pre class="max-h-48 overflow-auto rounded border border-gray-200 p-2 dark:border-zinc-700">{{ value || '（空）' }}</pre></div></div>
+                <pre v-if="c.stderr" class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-red-600 dark:text-red-300">{{ c.stderr }}</pre>
+              </details>
+            </details>
+          </article>
+          <p v-else-if="!answersLoading && !answersError" class="py-12 text-center text-sm text-gray-500">此试卷暂无题目。</p>
+        </div>
+      </div>
+    </el-drawer>
+
+    <el-drawer
       v-model="behaviorDrawer"
-      :title="currentAttempt ? `${currentAttempt.student_name} 的作答画像` : '作答画像'"
+      :title="currentAttempt ? `${currentAttempt.student_name} 的行为记录` : '行为记录'"
       size="560px"
     >
       <div class="mb-4 flex gap-1 rounded-lg bg-gray-100 p-1 dark:bg-zinc-800">
@@ -651,6 +833,8 @@ onMounted(loadPapers)
       </div>
 
       <div v-loading="behaviorLoading" class="px-1">
+        <p class="mb-4 text-xs leading-relaxed text-gray-500 dark:text-zinc-400">这些是浏览器记录的操作事实，需结合现场情况复核。输入法、编辑器辅助与撤销重做属于正常编辑；用时差异不能单独作为违规依据。</p>
+        <p v-if="behaviorError" role="alert" class="mb-4 text-sm text-amber-700 dark:text-amber-300">{{ behaviorError }}</p>
         <!-- 按题画像 -->
         <template v-if="behaviorView === 'byQuestion'">
           <div
@@ -658,7 +842,7 @@ onMounted(loadPapers)
             class="mb-4 rounded-lg border border-gray-100 bg-gray-50/50 px-3 py-2.5 text-xs text-gray-500 dark:border-zinc-800 dark:bg-zinc-950/30 dark:text-zinc-400"
           >
             总用时 {{ Math.round((insights.attempt.duration_seconds || 0) / 60) }} 分钟
-            · 违规事件 {{ insights.attempt.flag_count }} 次
+            · 待复核 {{ insights.attempt.flag_count }} 次
           </div>
 
           <div class="space-y-2">
@@ -677,7 +861,7 @@ onMounted(loadPapers)
                   </span>
                 </div>
                 <span v-if="q.flag_count > 0" class="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
-                  {{ q.flag_count }} 次违规
+                  {{ q.flag_count }} 次待复核
                 </span>
               </div>
 
@@ -689,15 +873,15 @@ onMounted(loadPapers)
                     （全班均 {{ q.class_avg_dwell_seconds }}s）
                   </span>
                 </span>
-                <span v-if="q.paste_events > 0" class="font-semibold text-red-500">
-                  非键盘插入 {{ q.paste_events }} 次 · {{ q.paste_chars }} 字
+                <span v-if="q.paste_events > 0" class="text-gray-500 dark:text-zinc-400">
+                  插入操作记录 {{ q.paste_events }} 次 · {{ q.paste_chars }} 字
                 </span>
               </div>
 
               <div v-if="q.edit_count > 0" class="mt-1 text-[10px] text-gray-400 dark:text-zinc-500">
                 编辑 {{ q.edit_count }} 段 · 手敲 {{ q.typed_chars }} 字
                 <span v-if="q.ime_chars">· 输入法 {{ q.ime_chars }} 字</span>
-                <span v-if="q.non_key_input_chars">· 非键盘 {{ q.non_key_input_chars }} 字</span>
+                <span v-if="q.non_key_input_chars">· 其他输入 {{ q.non_key_input_chars }} 字</span>
                 <span v-if="q.deleted_chars">· 删除 {{ q.deleted_chars }} 字</span>
               </div>
 
@@ -735,10 +919,10 @@ onMounted(loadPapers)
                 :class="q.deviation.tone === 'slow' ? 'text-amber-600 dark:text-amber-400' : 'text-blue-600 dark:text-blue-400'"
               >
                 <template v-if="q.deviation.tone === 'slow'">
-                  停留约为全班均值的 {{ q.deviation.ratio }} 倍，可能卡壳
+                  停留约为全班均值的 {{ q.deviation.ratio }} 倍
                 </template>
                 <template v-else>
-                  停留明显短于全班（约 {{ q.deviation.ratio }} 倍），可能仓促作答
+                  停留约为全班均值的 {{ q.deviation.ratio }} 倍
                 </template>
               </div>
             </div>
@@ -758,11 +942,11 @@ onMounted(loadPapers)
           >
             <span
               class="mt-0.5 flex h-2 w-2 flex-shrink-0 rounded-full"
-              :class="isFlag(e.event_type) ? 'bg-amber-500' : 'bg-gray-300 dark:bg-zinc-600'"
+              :class="e.is_flag ? 'bg-amber-500' : 'bg-gray-300 dark:bg-zinc-600'"
             />
             <div class="min-w-0 flex-1">
               <div class="flex items-center justify-between gap-2">
-                <span class="text-sm font-medium text-gray-800 dark:text-zinc-100">{{ eventLabel(e.event_type) }}</span>
+                <span class="text-sm font-medium text-gray-800 dark:text-zinc-100">{{ eventLabel(e.event_type) }}<span v-if="e.is_flag" class="ml-2 text-xs text-amber-700 dark:text-amber-300">待复核</span></span>
                 <span class="text-[11px] text-gray-400">{{ formatTime(e.occurred_at) }}</span>
               </div>
               <p v-if="formatEventPayload(e)" class="mt-0.5 text-xs text-gray-500 dark:text-zinc-400">
@@ -784,6 +968,7 @@ onMounted(loadPapers)
       size="620px"
     >
       <div v-loading="gradeLoading" class="space-y-3 px-1">
+        <p v-if="gradeError" role="alert" class="rounded bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ gradeError }}</p>
         <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2.5 dark:border-blue-900/40 dark:bg-blue-950/20">
           <div class="min-w-0">
             <p class="text-[11px] font-semibold text-blue-700 dark:text-blue-300">批阅尺度：{{ gradingPreferenceText }}</p>
@@ -860,7 +1045,7 @@ onMounted(loadPapers)
             <p class="flex items-center gap-2 text-[11px] font-semibold text-gray-400">
               学生作答
               <span v-if="a.question_type === 'code'" class="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-600 dark:bg-zinc-800 dark:text-zinc-300">
-                {{ a.language || 'python' }}
+                {{ languageLabel(a) }}
               </span>
             </p>
             <pre

@@ -10,8 +10,9 @@ from app.core.llm import ChatMessage, llm_router
 logger = logging.getLogger(__name__)
 
 ALLOWED_TYPES = {"single", "multiple", "judge", "fill", "short", "essay", "code"}
-CODE_LANGUAGES = {"python", "javascript", "java"}
+CODE_LANGUAGES = {"python", "javascript", "java", "c", "cpp", "multi"}
 CODE_LANGUAGE_ALIASES = {
+    "c++": "cpp", "c++17": "cpp", "cpp17": "cpp", "c17": "c",
     "py": "python", "python3": "python", "python2": "python",
     "js": "javascript", "node": "javascript", "nodejs": "javascript", "ts": "javascript",
     "typescript": "javascript", "java8": "java", "java11": "java", "java17": "java",
@@ -262,7 +263,7 @@ def _coerce_question(raw: dict, fallback_index: int) -> dict:
 
 
 def normalize_code_language(raw: Any) -> str:
-    """把模型给出的语言名收敛到沙箱真正支持的三选一，默认 python。"""
+    """语言名归一；multi 表示学生可选 Python、Java、C、C++。"""
     key = str(raw or "").strip().lower()
     if key in CODE_LANGUAGES:
         return key

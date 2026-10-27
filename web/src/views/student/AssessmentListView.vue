@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Clock, FileText, ChevronRight, CheckCircle2, CircleDashed } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
@@ -55,7 +55,9 @@ const startPaper = (paper: StudentPaper) => {
   router.push(`/student/assessment/${paper.id}`)
 }
 
-onMounted(loadPapers)
+let refreshTimer: number | undefined
+onMounted(() => { void loadPapers(); refreshTimer = window.setInterval(loadPapers, 10000) })
+onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 </script>
 
 <template>

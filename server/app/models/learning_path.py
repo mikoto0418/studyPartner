@@ -2,7 +2,7 @@ from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, St
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
-from app.models.base import BaseModel
+from app.models.base import Base, BaseModel
 
 
 class ClassGroup(BaseModel):
@@ -16,6 +16,14 @@ class ClassGroup(BaseModel):
     status = Column(String(30), default="active", nullable=False)
 
     teacher = relationship("User", backref="teaching_classes")
+
+
+class ClassTeacher(Base):
+    """协管教师；原有 classes.teacher_id 继续保留为班级创建人。"""
+    __tablename__ = "class_teachers"
+
+    class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id", ondelete="CASCADE"), primary_key=True)
+    teacher_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
 
 
 class ClassMember(BaseModel):

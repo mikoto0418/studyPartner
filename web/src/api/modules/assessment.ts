@@ -58,6 +58,7 @@ export interface StudentPaper {
   time_limit_minutes?: number | null
   /** 未配置的老数据按 true 处理 */
   require_fullscreen?: boolean
+  fullscreen_exit_auto_submit?: boolean
   attempt_id?: string | null
   attempt_status?: string | null
   attempt_score?: number | null
@@ -83,11 +84,12 @@ export interface CodeRunResult {
 }
 
 export interface StudentReview {
-  paper: { id: string; title: string; total_score: number | null }
+  paper: { id: string; title: string; total_score: number | null; answers_available?: boolean }
   attempt: {
     status: string
     score: number | null
     objective_score: number
+    graded_score?: number
     duration_seconds: number | null
   }
   questions: Array<{
@@ -272,6 +274,8 @@ export interface StudentAnswersOut {
 }
 
 export interface BehaviorEventPayload {
+  /** 客户端生成，重试沿用同一 ID，由服务器幂等接收 */
+  event_id?: string
   event_type: string
   payload?: Record<string, any>
   occurred_at?: string
@@ -287,6 +291,10 @@ export interface AttemptAnswer {
   /** null = 题目未设置分值，批改页应禁用打分输入 */
   max_score?: number | null
   answer?: any
+  has_saved_answer: boolean
+  /** 当前答案记录更新时间，自动判题或人工评分也可能更新 */
+  saved_at?: string | null
+  attempt_status?: string
   score: number
   graded: boolean
   is_correct?: boolean | null
@@ -345,17 +353,22 @@ export interface AttemptMonitor {
   suspicious: boolean
   event_count: number
   flagged_count: number
+  left_count: number
+  fullscreen_exit_count: number
   pending_grade_count: number
 }
 
 export interface BehaviorEventOut {
   id: string
   event_type: string
+  /** 后端统一归并后的待复核标记，不表示已经认定作弊 */
+  is_flag: boolean
   payload?: Record<string, any> | null
   occurred_at?: string | null
 }
 
 export const assessmentApi = {
+  getServerClock: () => request.get<any, { data: { server_time: string } }>('/assessment/student/clock'),
   uploadFile(file: File, source = 'assessment_upload') {
     const formData = new FormData()
     formData.append('file', file)
@@ -366,7 +379,7 @@ export const assessmentApi = {
     })
   },
 
-  createPaper(data: { file_id: string; title: string; description?: string }) {
+  createPaper(data: { file_id?: string; title: string; description?: string }) {
     return request.post('/assessment/papers', data)
   },
 
@@ -402,6 +415,7 @@ export const assessmentApi = {
       due_at?: string | null
       time_limit_minutes?: number | null
       require_fullscreen?: boolean
+      fullscreen_exit_auto_submit?: boolean
       grading_preference?: { mode: string; extra?: string } | null
     }
   ) {
@@ -420,7 +434,7 @@ export const assessmentApi = {
     return request.post(`/assessment/student/papers/${paperId}/attempts`)
   },
 
-  runCode(attemptId: string, questionId: string, data: { code: string; stdin?: string | null }) {
+  runCode(attemptId: string, questionId: string, data: { code: string; stdin?: string | null; language?: string }) {
     // 自测要真的编译运行，比普通请求慢得多；超时只断前端，服务端会跑完
     return request.post(
       `/assessment/student/attempts/${attemptId}/questions/${questionId}/run`,

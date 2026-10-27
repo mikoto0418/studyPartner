@@ -89,8 +89,8 @@ class LearningPathService:
     async def list_classes(db: AsyncSession, teacher_id: UUID) -> List[ClassGroup]:
         result = await db.execute(
             select(ClassGroup)
-            .options(selectinload(ClassGroup.members).selectinload(ClassMember.user))
-            .where(and_(ClassGroup.teacher_id == teacher_id, ClassGroup.deleted_at.is_(None)))
+            .options(selectinload(ClassGroup.members).selectinload(ClassMember.user).selectinload(User.student_profile))
+            .where(AccessControlService.class_scope(teacher_id))
             .order_by(desc(ClassGroup.created_at))
         )
         return list(result.scalars().all())
@@ -99,11 +99,11 @@ class LearningPathService:
     async def get_class(db: AsyncSession, class_id: UUID, teacher_id: Optional[UUID] = None) -> ClassGroup:
         stmt = (
             select(ClassGroup)
-            .options(selectinload(ClassGroup.members).selectinload(ClassMember.user))
+            .options(selectinload(ClassGroup.members).selectinload(ClassMember.user).selectinload(User.student_profile))
             .where(and_(ClassGroup.id == class_id, ClassGroup.deleted_at.is_(None)))
         )
         if teacher_id:
-            stmt = stmt.where(ClassGroup.teacher_id == teacher_id)
+            stmt = stmt.where(AccessControlService.class_scope(teacher_id))
         result = await db.execute(stmt)
         class_group = result.scalars().first()
         if not class_group:
@@ -1061,6 +1061,7 @@ class LearningPathService:
                 "username": member.user.username if member.user else None,
                 "nickname": member.user.nickname if member.user else None,
                 "display_name": user_display_name(member.user.nickname) if member.user else "未设置姓名",
+                "requires_identity_confirmation": member.user.requires_identity_confirmation if member.user else False,
                 "status": member.status,
                 "joined_at": member.joined_at,
             }

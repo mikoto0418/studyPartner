@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useModuleStore } from '../stores/module'
+import { clearAuthStorage } from '../stores/auth'
+import { checkExamNavigation, examNavigationUnavailable } from '../utils/examNavigation'
 import MainLayout from '../layouts/MainLayout.vue'
 import LoginView from '../views/common/LoginView.vue'
 import NotFoundView from '../views/common/NotFoundView.vue'
@@ -268,6 +270,22 @@ router.beforeEach(async (to, _from, next) => {
 
   const token = localStorage.getItem('sp_token')
   const userRole = localStorage.getItem('sp_role')
+
+  if (token && userRole === 'student') {
+    const session = await checkExamNavigation(token)
+    if (session.unauthorized) {
+      clearAuthStorage()
+      examNavigationUnavailable.value = false
+      next('/login')
+      return
+    }
+    if (session.id && to.path !== `/student/assessment/${session.id}`) {
+      next({ path: `/student/assessment/${session.id}`, replace: true })
+      return
+    }
+  } else {
+    examNavigationUnavailable.value = false
+  }
 
   if (to.matched.some(record => record.meta.requiresAuth)) {
     if (!token) {

@@ -1,16 +1,56 @@
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, cast, func, literal, or_, select, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import PermissionDenied
-from app.models.learning_path import ClassGroup, ClassMember, LearningPathAssignee, LearningPathTask
+from app.models.learning_path import ClassGroup, ClassMember, ClassTeacher, LearningPathAssignee, LearningPathTask
+from app.models.assessment import AssessmentPaper
 from app.models.task import Task, TaskAssignee
 from app.models.user import User
 
 
 class AccessControlService:
+    @staticmethod
+    def class_scope(teacher_id: UUID):
+        return and_(
+            ClassGroup.deleted_at.is_(None),
+            or_(
+                ClassGroup.teacher_id == teacher_id,
+                ClassGroup.id.in_(
+                    select(ClassTeacher.class_id).where(ClassTeacher.teacher_id == teacher_id)
+                ),
+            ),
+        )
+
+    @classmethod
+    def paper_scope(cls, teacher_id: UUID):
+        # 协管只共享已发布且全部目标班级均有权管理的试卷。
+        # 不共享同事的草稿、个人指派试卷或其他班级的成绩。
+        managed_ids = (
+            select(func.jsonb_agg(cast(ClassGroup.id, String)))
+            .where(cls.class_scope(teacher_id))
+            .scalar_subquery()
+        )
+        target_ids = AssessmentPaper.publish_target["ids"]
+        return or_(
+            AssessmentPaper.creator_id == teacher_id,
+            and_(
+                AssessmentPaper.parse_status == "published",
+                AssessmentPaper.publish_target["type"].astext == "class",
+                func.jsonb_typeof(target_ids) == "array",
+                target_ids != literal([], type_=JSONB),
+                target_ids.contained_by(func.coalesce(managed_ids, literal([], type_=JSONB))),
+                # 白名单可以扩大受众，因此带白名单的卷保持创建人独享。
+                or_(
+                    AssessmentPaper.publish_target["whitelist"].is_(None),
+                    AssessmentPaper.publish_target["whitelist"] == literal([], type_=JSONB),
+                ),
+            ),
+        )
+
     @staticmethod
     def is_admin(user: User) -> bool:
         return "admin" in user.role_codes
@@ -37,10 +77,11 @@ class AccessControlService:
             .join(ClassGroup, ClassMember.class_id == ClassGroup.id)
             .where(
                 and_(
-                    ClassGroup.teacher_id == requester.id,
+                    cls.class_scope(requester.id),
                     ClassGroup.deleted_at.is_(None),
                     ClassMember.user_id == student_id,
                     ClassMember.status == "active",
+                    ClassMember.deleted_at.is_(None),
                 )
             )
             .limit(1)
@@ -98,9 +139,10 @@ class AccessControlService:
             .join(ClassGroup, ClassMember.class_id == ClassGroup.id)
             .where(
                 and_(
-                    ClassGroup.teacher_id == requester.id,
+                    cls.class_scope(requester.id),
                     ClassGroup.deleted_at.is_(None),
                     ClassMember.status == "active",
+                    ClassMember.deleted_at.is_(None),
                 )
             )
         )

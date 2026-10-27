@@ -1,5 +1,17 @@
 # API 接口设计文档
 
+> 2026-10-20：新增首次姓名登记 `POST /auth/identity`、用户待登记标志及班级共同管理权限，
+> 创建试卷允许省略 `file_id` 直接手动命题；编程题支持 `multi` 及随答案保存的语言选择。
+> 接口与权限细节见 [1022 二面说明](1022-interview.md#接口和数据结构)。
+
+> 2026-10-22：新增 `GET /assessment/student/clock` 返回 UTC `server_time`；
+> 发布请求与学生试卷配置新增 `fullscreen_exit_auto_submit`，默认 false，独立于 `require_fullscreen`。
+> 到期禁止保存与自测；交卷仅保留 5 秒传输余量。后台到期收卷调用与主动交卷相同的编程题判题逻辑。
+> 恢复作答接口同样遵守这 5 秒余量；自测执行前释放作答行锁，避免编译阻塞保存与交卷。
+> `GET /assessment/student/papers/{paper_id}/review` 新增 `paper.answers_available`：
+> 设置全场截止时间时，截止及其后 5 秒传输余量结束前，`reference_answer`、`analysis` 均为 `null`，之后开放。
+> `attempt.graded_score` 表示所有已批改题目的得分（含编程题），供待批状态展示；`objective_score` 保持原有口径。
+
 > AI 伴学与智能体协同平台 — RESTful API 设计规范
 
 版本：V1.0

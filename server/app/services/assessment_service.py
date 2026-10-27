@@ -6,9 +6,10 @@ import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, NAMESPACE_URL, uuid5
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +27,7 @@ from app.models.knowledge import FileModel
 from app.models.learning_path import ClassGroup, ClassMember
 from app.models.user import StudentProfile, User
 from app.services.minio_service import MinioService
+from app.services.access_control import AccessControlService
 from app.services import question_parser as question_parser_module
 from app.utils.parser import extract_images, parse_document
 
@@ -37,9 +39,8 @@ logger = logging.getLogger(__name__)
 FULLSCREEN_EXIT_LIMIT = 3
 
 # 截止时间后的宽限窗口：前端倒计时归零才触发自动交卷，而答案输入有 1.5s 防抖，
-# 客户端与服务端时钟也可能有偏差。留一点余量，避免卡点交卷的答案被整批丢弃。
-# 超过这个窗口还带新答案来的，只可能是绕过前端直接调接口，那时才真正忽略。
-SUBMIT_GRACE_SECONDS = 60
+# 前端已校准服务器时间；仅留 5 秒传输余量，后台收卷也等待此窗口结束。
+SUBMIT_GRACE_SECONDS = 5
 
 
 class AssessmentService:
@@ -162,10 +163,23 @@ class AssessmentService:
     async def create_paper(
         db: AsyncSession,
         teacher_id: UUID,
-        file_id: UUID,
+        file_id: Optional[UUID],
         title: str,
         description: Optional[str] = None,
+        paper_id: Optional[UUID] = None,
     ) -> AssessmentPaper:
+        if not title.strip():
+            raise ValidationError("请输入试卷标题")
+        if file_id is None:
+            paper = AssessmentPaper(
+                id=paper_id,
+                creator_id=teacher_id, title=title.strip(), description=description,
+                parse_status="awaiting_review", question_count=0,
+            )
+            db.add(paper)
+            await db.commit()
+            await db.refresh(paper)
+            return paper
         file = (
             await db.execute(
                 select(FileModel).where(FileModel.id == file_id, FileModel.deleted_at.is_(None))
@@ -251,10 +265,11 @@ class AssessmentService:
                 select(AssessmentPaper).where(
                     AssessmentPaper.id == paper_id,
                     AssessmentPaper.deleted_at.is_(None),
+                    AccessControlService.paper_scope(teacher_id),
                 )
             )
         ).scalars().first()
-        if not paper or paper.creator_id != teacher_id:
+        if not paper:
             raise NotFoundError("试卷不存在")
         return paper
 
@@ -262,7 +277,7 @@ class AssessmentService:
     async def list_papers(db: AsyncSession, teacher_id: UUID) -> List[AssessmentPaper]:
         result = await db.execute(
             select(AssessmentPaper)
-            .where(AssessmentPaper.creator_id == teacher_id, AssessmentPaper.deleted_at.is_(None))
+            .where(AccessControlService.paper_scope(teacher_id), AssessmentPaper.deleted_at.is_(None))
             .order_by(AssessmentPaper.created_at.desc())
         )
         return list(result.scalars().all())
@@ -372,6 +387,7 @@ class AssessmentService:
         grading_preference: Optional[Dict[str, Any]] = None,
         time_limit_minutes: Optional[int] = None,
         require_fullscreen: bool = True,
+        fullscreen_exit_auto_submit: bool = False,
     ) -> AssessmentPaper:
         paper = await AssessmentService.get_paper(db, paper_id, teacher_id)
         if paper.parse_status not in ("awaiting_review", "publish_failed"):
@@ -439,7 +455,7 @@ class AssessmentService:
                 owned = await db.execute(
                     select(ClassGroup.id).where(
                         ClassGroup.id.in_(raw_class_ids),
-                        ClassGroup.teacher_id == teacher_id,
+                        AccessControlService.class_scope(teacher_id),
                     )
                 )
                 owned_ids = {str(cid) for cid in owned.scalars().all()}
@@ -479,6 +495,7 @@ class AssessmentService:
         # 显式写 true 而不是省略：学生端要靠这个字段决定是否强制全屏，
         # 省略会让「教师取消了全屏要求」和「老数据」两种情况长得一模一样。
         target["require_fullscreen"] = bool(require_fullscreen)
+        target["fullscreen_exit_auto_submit"] = bool(fullscreen_exit_auto_submit)
 
         paper.publish_target = target
         paper.publish_at = publish_at
@@ -560,7 +577,7 @@ class AssessmentService:
             due_at = AssessmentService._parse_due_at(
                 publish_target.get("due_at") if isinstance(publish_target, dict) else None
             )
-            if due_at is not None and due_at <= now:
+            if due_at is not None and due_at + timedelta(seconds=SUBMIT_GRACE_SECONDS) <= now:
                 expired_paper_ids.append(paper_id)
         cap = 5000
         if len(expired_paper_ids) > cap:
@@ -592,7 +609,7 @@ class AssessmentService:
                     continue
                 if started_at.tzinfo is None:
                     started_at = started_at.replace(tzinfo=timezone.utc)
-                if started_at + timedelta(minutes=timed_papers[paper_id]) <= now:
+                if started_at + timedelta(minutes=timed_papers[paper_id], seconds=SUBMIT_GRACE_SECONDS) <= now:
                     timed_attempt_ids.append(attempt_id)
             if len(timed_attempt_ids) > cap:
                 timed_attempt_ids = timed_attempt_ids[:cap]
@@ -605,73 +622,75 @@ class AssessmentService:
             expired_filter.append(AssessmentAttempt.paper_id.in_(expired_paper_ids))
         if timed_attempt_ids:
             expired_filter.append(AssessmentAttempt.id.in_(timed_attempt_ids))
-        result = await db.execute(
-            select(AssessmentAttempt)
-            .where(
-                AssessmentAttempt.status == "in_progress",
-                or_(*expired_filter),
-            )
-            .order_by(AssessmentAttempt.started_at.asc())
-            .limit(limit)
-            .with_for_update(skip_locked=True)
-        )
-
-        # 结算逻辑内联而不是逐行调 _finalize_attempt：后者每次都会 commit，
-        # 一提交就释放 with_for_update 的行锁，skip_locked 形同虚设，
-        # 并发 worker 会把同一行再结算一次（分数幂等，但 submitted_at 与
-        # duration_seconds 会被推后）。这里整批算完最后提交一次。
+        ids = (await db.execute(
+            select(AssessmentAttempt.id).where(
+                AssessmentAttempt.status == "in_progress", or_(*expired_filter)
+            ).order_by(AssessmentAttempt.started_at.asc()).limit(limit)
+        )).scalars().all()
+        # 每份卷单独加锁、判题并提交；不锁住全班等待慢程序，也不与主动交卷重复结算。
         finalized = 0
-        for attempt in result.scalars().all():
-            in_paper = select(AssessmentQuestion.id).where(
-                AssessmentQuestion.paper_id == attempt.paper_id
-            )
-            answered = await db.execute(
-                select(AssessmentAnswer).where(
-                    AssessmentAnswer.attempt_id == attempt.id,
-                    AssessmentAnswer.question_id.in_(in_paper),
-                )
-            )
-            attempt.score = sum(a.score or 0.0 for a in answered.scalars().all())
-
-            pending = await db.execute(
-                select(func.count(AssessmentAnswer.id)).where(
-                    AssessmentAnswer.attempt_id == attempt.id,
-                    AssessmentAnswer.graded.is_(False),
-                    AssessmentAnswer.question_id.in_(in_paper),
-                )
-            )
-            # 有未批改的主观题时停在待批改，等教师批完再落最终分
-            attempt.status = "pending_review" if (pending.scalar() or 0) > 0 else "submitted"
-            attempt.submitted_at = now
-            if attempt.started_at:
-                attempt.duration_seconds = max(
-                    0, int((attempt.submitted_at - attempt.started_at).total_seconds())
-                )
+        for attempt_id in ids:
+            attempt = (await db.execute(
+                select(AssessmentAttempt).where(
+                    AssessmentAttempt.id == attempt_id, AssessmentAttempt.status == "in_progress"
+                ).with_for_update(skip_locked=True).execution_options(populate_existing=True)
+            )).scalars().first()
+            if attempt is None:
+                continue
+            await AssessmentService._finalize_attempt(db, attempt)
             finalized += 1
-
-        if finalized:
-            await db.commit()
         return finalized
 
+    # 待关注信号，不代表已确认作弊。历史原始事件始终保留。
     BEHAVIOR_FLAG_TYPES = {
-        "fullscreen_exit",
-        "fullscreen_denied",
-        "blocked_paste",
-        "blocked_copy",
-        "blocked_cut",
-        "blocked_shortcut",
-        "blocked_insert",
-        "blocked_drop",
-        "blocked_contextmenu",
-        "blocked_selection",
-        "blocked_drag",
-        "blocked_exec",
-        "blocked_input",
-        "clipboard_read",
-        "devtools_open",
-        "focus_loss",
-        "visibility_hidden",
+        "fullscreen_exit", "blocked_paste", "blocked_drop", "clipboard_read", "page_leave",
     }
+
+    @staticmethod
+    def attention_events(events: Iterable[BehaviorEvent]) -> List[BehaviorEvent]:
+        """统一监考、画像和分析口径；同一离开区间的 blur/hidden 只计一次。"""
+        def event_time(event):
+            value = event.occurred_at or event.created_at
+            if value is None:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+        active = {}
+        seen_episodes = set()
+        flagged = []
+        for event in sorted(events, key=event_time):
+            key = (event.attempt_id, event.session_id)
+            signals = active.setdefault(key, set())
+            kind = event.event_type
+            payload = event.payload or {}
+            if kind in {"focus_loss", "visibility_hidden", "page_leave"}:
+                episode = payload.get("episode_id") if kind == "page_leave" else None
+                duplicate = episode is not None and (key, str(episode)) in seen_episodes
+                if not signals and not duplicate:
+                    flagged.append(event)
+                signals.add({"focus_loss": "focus", "visibility_hidden": "hidden", "page_leave": "page"}[kind])
+                if episode is not None:
+                    seen_episodes.add((key, str(episode)))
+            elif kind in {"page_return", "session_end", "session_start"}:
+                signals.clear()
+            elif kind == "focus_gain":
+                signals.discard("focus")
+            elif kind == "visibility_visible":
+                signals.discard("hidden")
+            elif kind in AssessmentService.BEHAVIOR_FLAG_TYPES:
+                flagged.append(event)
+            elif kind == "blocked_insert" and payload.get("input_type") in {"insertFromPaste", "insertFromDrop"}:
+                flagged.append(event)
+        return flagged
+
+    @staticmethod
+    async def _behavior_events(db: AsyncSession, attempt_ids: List[UUID]) -> List[BehaviorEvent]:
+        if not attempt_ids:
+            return []
+        return list((await db.execute(
+            select(BehaviorEvent).where(BehaviorEvent.attempt_id.in_(attempt_ids))
+            .order_by(BehaviorEvent.created_at.asc(), BehaviorEvent.id.asc())
+        )).scalars().all())
 
     @staticmethod
     async def list_paper_attempts(
@@ -691,22 +710,16 @@ class AssessmentService:
         stats: Dict[UUID, Dict[str, int]] = {
             aid: {"total": 0, "flagged": 0, "pending": 0} for aid in attempt_ids
         }
-        if attempt_ids:
-            event_rows = await db.execute(
-                select(
-                    BehaviorEvent.attempt_id,
-                    BehaviorEvent.event_type,
-                    func.count(BehaviorEvent.id),
-                )
-                .where(BehaviorEvent.attempt_id.in_(attempt_ids))
-                .group_by(BehaviorEvent.attempt_id, BehaviorEvent.event_type)
-            )
-            for aid, event_type, cnt in event_rows.all():
-                if aid not in stats:
-                    continue
-                stats[aid]["total"] += cnt
-                if event_type in AssessmentService.BEHAVIOR_FLAG_TYPES:
-                    stats[aid]["flagged"] += cnt
+        behavior_events = await AssessmentService._behavior_events(db, attempt_ids)
+        for event in behavior_events:
+            stats[event.attempt_id]["total"] += 1
+        for event in AssessmentService.attention_events(behavior_events):
+            stat = stats[event.attempt_id]
+            stat["flagged"] += 1
+            if event.event_type in {"page_leave", "focus_loss", "visibility_hidden"}:
+                stat["left_count"] = stat.get("left_count", 0) + 1
+            if event.event_type == "fullscreen_exit":
+                stat["fullscreen_exit_count"] = stat.get("fullscreen_exit_count", 0) + 1
 
         if attempt_ids:
             pending_rows = await db.execute(
@@ -737,9 +750,11 @@ class AssessmentService:
                     "submitted_at": attempt.submitted_at,
                     "duration_seconds": attempt.duration_seconds,
                     "score": attempt.score,
-                    "suspicious": bool(attempt.suspicious or s["flagged"] > 0),
+                    "suspicious": s["flagged"] > 0,
                     "event_count": s["total"],
                     "flagged_count": s["flagged"],
+                    "left_count": s.get("left_count", 0),
+                    "fullscreen_exit_count": s.get("fullscreen_exit_count", 0),
                     # 仅已交卷的作答才有「待批改」语义：作答中的学生随时可能继续改答案，
                     # 显示批改入口只会让教师点进去撞「尚未交卷」的报错。
                     "pending_grade_count": s["pending"] if attempt.status != "in_progress" else 0,
@@ -1059,31 +1074,18 @@ class AssessmentService:
         # ---------- 行为事件分布 ----------
         behavior_dist: List[Dict[str, Any]] = []
         flagged_attempts: set = set()
-        if attempt_ids:
-            event_rows = await db.execute(
-                select(BehaviorEvent.event_type, func.count(BehaviorEvent.id))
-                .where(BehaviorEvent.attempt_id.in_(attempt_ids))
-                .group_by(BehaviorEvent.event_type)
-                .order_by(func.count(BehaviorEvent.id).desc())
-            )
-            for event_type, cnt in event_rows.all():
-                behavior_dist.append({
-                    "event_type": event_type,
-                    "count": int(cnt),
-                    "is_flag": event_type in AssessmentService.BEHAVIOR_FLAG_TYPES,
-                })
-
-            # 可疑作答数要按 attempt 去重：某条作答只要出现过任意一类违规事件就算一次，
-            # 不能拿「事件类型的数量」或「全局有没有违规」来冒充。
-            flagged_rows = await db.execute(
-                select(BehaviorEvent.attempt_id)
-                .where(
-                    BehaviorEvent.attempt_id.in_(attempt_ids),
-                    BehaviorEvent.event_type.in_(AssessmentService.BEHAVIOR_FLAG_TYPES),
-                )
-                .distinct()
-            )
-            flagged_attempts = {aid for (aid,) in flagged_rows.all() if aid}
+        events = await AssessmentService._behavior_events(db, attempt_ids)
+        flags = AssessmentService.attention_events(events)
+        flagged_ids = {event.id for event in flags}
+        distribution_counts = {}
+        for event in events:
+            key = (event.event_type, event.id in flagged_ids)
+            distribution_counts[key] = distribution_counts.get(key, 0) + 1
+        behavior_dist = [
+            {"event_type": kind, "count": count, "is_flag": is_flag}
+            for (kind, is_flag), count in sorted(distribution_counts.items(), key=lambda item: -item[1])
+        ]
+        flagged_attempts = {event.attempt_id for event in flags}
 
         return {
             "paper": {
@@ -1110,12 +1112,7 @@ class AssessmentService:
         if not attempt:
             raise NotFoundError("作答记录不存在")
 
-        paper_result = await db.execute(
-            select(AssessmentPaper).where(AssessmentPaper.id == attempt.paper_id)
-        )
-        paper = paper_result.scalars().first()
-        if not paper or paper.creator_id != teacher_id:
-            raise NotFoundError("试卷不存在")
+        await AssessmentService.get_paper(db, attempt.paper_id, teacher_id)
 
         event_result = await db.execute(
             select(BehaviorEvent)
@@ -1123,12 +1120,14 @@ class AssessmentService:
             .order_by(BehaviorEvent.created_at.asc())
         )
         events = event_result.scalars().all()
+        flagged_ids = {event.id for event in AssessmentService.attention_events(events)}
         return [
             {
                 "id": e.id,
                 "event_type": e.event_type,
                 "payload": e.payload,
                 "occurred_at": e.occurred_at,
+                "is_flag": e.id in flagged_ids,
             }
             for e in events
         ]
@@ -1192,6 +1191,8 @@ class AssessmentService:
             )
         ).scalars().all()
 
+        flagged_ids = {event.id for event in AssessmentService.attention_events(events)}
+
         # 按题归拢
         per_q: Dict[str, Dict[str, Any]] = {}
         for q in questions:
@@ -1216,7 +1217,7 @@ class AssessmentService:
         overall_flags = 0
         for e in events:
             p = e.payload or {}
-            if e.event_type in AssessmentService.BEHAVIOR_FLAG_TYPES:
+            if e.id in flagged_ids:
                 overall_flags += 1
             qid = p.get("question_id")
             stat = per_q.get(qid) if qid else None
@@ -1229,7 +1230,7 @@ class AssessmentService:
                     stat["dwell_events"] += 1
                 except (TypeError, ValueError):
                     pass
-            elif e.event_type == "blocked_input":
+            elif e.event_type == "blocked_paste" or (e.event_type == "blocked_insert" and p.get("input_type") == "insertFromPaste"):
                 stat["paste_events"] += 1
                 try:
                     stat["paste_chars"] += int(p.get("inserted") or 0)
@@ -1253,7 +1254,7 @@ class AssessmentService:
                         stat["non_key_input_chars"] += inserted_chars
                 except (TypeError, ValueError):
                     pass
-            if e.event_type in AssessmentService.BEHAVIOR_FLAG_TYPES:
+            if e.id in flagged_ids:
                 stat["flag_count"] += 1
 
         for qid, stat in per_q.items():
@@ -1286,16 +1287,16 @@ class AssessmentService:
     async def list_student_exam_history(
         db: AsyncSession, class_id: UUID, student_id: UUID, teacher_id: UUID
     ) -> Dict[str, Any]:
-        """某学生在该教师名下的历次考试。
+        """某学生在该教师有权管理的班级中的历次考试。
 
-        只包含当前教师发布、且确实发到这个学生的试卷。学生必须是这个班的在读成员，
+        包含当前教师发布及允许协管查看、且确实发到这个学生的试卷。学生必须是这个班的在读成员，
         避免拿着任意用户 ID 去翻别的教师的成绩。
         """
         class_group = (
             await db.execute(
                 select(ClassGroup).where(
                     ClassGroup.id == class_id,
-                    ClassGroup.teacher_id == teacher_id,
+                    AccessControlService.class_scope(teacher_id),
                     ClassGroup.deleted_at.is_(None),
                 )
             )
@@ -1326,7 +1327,7 @@ class AssessmentService:
             await db.execute(
                 select(AssessmentPaper)
                 .where(
-                    AssessmentPaper.creator_id == teacher_id,
+                    AccessControlService.paper_scope(teacher_id),
                     AssessmentPaper.parse_status == "published",
                     AssessmentPaper.deleted_at.is_(None),
                 )
@@ -1388,7 +1389,7 @@ class AssessmentService:
             await db.execute(
                 select(ClassGroup).where(
                     ClassGroup.id == class_id,
-                    ClassGroup.teacher_id == teacher_id,
+                    AccessControlService.class_scope(teacher_id),
                     ClassGroup.deleted_at.is_(None),
                 )
             )
@@ -1414,7 +1415,7 @@ class AssessmentService:
             await db.execute(
                 select(AssessmentPaper)
                 .where(
-                    AssessmentPaper.creator_id == teacher_id,
+                    AccessControlService.paper_scope(teacher_id),
                     AssessmentPaper.parse_status == "published",
                     AssessmentPaper.deleted_at.is_(None),
                 )
@@ -1470,16 +1471,9 @@ class AssessmentService:
         # 违规计数按 attempt 聚合
         flag_counts: Dict[UUID, int] = {}
         attempt_ids = [a.id for a in attempts]
-        if attempt_ids:
-            rows = await db.execute(
-                select(BehaviorEvent.attempt_id, func.count(BehaviorEvent.id))
-                .where(
-                    BehaviorEvent.attempt_id.in_(attempt_ids),
-                    BehaviorEvent.event_type.in_(AssessmentService.BEHAVIOR_FLAG_TYPES),
-                )
-                .group_by(BehaviorEvent.attempt_id)
-            )
-            flag_counts = {aid: int(c) for aid, c in rows.all() if aid}
+        events = await AssessmentService._behavior_events(db, attempt_ids)
+        for event in AssessmentService.attention_events(events):
+            flag_counts[event.attempt_id] = flag_counts.get(event.attempt_id, 0) + 1
 
         name_by_id: Dict[str, str] = {}
         if member_ids:
@@ -1669,7 +1663,7 @@ class AssessmentService:
             select(ClassMember.user_id)
             .join(ClassGroup, ClassGroup.id == ClassMember.class_id)
             .where(
-                ClassGroup.teacher_id == teacher_id,
+                AccessControlService.class_scope(teacher_id),
                 ClassMember.user_id.in_(ids),
                 ClassMember.status == "active",
                 ClassMember.deleted_at.is_(None),
@@ -1861,9 +1855,9 @@ class AssessmentService:
         due_at = AssessmentService._due_at_of(paper)
         limit_end = AssessmentService._time_limit_end(paper, attempt)
         past = []
-        if due_at is not None and now > due_at:
+        if due_at is not None and now >= due_at:
             past.append((due_at, "已超过截止时间，无法继续作答"))
-        if limit_end is not None and now > limit_end:
+        if limit_end is not None and now >= limit_end:
             past.append((limit_end, "已超过限时，无法继续作答"))
         if past:
             past.sort(key=lambda item: item[0])
@@ -1884,6 +1878,7 @@ class AssessmentService:
     async def _get_published_paper_for_student(
         db: AsyncSession, paper_id: UUID, student_id: UUID
     ) -> AssessmentPaper:
+        await AssessmentService.publish_due_papers(db)
         paper = (
             await db.execute(
                 select(AssessmentPaper).where(
@@ -1900,6 +1895,7 @@ class AssessmentService:
 
     @staticmethod
     async def list_student_papers(db: AsyncSession, student_id: UUID) -> List[Dict[str, Any]]:
+        await AssessmentService.publish_due_papers(db)
         result = await db.execute(
             select(AssessmentPaper)
             .where(AssessmentPaper.parse_status == "published", AssessmentPaper.deleted_at.is_(None))
@@ -1925,6 +1921,7 @@ class AssessmentService:
                     "due_at": due_at,
                     "time_limit_minutes": AssessmentService._time_limit_minutes_of(paper),
                     "require_fullscreen": AssessmentService.require_fullscreen_of(paper),
+                    "fullscreen_exit_auto_submit": AssessmentService.fullscreen_exit_auto_submit_of(paper),
                     "attempt_id": attempt.id if attempt else None,
                     "attempt_status": attempt.status if attempt else None,
                     "attempt_score": attempt.score if attempt else None,
@@ -1949,14 +1946,18 @@ class AssessmentService:
         db: AsyncSession, paper_id: UUID, student_id: UUID
     ) -> AssessmentAttempt:
         paper = await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
-        attempt = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
+        attempt = (await db.execute(
+            select(AssessmentAttempt).where(
+                AssessmentAttempt.paper_id == paper_id, AssessmentAttempt.student_id == student_id
+            ).with_for_update().execution_options(populate_existing=True)
+        )).scalars().first()
         if attempt:
             # 已存在的作答也要校验截止时间。否则学生刷新后会重新进入作答界面，
             # 但每次 autosave 都被后端 400 拒绝，界面却没有任何过期提示。
             # 已交卷的不受影响：这里只拦 in_progress。
             if attempt.status == "in_progress":
                 deadline = AssessmentService._effective_deadline(paper, attempt)
-                if deadline is not None and datetime.now(timezone.utc) > deadline:
+                if deadline is not None and datetime.now(timezone.utc) > deadline + timedelta(seconds=SUBMIT_GRACE_SECONDS):
                     return await AssessmentService._finalize_attempt(db, attempt)
             return await AssessmentService._enforce_violation_limit(db, attempt)
 
@@ -2014,6 +2015,8 @@ class AssessmentService:
             # 骨架原样带上来 —— 存成答案的话，教师看到的是「写了段错代码」，
             # 而学生其实一行没碰；判题也会报「输出不符」而不是「未作答」。
             answer_value = AssessmentService._strip_untouched_starter(q, a.get("answer"))
+            if q.question_type == "code" and answer_value:
+                AssessmentService._code_language(q, answer_value)
             correct = AssessmentService._judge(q, answer_value)
             # 没设分值的题不能「自动判对但给 0 分」——那等于把学生判错。
             # 保持未批改，连同主观题一起进批改队列，等教师补分值并给分。
@@ -2049,9 +2052,26 @@ class AssessmentService:
         starter = (question.starter_code or "").strip()
         if not starter:
             return answer
-        if not isinstance(answer, str):
-            return answer
-        return None if answer.strip() == starter else answer
+        source = answer.get("code", "") if isinstance(answer, dict) else answer
+        return None if isinstance(source, str) and source.strip() == starter else answer
+
+    @staticmethod
+    def _code_language(question: AssessmentQuestion, answer: Any = None, requested: Optional[str] = None) -> str:
+        from app.services.judge_service import language_spec
+        configured = question.language or "python"
+        chosen = requested or (answer.get("language") if isinstance(answer, dict) else None)
+        if configured == "multi":
+            if chosen not in {"python", "java", "c", "cpp"}:
+                raise ValidationError("请选择 Python、Java、C 或 C++")
+        else:
+            if chosen and chosen != configured:
+                raise ValidationError("所选语言与题目要求不一致")
+            chosen = configured
+        try:
+            language_spec(chosen)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return chosen
 
     @staticmethod
     async def _load_student_attempt(
@@ -2147,8 +2167,9 @@ class AssessmentService:
                 }
                 continue
             cases = question.test_cases or []
-            result = judge_service.judge_code(
-                question.language or "python", source, cases
+            result = await asyncio.to_thread(
+                judge_service.judge_code,
+                AssessmentService._code_language(question, answer_row.answer), source, cases
             )
             if result.status == "judge_error":
                 # 沙箱不可用：不写判题结果，题目继续留在待批改队列
@@ -2232,6 +2253,9 @@ class AssessmentService:
         前端计数只存在内存 ref 里，刷新即清零，必须由服务端按 behavior_events 独立判定。
         """
         if attempt.status != "in_progress":
+            return False
+        paper = await db.get(AssessmentPaper, attempt.paper_id)
+        if not AssessmentService.fullscreen_exit_auto_submit_of(paper):
             return False
         count = await db.execute(
             select(func.count(BehaviorEvent.id)).where(
@@ -2370,6 +2394,11 @@ class AssessmentService:
         return AssessmentService._coerce_require_fullscreen(target.get("require_fullscreen"))
 
     @staticmethod
+    def fullscreen_exit_auto_submit_of(paper: Optional[AssessmentPaper]) -> bool:
+        target = AssessmentService._as_target_dict(paper.publish_target) if paper else {}
+        return AssessmentService.require_fullscreen_of(paper) and target.get('fullscreen_exit_auto_submit') is True
+
+    @staticmethod
     async def code_dry_run(
         db: AsyncSession,
         attempt_id: UUID,
@@ -2377,6 +2406,7 @@ class AssessmentService:
         question_id: UUID,
         code: str,
         stdin_text: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> Dict[str, Any]:
         """编程题自测：给一个裸的运行环境，跑一次把输出回给学生。
 
@@ -2386,7 +2416,7 @@ class AssessmentService:
         from app.services import judge_service
 
         attempt = await AssessmentService._load_student_attempt(
-            db, attempt_id, student_id, enforce_due=False
+            db, attempt_id, student_id
         )
         if attempt.status != "in_progress":
             raise ValidationError("已交卷，无法再自测")
@@ -2403,6 +2433,10 @@ class AssessmentService:
             raise NotFoundError("题目不存在")
         if question.question_type != "code":
             raise ValidationError("该题不是编程题")
+        selected_language = AssessmentService._code_language(question, requested=language)
+
+        # 自测只读取权限和题目，不写入作答。校验后释放行锁，让慢编译不阻塞保存或截止交卷。
+        await db.commit()
 
         key = f"judge:dryrun:{attempt_id}"
         try:
@@ -2418,7 +2452,7 @@ class AssessmentService:
 
         result = await asyncio.to_thread(
             judge_service.dry_run,
-            question.language or "python",
+            selected_language,
             code,
             stdin_text,
         )
@@ -2447,7 +2481,7 @@ class AssessmentService:
     ) -> Dict[str, Any]:
         """交卷后的成绩回顾。作答中不开放，避免参考答案提前泄露。
 
-        不返回 AI 建议分和理由。pending_review 的总分还没定，只回客观题小计。
+        不返回 AI 建议分和理由。总分未定时回已批改小计；全场截止前不开放参考答案与题解。
         """
         paper = await AssessmentService._get_published_paper_for_student(db, paper_id, student_id)
         attempt = await AssessmentService._get_latest_attempt(db, paper_id, student_id)
@@ -2468,11 +2502,16 @@ class AssessmentService:
         ).scalars().all()
         by_question = {row.question_id: row for row in answer_rows}
 
+        due_at = AssessmentService._due_at_of(paper)
+        answers_available = due_at is None or datetime.now(timezone.utc) > due_at + timedelta(seconds=SUBMIT_GRACE_SECONDS)
         objective_score = 0.0
+        graded_score = 0.0
         items = []
         for question in questions:
             row = by_question.get(question.id)
             graded = bool(row and row.graded)
+            if graded:
+                graded_score += float(row.score or 0.0)
             manual = question.question_type in ("short", "essay", "code")
             if graded and not manual:
                 objective_score += float(row.score or 0.0)
@@ -2491,8 +2530,8 @@ class AssessmentService:
                     "score": float(row.score) if graded else None,
                     "graded": graded,
                     "is_correct": row.is_correct if graded else None,
-                    "reference_answer": question.answer,
-                    "analysis": question.analysis,
+                    "reference_answer": question.answer if answers_available else None,
+                    "analysis": question.analysis if answers_available else None,
                     # 只回通过数，不回用例的输入输出：学生能读到用例就等于拿到答案
                     "judge_summary": (
                         {
@@ -2512,11 +2551,13 @@ class AssessmentService:
                 "id": paper.id,
                 "title": paper.title,
                 "total_score": paper.total_score,
+                "answers_available": answers_available,
             },
             "attempt": {
                 "status": attempt.status,
                 "score": attempt.score if finished else None,
                 "objective_score": round(objective_score, 2),
+                "graded_score": round(graded_score, 2),
                 "duration_seconds": attempt.duration_seconds,
             },
             "questions": items,
@@ -2624,12 +2665,12 @@ class AssessmentService:
 
         rows = (
             await db.execute(
-                select(AssessmentAnswer, AssessmentQuestion)
-                .join(AssessmentQuestion, AssessmentQuestion.id == AssessmentAnswer.question_id)
-                .where(
+                select(AssessmentAnswer, AssessmentQuestion).select_from(AssessmentQuestion)
+                .outerjoin(AssessmentAnswer, and_(
+                    AssessmentQuestion.id == AssessmentAnswer.question_id,
                     AssessmentAnswer.attempt_id == attempt_id,
-                    AssessmentQuestion.paper_id == attempt.paper_id,
-                )
+                ))
+                .where(AssessmentQuestion.paper_id == attempt.paper_id)
                 .order_by(AssessmentQuestion.order_index.asc())
             )
         ).all()
@@ -2642,11 +2683,13 @@ class AssessmentService:
                 "options": q.options,
                 "reference_answer": q.answer,
                 "max_score": q.score,
-                "answer": a.answer,
-                "score": a.score,
-                "graded": a.graded,
-                "is_correct": a.is_correct,
-                "language": q.language,
+                "answer": a.answer if a else None,
+                "has_saved_answer": a is not None,
+                "saved_at": a.updated_at if a else None,
+                "score": a.score if a else 0.0,
+                "graded": a.graded if a else False,
+                "is_correct": a.is_correct if a else None,
+                "language": (a.answer.get("language") if a and isinstance(a.answer, dict) else None) or q.language,
                 # 教师能看到隐藏用例的通过情况与输入输出：批改编程题必须能看到
                 # 「挂在哪个用例上」，只有通过数等于让教师盲批。
                 "judge_summary": (
@@ -2655,13 +2698,13 @@ class AssessmentService:
                         "passed": (a.judge_result or {}).get("passed"),
                         "total": (a.judge_result or {}).get("total"),
                     }
-                    if a.judge_result
+                    if a and a.judge_result
                     else None
                 ),
-                "judge_detail": a.judge_result,
-                "ai_suggested_score": a.ai_suggested_score,
-                "ai_comment": a.ai_comment,
-                "ai_graded_at": a.ai_graded_at,
+                "judge_detail": a.judge_result if a else None,
+                "ai_suggested_score": a.ai_suggested_score if a else None,
+                "ai_comment": a.ai_comment if a else None,
+                "ai_graded_at": a.ai_graded_at if a else None,
             }
             for a, q in rows
         ]
@@ -2735,6 +2778,8 @@ class AssessmentService:
         if isinstance(raw, (list, tuple)):
             return "、".join(str(x) for x in raw if x not in (None, ""))
         if isinstance(raw, dict):
+            if isinstance(raw.get("code"), str):
+                return raw["code"].strip()
             return "; ".join(f"{k}={v}" for k, v in raw.items())
         return str(raw)
 
@@ -2896,26 +2941,31 @@ class AssessmentService:
                 raise PermissionDenied("作答记录不存在或不属于当前用户")
 
         now = datetime.now(timezone.utc)
-        for e in events:
-            payload = e.get("payload")
-            if str(e.get("event_type") or "") == "answer_edit" and isinstance(payload, dict):
+        recorded = 0
+        for event in events:
+            payload = event.get("payload")
+            if str(event.get("event_type") or "") == "answer_edit" and isinstance(payload, dict):
                 payload = dict(payload)
                 for key in ("inserted_text", "deleted_text"):
                     value = payload.get(key)
                     if isinstance(value, str) and len(value) > 4000:
                         payload[key] = value[:4000]
-            db.add(
-                BehaviorEvent(
-                    user_id=student_id,
-                    session_id=session_id,
-                    attempt_id=attempt_id,
-                    event_type=str(e.get("event_type") or "custom"),
-                    payload=payload,
-                    occurred_at=e.get("occurred_at") or now,
-                )
+            values = dict(
+                user_id=student_id, session_id=session_id, attempt_id=attempt_id,
+                event_type=str(event.get("event_type") or "custom"), payload=payload,
+                occurred_at=event.get("occurred_at") or now,
             )
+            if event.get("event_id"):
+                event_id = UUID(str(event["event_id"]))
+                values["id"] = uuid5(NAMESPACE_URL, f"studypartner:behavior:{student_id}:{event_id}")
+            inserted = await db.execute(
+                pg_insert(BehaviorEvent).values(**values)
+                .on_conflict_do_nothing(index_elements=[BehaviorEvent.id]).returning(BehaviorEvent.id)
+            )
+            if inserted.scalar_one_or_none() is not None:
+                recorded += 1
         await db.commit()
-        return len(events)
+        return recorded
 
     @staticmethod
     def _attach_stem_images(stem: str, doc_images: List[dict]) -> Optional[List[dict]]:

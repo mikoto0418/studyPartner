@@ -24,7 +24,10 @@ const isCode = computed(() => props.item.question_type === 'code')
 const scoreUnset = computed(() => props.item.score === null || props.item.score === undefined)
 
 const codeLanguages = [
+  { value: 'multi', label: '学生自选（Python / Java / C / C++）' },
   { value: 'python', label: 'Python 3' },
+  { value: 'c', label: 'C17' },
+  { value: 'cpp', label: 'C++17' },
   { value: 'javascript', label: 'JavaScript (Node)' },
   { value: 'java', label: 'Java 17' }
 ]
@@ -130,7 +133,7 @@ function onScoreInput(e: Event) {
             <select v-model="item.language" class="ui-field">
               <option v-for="lang in codeLanguages" :key="lang.value" :value="lang.value">{{ lang.label }}</option>
             </select>
-            <p class="ui-field-help">学生只能用它作答；判题与 AI 阅卷都按该语言执行。</p>
+            <p class="ui-field-help">选择“学生自选”时，语言随作答一起保存；选择单一语言则固定语言。</p>
           </div>
           <div>
             <label class="ui-field-label mb-1">起始代码（可选）</label>

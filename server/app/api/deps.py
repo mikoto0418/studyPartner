@@ -1,5 +1,5 @@
 from typing import List
-from fastapi import Depends, Security
+from fastapi import Depends, Request, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -11,6 +11,7 @@ from app.models.user import User
 reusable_oauth2 = HTTPBearer(scheme_name="Bearer", auto_error=False)
 
 async def get_current_user(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     http_auth: HTTPAuthorizationCredentials = Security(reusable_oauth2)
 ) -> User:
@@ -29,6 +30,15 @@ async def get_current_user(
         
     if user.status == "disabled":
         raise AuthError("该账号已被禁用", code="USER_DISABLED")
+
+    if user.requires_identity_confirmation and (
+        request.method, request.url.path.rstrip("/")
+    ) not in {
+        ("GET", "/api/v1/auth/me"),
+        ("POST", "/api/v1/auth/identity"),
+        ("GET", "/api/v1/modules"),
+    }:
+        raise PermissionDenied("请先填写本人姓名", code="IDENTITY_REQUIRED")
         
     return user
 

@@ -12,7 +12,7 @@ COPY . .
 RUN npm run build
 
 # Step 2: Serve static files with Nginx
-FROM nginx:alpine
+FROM nginx:stable-alpine
 
 # Copy built assets to Nginx default html path
 COPY --from=builder /app/dist /usr/share/nginx/html

@@ -1,0 +1,55 @@
+import sys
+from datetime import date
+
+TASK = __TASK__
+raw = sys.stdin.read().strip()
+if TASK == 3:
+    print(''.join(c.upper() if c.islower() else chr((ord(c)-65+1)%26+65) for c in raw))
+    sys.exit(0)
+values = list(map(int, raw.split()))
+if TASK == 2:
+    n = values[0]
+    walls = bytearray(n)
+    for bit in range(3):
+        l, r = values[1+2*bit:3+2*bit]
+        for i in range(l-1,r): walls[i] |= 1 << bit
+    counts = [walls.count(i) for i in range(8)]
+    counts[0] += counts[7]
+    print(*(counts[i] for i in [1,2,4,3,6,0,5]))
+    sys.exit(0)
+if TASK == 1:
+    start, end = values
+    result = []
+    for year in range(start // 10000, end // 10000 + 1):
+        text = str(year) + str(year)[::-1]
+        month, day = int(text[4:6]), int(text[6:])
+        try:
+            date(year, month, day)
+        except ValueError:
+            continue
+        if start <= int(text) <= end:
+            result.append(text)
+    print("\n".join(result) or "0")
+elif TASK == 4:
+    bounds = [[0, 0] for _ in range(7)]
+    top, farthest = 1, 0
+    for i in range(values[0]):
+        floor, room = values[2*i+1:2*i+3]
+        room %= 100
+        pair = (room + 1) // 2
+        x = pair - (11 if room <= 20 else 10)
+        bounds[floor][0] = max(bounds[floor][0], -x)
+        bounds[floor][1] = max(bounds[floor][1], x)
+        top = max(top, floor)
+        farthest = max(farthest, 30*(floor-1) + 3*abs(x))
+    print(2*(30*(top-1) + 3*sum(sum(pair) for pair in bounds)) - farthest)
+else:
+    n, a = values[0], values[1:]
+    dp = [[0]*n for _ in range(n)]
+    for i in range(n):
+        dp[i][i] = a[i]
+    for length in range(2, n+1):
+        for left in range(n-length+1):
+            right = left+length-1
+            dp[left][right] = max(a[left]-dp[left+1][right], a[right]-dp[left][right-1])
+    print("A" if dp[0][n-1] > 0 else "B" if dp[0][n-1] < 0 else "F")

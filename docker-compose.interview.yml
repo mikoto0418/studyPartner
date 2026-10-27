@@ -1,0 +1,122 @@
+name: studypartner-1022
+
+x-backend: &backend
+  image: studypartner-1022-backend:local
+  build:
+    context: ./server
+    args:
+      DEBIAN_MIRROR: ${DEBIAN_MIRROR:-http://mirrors.ustc.edu.cn}
+  restart: unless-stopped
+  environment: &backend-env
+    APP_ENV: production
+    APP_DEBUG: "false"
+    ENABLE_INLINE_SCHEDULER: "false"
+    POSTGRES_HOST: postgres
+    POSTGRES_DB: studypartner_1022
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/start-interview.ps1 first}
+    REDIS_HOST: redis
+    MINIO_ENDPOINT: minio:9000
+    MINIO_ACCESS_KEY: interview
+    MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Run scripts/start-interview.ps1 first}
+    QDRANT_HOST: qdrant
+    JUDGE_BASE_URL: http://judge:5050
+    # 字符加密允许 999999 个字符，输出上限须覆盖完整结果。
+    JUDGE_OUTPUT_LIMIT_BYTES: 2097152
+    JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Run scripts/start-interview.ps1 first}
+    SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+    SILICONFLOW_BASE_URL: ${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1}
+    SILICONFLOW_CHAT_MODEL: ${SILICONFLOW_CHAT_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+    TZ: Asia/Shanghai
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  judge:
+    image: studypartner-1022-judge:local
+    build:
+      context: ./deploy/judge
+      args:
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-http://mirrors.ustc.edu.cn}
+    privileged: true
+    shm_size: 256m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5050/version"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: studypartner_1022
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+      TZ: Asia/Shanghai
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d studypartner_1022"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: interview
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio-data:/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  backend:
+    <<: *backend
+
+  worker:
+    <<: *backend
+    command: celery -A app.core.celery_app:celery_app worker --loglevel=info --concurrency=2
+
+  beat:
+    <<: *backend
+    command: celery -A app.core.celery_app:celery_app beat --loglevel=info
+
+  frontend:
+    image: studypartner-1022-frontend:local
+    build: ./web
+    restart: unless-stopped
+    ports:
+      - "${INTERVIEW_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  qdrant-data:

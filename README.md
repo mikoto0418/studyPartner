@@ -1,5 +1,9 @@
 # AI 伴学与智能体协同平台
 
+> **1022 二面内网版**：双击 `start-interview.bat` 初始化并启动。
+> [部署与使用说明](docs/1022-interview.md) · [答题工作台](docs/exam-workspace.md) · [教师监考](docs/exam-monitoring.md)
+> 「1022二面」已预约 2026-10-22 14:50～15:50（北京时间），支持四语言离线判题。无网考场使用 `start-offline.bat`。
+
 <p align="center">
   <strong>面向学生、教师与平台管理员的 AI 学习协同系统</strong>
 </p>

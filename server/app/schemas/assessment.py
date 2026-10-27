@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class AssessmentPaperCreateReq(BaseModel):
-    file_id: UUID
-    title: str = Field(..., max_length=255)
+    file_id: Optional[UUID] = None
+    title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
 
 
@@ -66,6 +66,7 @@ class AssessmentPublishReq(BaseModel):
     time_limit_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
     # 是否要求全程全屏作答。默认开：进入作答页即强制全屏，退出会遮住卷面
     require_fullscreen: bool = True
+    fullscreen_exit_auto_submit: bool = False
     # 主观题批阅倾向，随发布一并保存；{mode: lenient/standard/strict, extra: str}
     grading_preference: Optional[dict] = None
 
@@ -140,6 +141,7 @@ class StudentPaperOut(BaseModel):
     due_at: Optional[datetime] = None
     time_limit_minutes: Optional[int] = None
     require_fullscreen: bool = True
+    fullscreen_exit_auto_submit: bool = False
     attempt_id: Optional[UUID] = None
     attempt_status: Optional[str] = None
     attempt_score: Optional[float] = None
@@ -150,6 +152,7 @@ class CodeRunReq(BaseModel):
 
     code: str = Field(..., max_length=100_000)
     stdin: Optional[str] = Field(default=None, max_length=10_000)
+    language: Optional[str] = None
 
 
 class CodeRunCaseOut(BaseModel):
@@ -239,7 +242,8 @@ class StudentAnswersOut(BaseModel):
 
 
 class BehaviorEventIn(BaseModel):
-    event_type: str
+    event_id: Optional[UUID] = None
+    event_type: str = Field(..., min_length=1, max_length=50)
     payload: Optional[dict] = None
     occurred_at: Optional[datetime] = None
 
@@ -251,6 +255,8 @@ class BehaviorBatchReq(BaseModel):
 
 
 class AttemptAnswerOut(BaseModel):
+    has_saved_answer: bool = False
+    saved_at: Optional[datetime] = None
     question_id: UUID
     order_index: int
     question_type: str
@@ -318,10 +324,13 @@ class AttemptMonitorOut(BaseModel):
     suspicious: bool
     event_count: int
     flagged_count: int
+    left_count: int = 0
+    fullscreen_exit_count: int = 0
     pending_grade_count: int = 0
 
 
 class BehaviorEventOut(BaseModel):
+    is_flag: bool = False
     id: UUID
     event_type: str
     payload: Optional[dict] = None

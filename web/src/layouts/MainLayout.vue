@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { Bell, Sun, Moon } from 'lucide-vue-next'
 import AppSidebar from '../components/common/AppSidebar.vue'
+import IdentityGate from '../components/common/IdentityGate.vue'
 import { notificationApi } from '../api/modules/notification'
 import type { NotificationOut } from '../api/modules/notification'
-import { authApi } from '../api/modules/auth'
 
 import { onUnmounted } from 'vue'
 import { studyTimeApi } from '../api/modules/study_time'
 
 const route = useRoute()
+const isExamWorkspace = computed(() => route.name === 'StudentAssessmentDo')
 
 const isDark = ref(false)
 const showNotifications = ref(false)
@@ -42,23 +43,6 @@ const fetchNotifications = async () => {
 }
 
 const unreadCount = computed(() => notifications.value.filter(n => !n.read_at).length)
-
-const syncCurrentIdentity = async () => {
-  try {
-    const res = await authApi.getMe()
-    const user = res.data
-    if (!user) return
-    localStorage.setItem('sp_username', user.username)
-    if (user.display_name && user.display_name !== '未设置姓名') {
-      localStorage.setItem('sp_display_name', user.display_name)
-    } else {
-      localStorage.removeItem('sp_display_name')
-    }
-    window.dispatchEvent(new Event('profile-updated'))
-  } catch (error) {
-    console.warn('Failed to sync current identity', error)
-  }
-}
 
 const markAllAsRead = async () => {
   try {
@@ -101,8 +85,7 @@ const handleNewNotification = (event: Event) => {
   notifications.value.unshift(item)
 }
 
-onMounted(() => {
-  syncCurrentIdentity()
+const startSession = () => {
   fetchNotifications()
   window.addEventListener('new-notification', handleNewNotification)
   // Poll notifications every 60 seconds
@@ -111,7 +94,8 @@ onMounted(() => {
   // Start study time heartbeat if student
   const userRole = localStorage.getItem('sp_role')
   if (userRole === 'student') {
-    const sessionId = crypto.randomUUID()
+    // 普通局域网 HTTP 下 randomUUID 可能不可用，与考试页使用相同回退。
+    const sessionId = globalThis.crypto?.randomUUID?.() || `sess_${Date.now()}_${Math.random().toString(36).slice(2)}`
     const sendHeartbeat = async () => {
       try {
         await studyTimeApi.reportHeartbeat({
@@ -126,7 +110,7 @@ onMounted(() => {
     sendHeartbeat()
     heartbeatTimer = setInterval(sendHeartbeat, 30000)
   }
-})
+}
 
 onUnmounted(() => {
   if (notificationTimer) clearInterval(notificationTimer)
@@ -136,15 +120,16 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <IdentityGate @ready="startSession">
   <div class="flex w-screen h-screen overflow-hidden bg-gray-50 dark:bg-zinc-950 text-gray-900 dark:text-zinc-50 transition-colors">
     <!-- App Sidebar -->
-    <AppSidebar />
+    <AppSidebar v-if="!isExamWorkspace" />
 
     <!-- Main Section -->
     <div class="flex-1 flex flex-col min-w-0 overflow-hidden relative">
       
       <!-- Topbar Header -->
-      <header class="h-16 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between px-4 md:px-8 bg-white dark:bg-zinc-900 flex-shrink-0 z-10">
+      <header v-if="!isExamWorkspace" class="h-16 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between px-4 md:px-8 bg-white dark:bg-zinc-900 flex-shrink-0 z-10">
         <!-- Title -->
         <div>
           <h2 class="text-sm font-semibold text-gray-900 dark:text-zinc-50">
@@ -240,16 +225,17 @@ onUnmounted(() => {
       ></div>
 
       <!-- Main Content Area -->
-      <main class="flex-1 overflow-y-auto bg-gray-50 dark:bg-zinc-950 p-4 md:p-8 relative">
+      <main class="flex-1 min-h-0 bg-gray-50 dark:bg-zinc-950 relative" :class="isExamWorkspace ? 'overflow-hidden' : 'overflow-y-auto p-4 md:p-8'">
         <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
-            <component :is="Component" />
+            <component :is="Component" :key="route.path" />
           </transition>
         </router-view>
       </main>
 
     </div>
   </div>
+  </IdentityGate>
 </template>
 
 <style scoped>

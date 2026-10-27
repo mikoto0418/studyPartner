@@ -3,788 +3,283 @@ import type { BehaviorEventPayload } from '../api/modules/assessment'
 import { diffAnswerText } from '../utils/answerEditDiff'
 
 export interface AntiCheatCallbacks {
-  // 允许返回 Promise，失败时可把事件放回队列重投
   reportEvents: (events: BehaviorEventPayload[]) => void | Promise<void>
   onFullscreenExit?: (count: number) => void
   onMaxViolations?: () => void
 }
 
-// 离线时事件会积压在内存里，设上限避免无限增长
-const MAX_QUEUE_SIZE = 500
-
-interface FocusState {
-  startedAt: number
-  target: string
-  questionId: string | null
-  field: string | null
+// getRandomValues also works on an HTTP LAN origin, unlike randomUUID.
+function eventId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6]! & 15) | 64
+  bytes[8] = (bytes[8]! & 63) | 128
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 export function useAntiCheat(options: { maxFullscreenExits?: number; enforceFullscreen?: boolean } = {}) {
-  const maxFullscreenExits = options.maxFullscreenExits ?? 3
-  // 试卷可以关掉强制全屏：此时不做进入/恢复全屏，也不因退出全屏计违规。
-  // 关闭后「已退出全屏」遮罩与自动交卷都不触发，但其它防作弊信号照常记录。
   let enforceFullscreen = options.enforceFullscreen ?? true
-  const setEnforceFullscreen = (value: boolean) => {
-    enforceFullscreen = value
-  }
   const fullscreenActive = ref(false)
   const fullscreenExitCount = ref(0)
   const blockedActionCount = ref(0)
-  // 失焦/切后台时把卷面盖住：后台窗口仍在渲染，不遮挡的话截图与录屏能完整抄走
   const contentHidden = ref(false)
-
   let tracking = false
-  let flushTimer: number | null = null
-  let heartbeatTimer: number | null = null
-  let devtoolsTimer: number | null = null
-  let scrollTimer: number | null = null
-  let focusLostAt: number | null = null
-  let focusState: FocusState | null = null
-  let currentQuestion: string | null = null
-  let questionStartedAt: number | null = null
-  let devtoolsOpen = false
-  // 按输入框分别记录「已敲入字符数」与「上次的文本长度」。
-  // 用 WeakMap 而不是单个变量：多个输入框共用一个计数器会互相串，
-  // 且首次进入某框时无法判断这一下是敲的还是整段灌进来的。
-  const keystrokeCounts = new WeakMap<Element, number>()
-  const valueSnapshots = new WeakMap<Element, string>()
-
-  const queue: BehaviorEventPayload[] = []
-
+  let disposed = false
+  let timer: number | undefined
+  let flushing = false
+  let storageKey = ''
   let sessionId = ''
   let attemptId: string | null = null
-  let reportEvents: AntiCheatCallbacks['reportEvents'] = () => {}
-  let onFullscreenExit: NonNullable<AntiCheatCallbacks['onFullscreenExit']> = () => {}
-  let onMaxViolations: NonNullable<AntiCheatCallbacks['onMaxViolations']> = () => {}
+  let callbacks: AntiCheatCallbacks = { reportEvents: () => {} }
+  const queue: BehaviorEventPayload[] = []
+  // An event which may have reached the server must never be edited on retry.
+  const sealed = new Set<string>()
+  let questionId: string | null = null
+  let questionStartedAt: number | null = null
+  let away: { id: string; startedAt: number } | null = null
+  let copiedText: string | null = null
+  const snapshots = new WeakMap<Element, string>()
+  const now = () => performance.now()
+  const activePage = () => !document.hidden && document.hasFocus() && !away
+  const canCountDwell = () => activePage() && (!enforceFullscreen || fullscreenActive.value)
 
-  const trapDebugger = new Function('debugger')
-
-  const ts = () => Date.now()
-  const iso = () => new Date().toISOString()
-
-  const push = (event_type: string, payload: Record<string, any> = {}) => {
-    const occurred_at = iso()
-    // 连续逐字输入/退格合并成一个编辑段：保留完整新增/删除文本与边界，
-    // 但不要每敲一个字就写一行数据库，避免一篇作文生成数千事件。
-    if (event_type === 'answer_edit') {
-      const previous = queue[queue.length - 1]
-      const old = previous?.payload
-      if (
-        previous?.event_type === 'answer_edit' &&
-        old &&
-        old.input_method === payload.input_method &&
-        old?.question_id === payload.question_id &&
-        old?.field === payload.field
-      ) {
-        const oldInserted = String(old.inserted_text || '')
-        const oldDeleted = String(old.deleted_text || '')
-        const inserted = String(payload.inserted_text || '')
-        const deleted = String(payload.deleted_text || '')
-        const contiguousInsert =
-          old.operation === 'insert' && payload.operation === 'insert' &&
-          Number(old.position) + oldInserted.length === Number(payload.position)
-        const contiguousBackspace =
-          old.operation === 'delete' && payload.operation === 'delete' &&
-          Number(payload.position) + deleted.length === Number(old.position)
-        const contiguousDelete =
-          old.operation === 'delete' && payload.operation === 'delete' &&
-          Number(payload.position) === Number(old.position)
-        if (contiguousInsert) {
-          old.inserted_text = oldInserted + inserted
-          old.inserted_chars = Number(old.inserted_chars || 0) + Number(payload.inserted_chars || 0)
-          old.current_length = payload.current_length
-          previous.occurred_at = occurred_at
-          return
-        }
-        if (contiguousBackspace || contiguousDelete) {
-          old.position = Math.min(Number(old.position), Number(payload.position))
-          old.deleted_text = contiguousBackspace ? deleted + oldDeleted : oldDeleted + deleted
-          old.deleted_chars = Number(old.deleted_chars || 0) + Number(payload.deleted_chars || 0)
-          old.current_length = payload.current_length
-          previous.occurred_at = occurred_at
-          return
-        }
-      }
-    }
-    if (queue.length >= MAX_QUEUE_SIZE) queue.shift()
-    queue.push({ event_type, payload, occurred_at })
-  }
-
-  const flush = () => {
-    if (!queue.length) return
-    // BehaviorBatchReq 上限 200；文本历史可能快速产生大量编辑事件，必须分批发。
-    const batch = queue.splice(0, 200)
-    // 上报失败就把这批事件放回队首，等下一次 flush 重投；
-    // 否则一次网络抖动就会让这段作答永久没有行为证据。
-    const requeue = () => {
-      if (queue.length + batch.length > MAX_QUEUE_SIZE) {
-        // 队列已满，这批只能丢弃；留个痕迹，否则行为证据会无声消失。
-        console.warn(`[anti-cheat] 行为事件队列已满，丢弃 ${batch.length} 条事件`)
-        return
-      }
-      queue.unshift(...batch)
-    }
+  function persist() {
+    if (!storageKey) return
     try {
-      const res = reportEvents(batch)
-      if (res && typeof (res as Promise<void>).catch === 'function') {
-        ;(res as Promise<void>).catch(requeue)
+      if (queue.length) localStorage.setItem(storageKey, JSON.stringify(queue))
+      else localStorage.removeItem(storageKey)
+    } catch { /* A full/disabled localStorage does not stop answering or HTTP retries. */ }
+  }
+
+  function push(event_type: string, payload: Record<string, any> = {}) {
+    const previous = queue.at(-1)
+    const old = previous?.payload
+    if (event_type === 'answer_edit' && previous?.event_type === event_type && old &&
+        previous.event_id && !sealed.has(previous.event_id) && old.question_id === payload.question_id &&
+        old.field === payload.field && old.input_method === payload.input_method &&
+        old.operation === 'insert' && payload.operation === 'insert' &&
+        Number(old.position) + Number(old.inserted_chars) === Number(payload.position) &&
+        Number(old.inserted_chars) + Number(payload.inserted_chars) <= 4000) {
+      old.inserted_chars += payload.inserted_chars
+      old.inserted_text = String(old.inserted_text || '') + String(payload.inserted_text || '')
+      old.current_length = payload.current_length
+      previous.occurred_at = new Date().toISOString()
+    } else {
+      // Prefer retaining environment events over verbose edit/dwell telemetry.
+      if (queue.length >= 1000) {
+        const index = queue.findIndex(e => !sealed.has(e.event_id || '') &&
+          ['answer_edit', 'question_dwell'].includes(e.event_type))
+        if (index >= 0) queue.splice(index, 1)
+        else if (event_type === 'answer_edit' || event_type === 'question_dwell') return
+        else if (queue.length >= 2000) return
       }
-    } catch (err) {
-      requeue()
+      queue.push({ event_id: eventId(), event_type, payload, occurred_at: new Date().toISOString() })
+    }
+    persist()
+  }
+
+  async function flush() {
+    if (flushing || !queue.length) return
+    flushing = true
+    const batch = queue.slice(0, 200)
+    batch.forEach(e => { if (e.event_id) sealed.add(e.event_id) })
+    try {
+      await callbacks.reportEvents(batch)
+      queue.splice(0, batch.length)
+      batch.forEach(e => { if (e.event_id) sealed.delete(e.event_id) })
+      persist()
+    } catch { /* Keep the exact event IDs and payloads for the next retry. */ }
+    finally { flushing = false }
+    if (!tracking && queue.length && !disposed) {
+      timer = window.setTimeout(() => { void flush() }, 5000)
     }
   }
 
-  const recordViolation = () => {
-    blockedActionCount.value += 1
+  function commitDwell() {
+    if (questionStartedAt === null || !questionId) return
+    const duration = Math.max(0, Math.round(now() - questionStartedAt))
+    questionStartedAt = now()
+    if (duration >= 300) push('question_dwell', { question_id: questionId, duration_ms: duration })
   }
 
-  // ---------- 键盘/剪贴板多层拦截 ----------
-  const isModifier = (e: KeyboardEvent) => e.ctrlKey || e.metaKey
-  // Ctrl+F 页内搜索是取答案的常规路径，一并拦掉
-  const blockedKeys = new Set(['KeyC', 'KeyV', 'KeyX', 'KeyS', 'KeyP', 'KeyU', 'KeyF'])
-  const blockedFKeys = new Set(['F12', 'F3'])
-  const devtoolsKeys = new Set(['KeyI', 'KeyJ', 'KeyC'])
+  function leave(reason: string) {
+    if (!tracking || away) return
+    commitDwell()
+    questionStartedAt = null
+    away = { id: eventId(), startedAt: now() }
+    contentHidden.value = true
+    push('page_leave', { episode_id: away.id, reason, question_id: questionId })
+    void flush()
+  }
 
-  const preventAndFlag = (e: Event, type: string, payload: Record<string, any> = {}) => {
+  function returnToPage() {
+    if (!tracking || document.hidden || !document.hasFocus()) return
+    if (away) {
+      push('page_return', { episode_id: away.id, duration_ms: Math.round(now() - away.startedAt) })
+      away = null
+    }
+    contentHidden.value = false
+    if (questionStartedAt === null && canCountDwell()) questionStartedAt = now()
+  }
+
+  const onBlur = () => leave('blur')
+  const onVisibility = () => document.hidden ? leave('hidden') : returnToPage()
+  const onPageHide = () => { leave('pagehide'); void flush() }
+
+  function fieldElement(target: EventTarget | null): HTMLElement | null {
+    return target instanceof Element ? target.closest<HTMLElement>('[data-ac-question]') : null
+  }
+  function selectedText(target: EventTarget | null) {
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      return target.value.slice(target.selectionStart ?? 0, target.selectionEnd ?? 0)
+    }
+    return document.getSelection()?.toString() || ''
+  }
+  const onCopy = (e: ClipboardEvent) => {
+    // Permit ordinary editing and copying samples; only text copied in this page is trusted for re-paste.
+    copiedText = selectedText(e.target) || null
+  }
+  function blockInsertion(e: Event, type: string) {
+    if (e.defaultPrevented) return
     e.preventDefault()
     e.stopPropagation()
-    recordViolation()
-    push(type, payload)
+    blockedActionCount.value += 1
+    push(type, { question_id: fieldElement(e.target)?.dataset.acQuestion ?? questionId })
   }
-
-  const onKeydown = (e: KeyboardEvent) => {
-    if (blockedFKeys.has(e.code)) {
-      preventAndFlag(e, 'blocked_shortcut', { code: e.code })
-      return
-    }
-    const target = e.target as HTMLElement | null
-    const editable = !!target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')
-    // 输入框内的 Ctrl+A 是「全选自己写的字」，属于正常编辑，放行；
-    // 页面级全选（对着题干）才拦 —— 那才是「全选复制」的第一步。
-    if (isModifier(e) && e.code === 'KeyA' && !editable) {
-      preventAndFlag(e, 'blocked_shortcut', { code: e.code, key: e.key })
-      return
-    }
-    if (isModifier(e) && blockedKeys.has(e.code)) {
-      preventAndFlag(e, 'blocked_shortcut', { code: e.code, key: e.key })
-      return
-    }
-    if (isModifier(e) && e.shiftKey && devtoolsKeys.has(e.code)) {
-      preventAndFlag(e, 'blocked_shortcut', { code: e.code, devtools: true })
-      return
-    }
-    // 记录真实敲入的字符数，供输入比对用。带修饰键的组合（Ctrl+Z 等）不产生文字，
-    // 输入法组合期间也不计，否则会把正常操作误算成按键。
-    if (!e.isComposing && !isModifier(e) && !e.altKey && e.key.length === 1) {
-      const t = e.target as Element | null
-      if (t) keystrokeCounts.set(t, (keystrokeCounts.get(t) ?? 0) + 1)
-    }
+  const isTestInput = (target: EventTarget | null) => target instanceof Element &&
+    !!target.closest('[data-ac-field="stdin"], [data-ac-field="selftest"]')
+  const onPaste = (e: ClipboardEvent) => {
+    if (isTestInput(e.target)) return
+    const text = e.clipboardData?.getData('text/plain')
+    if (copiedText !== null && text === copiedText) return
+    blockInsertion(e, 'blocked_paste')
   }
-
-  const onKeyup = (e: KeyboardEvent) => {
-    if (e.code === 'PrintScreen') {
-      recordViolation()
-      push('blocked_shortcut', { code: 'PrintScreen' })
-    }
+  const onDrop = (e: DragEvent) => {
+    if (isTestInput(e.target)) return
+    if (copiedText !== null && e.dataTransfer?.getData('text/plain') === copiedText) return
+    blockInsertion(e, 'blocked_drop')
   }
+  const onDragStart = (e: DragEvent) => { copiedText = selectedText(e.target) || null }
 
-  const blockClipboard = (type: string) => (e: Event) => {
-    preventAndFlag(e, type, {})
+  function baseline(e: FocusEvent) {
+    const el = e.target
+    if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) snapshots.set(el, el.value)
   }
-
-  const onPaste = blockClipboard('blocked_paste')
-  const onCopy = blockClipboard('blocked_copy')
-  const onCut = blockClipboard('blocked_cut')
-  const onDrop = blockClipboard('blocked_drop')
-  const onContextMenu = blockClipboard('blocked_contextmenu')
-
-  const onBeforeInput = (e: InputEvent) => {
-    const inputType = (e as any).inputType
-    if (inputType === 'insertFromPaste' || inputType === 'insertFromDrop' || inputType === 'insertReplacementText') {
-      preventAndFlag(e, 'blocked_insert', { input_type: inputType })
-    }
-  }
-
-  // 「框选题干」不能只看 selectstart：普通点击也会触发它，实测一次 20 秒的作答
-  // 里点一下就记一条，106 次违规全是正常点击 —— 每个学生都被标成可疑，违规计数
-  // 直接失去意义。所以这里不拦 selectstart，改在鼠标松开时看有没有真的选出一段
-  // 文字。复制、剪切、拖拽仍由各自的处理器拦着，短暂高亮不构成泄露。
-  const onSelectStart = (e: Event) => {
-    const el = e.target as HTMLElement | null
-    const tag = el && el.tagName
-    // 输入框里选中的是自己写的字，属于正常编辑
-    if (tag === 'TEXTAREA' || tag === 'INPUT') return
-  }
-
-  const commitBlockedSelection = () => {
-    const selection = document.getSelection()
-    if (!selection) return
-    const text = selection.toString().trim()
-    if (!text) return
-    // 选中区域如果落在输入框内，是学生在改自己的答案，不算违规
-    const anchor = selection.anchorNode?.parentElement
-    const anchorTag = anchor?.tagName
-    if (anchorTag === 'TEXTAREA' || anchorTag === 'INPUT') return
-    recordViolation()
-    push('blocked_selection', { length: text.length })
-    selection.removeAllRanges()
-  }
-
-  const onMouseUp = (e: MouseEvent) => {
-    const el = e.target as HTMLElement | null
-    const tag = el && el.tagName
-    if (tag === 'TEXTAREA' || tag === 'INPUT') return
-    commitBlockedSelection()
-  }
-
-  const onDragStart = (e: Event) => {
-    preventAndFlag(e, 'blocked_drag', {})
-  }
-
-  // 浏览器原生菜单「粘贴」在部分环境既不派发 paste 也不派发 beforeinput，
-  // 只拦事件会漏。这里按「输入框增长了多少字符」与「实际敲了多少键」比对，
-  // 多出来的就是非手敲输入。
-  //
-  // 基线在 focusin 时就记下（此刻输入框通常还是空的），所以「进框第一次就整段
-  // 粘贴」同样能抓到 —— 只在 input 事件里首次建基线的话，那一整段会被当成起点跳过。
-  // 输入法（中文等）会一次性提交整段文字，且提交那一拍 isComposing 已是 false，
-  // 所以用组合状态 + 结束后 150ms 时间窗共同排除，避免把中文作答误判成粘贴。
-  let composing = false
-  let compositionEndedAt = 0
-
-  const onCompositionStart = () => {
-    composing = true
-  }
-
-  const onCompositionEnd = () => {
-    composing = false
-    compositionEndedAt = Date.now()
-  }
-
-  const resetInputBaseline = (el: Element) => {
-    const value = (el as HTMLInputElement).value
-    valueSnapshots.set(el, value)
-    keystrokeCounts.set(el, 0)
-  }
-
-  const onInputBaseline = (e: FocusEvent) => {
-    const el = e.target as HTMLElement | null
-    if (!el) return
-    if (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT') return
-    resetInputBaseline(el)
-  }
-
-  const onInputCapture = (e: Event) => {
-    const el = e.target as HTMLElement | null
-    if (!el) return
-    const tag = el.tagName
-    if (tag !== 'TEXTAREA' && tag !== 'INPUT') return
-    const value = (el as HTMLInputElement).value
-    // composition 中的中间态不记录；最终 input 到来时，用原快照记成一次 IME 编辑。
-    if (composing || (e as InputEvent).isComposing) return
-    const previous = valueSnapshots.get(el)
-    if (previous === undefined) {
-      resetInputBaseline(el)
-      return
-    }
-
-    const diff = diffAnswerText(previous, value)
-    const typed = keystrokeCounts.get(el) ?? 0
-    const isImeCommit = Date.now() - compositionEndedAt < 150
-    const inputMethod = isImeCommit
-      ? 'ime'
-      : diff.insertedText.length === 0
-        ? 'delete'
-        : typed === 0
-          ? 'non_key_input'
-          : 'typing'
-
-    valueSnapshots.set(el, value)
-    keystrokeCounts.set(el, 0)
+  function onInput(e: Event) {
+    const el = e.target
+    if (!(el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) ||
+        el.closest('[data-code-editor]') || !el.dataset.acQuestion || isTestInput(el)) return
+    if ((e as InputEvent).isComposing) return
+    const previous = snapshots.get(el) ?? ''
+    snapshots.set(el, el.value)
+    const diff = diffAnswerText(previous, el.value)
     if (diff.operation === 'none') return
-
-    const questionId = el.getAttribute('data-ac-question')
-    const field = el.getAttribute('data-ac-field')
-    push('answer_edit', {
-      question_id: questionId,
-      field,
-      operation: diff.operation,
-      input_method: inputMethod,
-      position: diff.position,
-      inserted_text: diff.insertedText,
-      deleted_text: diff.deletedText,
-      inserted_chars: diff.insertedText.length,
-      deleted_chars: diff.deletedText.length,
-      previous_length: previous.length,
-      current_length: value.length
+    const inputType = (e as InputEvent).inputType || ''
+    recordEditorEdit(el.dataset.acQuestion, {
+      field: el.dataset.acField,
+      operation: diff.operation, position: diff.position,
+      input_method: inputType.startsWith('history') ? 'history' : inputType.includes('Composition') ? 'ime' : 'typing',
+      inserted_text: diff.insertedText.slice(0, 4000), deleted_text: diff.deletedText.slice(0, 4000),
+      inserted_chars: diff.insertedText.length, deleted_chars: diff.deletedText.length,
+      previous_length: previous.length, current_length: el.value.length
     })
-
-    // 原生菜单粘贴等绕过 paste/beforeinput 的路径仍保存完整 edit diff；
-    // 额外打违规标记。短的非键盘输入只保留编辑记录，减少语音/候选词误报。
-    if (inputMethod === 'non_key_input' && diff.insertedText.length >= 4) {
-      recordViolation()
-      push('blocked_input', {
-        question_id: questionId,
-        field,
-        inserted: diff.insertedText.length,
-        keystrokes: typed
-      })
-    }
   }
 
-  // ---------- 接管 execCommand 与剪贴板读取 ----------
-  let originalExecCommand: typeof document.execCommand | null = null
-  let originalReadText: typeof navigator.clipboard.readText | null = null
-  let originalRead: typeof navigator.clipboard.read | null = null
+  function recordEditorEdit(qid: string, detail: Record<string, any>) {
+    if (tracking) push('answer_edit', { ...detail, question_id: qid, field: detail.field || 'code' })
+  }
 
-  const installOverrides = () => {
-    if (document.execCommand) {
-      originalExecCommand = document.execCommand.bind(document)
-      ;(document as any).execCommand = (command: string, ...args: any[]) => {
-        const cmd = String(command).toLowerCase()
-        if (cmd === 'copy' || cmd === 'cut' || cmd === 'paste') {
-          recordViolation()
-          push('blocked_exec', { command: cmd })
-          return false
-        }
-        return originalExecCommand!(command, ...args)
-      }
-    }
+  async function enterFullscreen(): Promise<boolean> {
+    if (!enforceFullscreen) { fullscreenActive.value = true; return true }
     try {
-      if (navigator.clipboard) {
-        originalReadText = navigator.clipboard.readText.bind(navigator.clipboard)
-        originalRead = navigator.clipboard.read.bind(navigator.clipboard)
-        ;(navigator.clipboard as any).readText = async () => {
-          recordViolation()
-          push('clipboard_read', { source: 'readText' })
-          throw new DOMException('Blocked', 'NotAllowedError')
-        }
-        ;(navigator.clipboard as any).read = async () => {
-          recordViolation()
-          push('clipboard_read', { source: 'read' })
-          throw new DOMException('Blocked', 'NotAllowedError')
-        }
-      }
-    } catch (err) {
-      // 剪贴板 API 为只读时忽略覆写失败
-    }
-  }
-
-  const restoreOverrides = () => {
-    if (originalExecCommand) {
-      ;(document as any).execCommand = originalExecCommand
-      originalExecCommand = null
-    }
-    try {
-      if (navigator.clipboard) {
-        if (originalReadText) (navigator.clipboard as any).readText = originalReadText
-        if (originalRead) (navigator.clipboard as any).read = originalRead
-      }
-    } catch (err) {}
-    originalReadText = null
-    originalRead = null
-  }
-
-  // ---------- 全屏 ----------
-  const isFullscreen = () => !!document.fullscreenElement
-
-  /**
-   * 请求进入全屏，返回是否真的进去了。
-   *
-   * 两个坑必须同时堵住：
-   * 1) requestFullscreen 会因「用户拒绝」「非用户手势」而 reject。早期实现把异常
-   *    吞掉后照样放行，学生点「拒绝」就能全程窗口化作答。
-   * 2) 更隐蔽的一种：某些浏览器/内嵌 WebView 下 requestFullscreen() 会直接
-   *    resolve，但 document.fullscreenElement 仍是 null（文档未聚焦、被策略
-   *    禁用、iframe 未开 allowfullscreen 等）。只看 promise 是否 resolve 就会
-   *    误判成「已进入全屏」，于是完整作答期间都没有全屏，而退出计数恒为 0，
-   *    所有基于退出全屏的拦截全部失效。所以必须回读真实状态。
-   */
-  const enterFullscreen = async (): Promise<boolean> => {
-    if (!enforceFullscreen) {
-      fullscreenActive.value = true
-      return true
-    }
-    const request =
-      document.documentElement.requestFullscreen ||
-      (document.documentElement as any).webkitRequestFullscreen ||
-      (document.documentElement as any).msRequestFullscreen
-    if (!request) {
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: 'hide' })
+    } catch {
       fullscreenActive.value = false
-      push('fullscreen_denied', { reason: 'unsupported' })
+      if (tracking) push('fullscreen_denied', { reason: 'rejected_or_unsupported' })
       return false
     }
-    try {
-      if (!document.fullscreenElement) {
-        await request.call(document.documentElement, { navigationUI: 'hide' })
-      }
-    } catch (err) {
-      fullscreenActive.value = false
-      push('fullscreen_denied', { reason: 'rejected' })
-      return false
-    }
-    // 等到下一帧再回读：部分浏览器在 promise resolve 后才更新 fullscreenElement
-    if (!document.fullscreenElement) {
-      await new Promise((resolve) => window.setTimeout(resolve, 120))
-    }
-    if (!document.fullscreenElement) {
-      fullscreenActive.value = false
-      push('fullscreen_denied', { reason: 'not_entered' })
-      return false
-    }
-    fullscreenActive.value = true
-    return true
+    fullscreenActive.value = !!document.fullscreenElement
+    return fullscreenActive.value
   }
-
-  const onFullscreenChange = () => {
-    const active = isFullscreen()
-    fullscreenActive.value = active
-    if (!active) {
-      // 没开强制全屏时退出不算违规：教师本来就没要求，计进去会误伤
-      if (!enforceFullscreen) return
+  function onFullscreenChange() {
+    const wasActive = fullscreenActive.value
+    fullscreenActive.value = !!document.fullscreenElement
+    if (!tracking || !enforceFullscreen || wasActive === fullscreenActive.value) return
+    if (fullscreenActive.value) {
+      push('fullscreen_enter')
+      if (canCountDwell()) questionStartedAt = now()
+    }
+    else {
+      commitDwell()
+      questionStartedAt = null
       fullscreenExitCount.value += 1
       push('fullscreen_exit', { count: fullscreenExitCount.value })
-      onFullscreenExit(fullscreenExitCount.value)
-      if (fullscreenExitCount.value >= maxFullscreenExits) {
-        onMaxViolations()
-      }
-    } else {
-      push('fullscreen_enter', {})
+      void flush()
+      callbacks.onFullscreenExit?.(fullscreenExitCount.value)
+      if (fullscreenExitCount.value >= (options.maxFullscreenExits ?? 3)) callbacks.onMaxViolations?.()
     }
   }
 
-  const onFocus = () => {
-    if (focusLostAt != null) {
-      const durationMs = ts() - focusLostAt
-      focusLostAt = null
-      push('focus_gain', { duration_ms: durationMs })
-    }
-    contentHidden.value = false
-  }
+  const listeners: Array<[EventTarget, string, EventListener]> = [
+    [document, 'paste', onPaste as EventListener], [document, 'copy', onCopy as EventListener],
+    [document, 'cut', onCopy as EventListener], [document, 'drop', onDrop as EventListener],
+    [document, 'dragstart', onDragStart as EventListener], [document, 'input', onInput],
+    [document, 'focusin', baseline as EventListener], [document, 'fullscreenchange', onFullscreenChange],
+    [document, 'visibilitychange', onVisibility], [window, 'blur', onBlur],
+    [window, 'focus', returnToPage], [window, 'pagehide', onPageHide]
+  ]
 
-  const onBlur = () => {
-    focusLostAt = ts()
-    // 不遮住的话，切到后台的窗口仍在渲染卷面，截图/录屏能完整抄走
-    contentHidden.value = true
-    push('focus_loss', {})
-  }
-
-  const onVisibilityChange = () => {
-    const hidden = document.hidden
-    if (hidden) contentHidden.value = true
-    else contentHidden.value = false
-    push(hidden ? 'visibility_hidden' : 'visibility_visible', {})
-  }
-
-  // ---------- 焦点位置与停留时长 ----------
-  const describeFocus = (el: Element | null): FocusState | null => {
-    if (!el) return null
-    const target = el.getAttribute('data-ac-target')
-    if (!target) return null
-    return {
-      startedAt: ts(),
-      target,
-      questionId: el.getAttribute('data-ac-question'),
-      field: el.getAttribute('data-ac-field')
-    }
-  }
-
-  const onFocusIn = (e: FocusEvent) => {
-    // 进输入框就把基线归零。此刻框里通常是空的（或上次的旧值），
-    // 之后第一次 input 的增量才是这次真正插入的内容。
-    onInputBaseline(e)
-    const next = describeFocus(e.target as Element | null)
-    commitFocusDwell()
-    focusState = next
-  }
-
-  const onFocusOut = (_e: FocusEvent) => {
-    commitFocusDwell()
-    focusState = null
-  }
-
-  /**
-   * 落一条焦点停留记录。
-   *
-   * minMs 给心跳用：累计不足 minMs 时**不重置计时**，继续攒下一次，
-   * 否则等于把这段时间丢掉。切焦点这类真实边界传 0，立刻落。
-   */
-  const commitFocusDwell = (minMs = 0) => {
-    if (!focusState) return
-    const now = ts()
-    const durationMs = now - focusState.startedAt
-    if (durationMs < minMs) return
-    focusState.startedAt = now
-    if (durationMs >= 300) {
-      push('focus_dwell', {
-        target: focusState.target,
-        question_id: focusState.questionId,
-        field: focusState.field,
-        duration_ms: durationMs
-      })
-    }
-  }
-
-  // ---------- 视口题目停留 ----------
-  const findCurrentQuestion = (): string | null => {
-    const els = document.querySelectorAll('[data-ac-scroll-question]')
-    if (!els.length) return null
-    const center = window.innerHeight / 2
-    let best: string | null = null
-    let bestDist = Infinity
-    els.forEach((el) => {
-      const rect = el.getBoundingClientRect()
-      const elCenter = (rect.top + rect.bottom) / 2
-      const dist = Math.abs(elCenter - center)
-      const onScreen = rect.top <= center && rect.bottom >= center
-      if (onScreen) {
-        best = el.getAttribute('data-ac-scroll-question')
-        bestDist = 0
-      } else if (elCenter > 0 && elCenter < window.innerHeight && dist < bestDist) {
-        bestDist = dist
-        best = el.getAttribute('data-ac-scroll-question')
-      }
-    })
-    return best
-  }
-
-  /** 同 commitFocusDwell：minMs 给心跳用，累计不够就不重置、继续攒。 */
-  const commitQuestionDwell = (minMs = 0) => {
-    if (currentQuestion == null || questionStartedAt == null) return
-    const durationMs = ts() - questionStartedAt
-    if (durationMs < minMs) return
-    questionStartedAt = ts()
-    if (durationMs >= 1000) {
-      push('question_dwell', { question_id: currentQuestion, duration_ms: durationMs })
-    }
-  }
-
-  const updateCurrentQuestion = () => {
-    const qid = findCurrentQuestion()
-    if (qid === currentQuestion) return
-    commitQuestionDwell()
-    currentQuestion = qid
-    questionStartedAt = ts()
-  }
-
-  /**
-   * 顶部视图切换时直接指定当前题。
-   *
-   * 一页一题之后没有滚动，findCurrentQuestion 的视口中心判定不再适用；
-   * 由调用方在切题时显式告知，否则逐题用时会被记到错误的题上。
-   */
-  const setCurrentQuestion = (qid: string | null) => {
-    if (qid === currentQuestion) return
-    commitQuestionDwell()
-    currentQuestion = qid
-    questionStartedAt = ts()
-  }
-
-  const onScroll = () => {
-    if (scrollTimer != null) return
-    scrollTimer = window.setTimeout(() => {
-      scrollTimer = null
-      updateCurrentQuestion()
-    }, 400)
-  }
-
-  // ---------- 开发者工具检测 ----------
-  // 三重信号叠加，单靠窗口尺寸差早就能被绕过：
-  //   1) debugger 语句耗时（开着 devtools 时会被断点挂住）
-  //   2) console 对象被打开后才会有的 toString 探针
-  //   3) 窗口尺寸差（保留作兜底，宽高同时超过阈值才算）
-  // 独立标志，不能复用 devtoolsOpen：那个变量还承担「本次是否已上报」的去重职责
-  let probeTriggered = false
-  const devtoolsProbe = new Image()
-  Object.defineProperty(devtoolsProbe, 'id', {
-    get() {
-      probeTriggered = true
-      return 'ac-probe'
-    }
-  })
-
-  const detectDevtools = (): boolean => {
-    // 1) debugger 计时
-    const start = performance.now()
-    trapDebugger()
-    if (performance.now() - start > 80) return true
-
-    // 2) console 探针：打开 devtools 时 console 会读取对象的 id 触发 getter
-    probeTriggered = false
-    try {
-      // eslint-disable-next-line no-console
-      console.log(devtoolsProbe)
-      // eslint-disable-next-line no-console
-      console.clear()
-    } catch (err) {
-      // 忽略
-    }
-    if (probeTriggered) return true
-
-    // 3) 窗口尺寸差兜底：宽高需同时异常，避免系统缩放/侧栏误判
-    const w = window.outerWidth - window.innerWidth
-    const h = window.outerHeight - window.innerHeight
-    return w > 160 && h > 160
-  }
-
-  const onDevtoolsCheck = () => {
-    const open = detectDevtools()
-    if (open && !devtoolsOpen) {
-      devtoolsOpen = true
-      recordViolation()
-      push('devtools_open', {})
-    } else if (!open && devtoolsOpen) {
-      devtoolsOpen = false
-    }
-  }
-
-  // 心跳只做两件事：把攒够一段时间的停留落成事件（防浏览器崩溃丢数据），
-  // 以及让会话保持活跃。粒度过细会把长考试的事件表撑爆 —— 6 秒一条意味着
-  // 一小时 600 条，长卷监考页要一次拉全量，直接被拖慢。
-  const HEARTBEAT_COMMIT_MS = 60_000
-  const onHeartbeat = () => {
-    commitFocusDwell(HEARTBEAT_COMMIT_MS)
-    commitQuestionDwell(HEARTBEAT_COMMIT_MS)
-  }
-
-  const startTracking = (sid: string, aid: string | null, callbacks: AntiCheatCallbacks) => {
+  function startTracking(sid: string, aid: string | null, nextCallbacks: AntiCheatCallbacks) {
     if (tracking) return
     tracking = true
+    callbacks = nextCallbacks
     sessionId = sid
     attemptId = aid
-    reportEvents = callbacks.reportEvents
-    onFullscreenExit = callbacks.onFullscreenExit ?? (() => {})
-    onMaxViolations = callbacks.onMaxViolations ?? (() => {})
-
-    window.addEventListener('keydown', onKeydown, true)
-    window.addEventListener('keyup', onKeyup, true)
-    document.addEventListener('paste', onPaste, true)
-    document.addEventListener('copy', onCopy, true)
-    document.addEventListener('cut', onCut, true)
-    document.addEventListener('drop', onDrop, true)
-    document.addEventListener('contextmenu', onContextMenu, true)
-    document.addEventListener('beforeinput', onBeforeInput, true)
-    document.addEventListener('input', onInputCapture, true)
-    document.addEventListener('compositionstart', onCompositionStart, true)
-    document.addEventListener('compositionend', onCompositionEnd, true)
-    document.addEventListener('selectstart', onSelectStart, true)
-    document.addEventListener('mouseup', onMouseUp, true)
-    document.addEventListener('dragstart', onDragStart, true)
-    document.addEventListener('fullscreenchange', onFullscreenChange)
-    window.addEventListener('focus', onFocus)
-    window.addEventListener('blur', onBlur)
-    window.addEventListener('scroll', onScroll, true)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    document.addEventListener('focusin', onFocusIn, true)
-    document.addEventListener('focusout', onFocusOut, true)
-    window.addEventListener('pagehide', onPageHide)
-
-    installOverrides()
-
+    storageKey = `sp_exam_events:${localStorage.getItem('sp_username') || ''}:${aid || sid}`
+    if (!queue.length) {
+      try {
+        const saved = JSON.parse(localStorage.getItem(storageKey) || '[]')
+        if (Array.isArray(saved)) saved.slice(0, 2000).forEach(e => {
+          if (typeof e.event_id === 'string' && typeof e.event_type === 'string') {
+            queue.push(e); sealed.add(e.event_id)
+          }
+        })
+      } catch { /* Ignore a corrupt local event cache. */ }
+    }
+    // Capture window blur would also catch every input/editor focus change.
+    listeners.forEach(([target, type, fn]) => target.addEventListener(type, fn, target !== window))
+    fullscreenActive.value = !enforceFullscreen || !!document.fullscreenElement
+    questionStartedAt = canCountDwell() ? now() : null
     push('session_start', { session_id: sessionId, attempt_id: attemptId })
-    currentQuestion = findCurrentQuestion()
-    questionStartedAt = ts()
-    if (enforceFullscreen) {
-      enterFullscreen()
-    } else {
-      fullscreenActive.value = true
-      push('fullscreen_skipped', {})
-    }
-
-    flushTimer = window.setInterval(flush, 5000)
-    heartbeatTimer = window.setInterval(onHeartbeat, 6000)
-    devtoolsTimer = window.setInterval(onDevtoolsCheck, 1200)
+    timer = window.setInterval(() => { commitDwell(); void flush() }, 5000)
+    void flush()
   }
-
-  const onPageHide = () => {
+  function stopTracking() {
     if (!tracking) return
-    push('session_end', { session_id: sessionId, attempt_id: attemptId, reason: 'pagehide' })
-    flush()
-  }
-
-  const stopTracking = () => {
-    if (!tracking) return
+    commitDwell()
+    push('session_end', { session_id: sessionId, attempt_id: attemptId })
     tracking = false
-    commitFocusDwell()
-    commitQuestionDwell()
-    push('session_end', { session_id: sessionId, attempt_id: attemptId, reason: 'stop' })
-    flush()
-
-    if (flushTimer != null) {
-      clearInterval(flushTimer)
-      flushTimer = null
-    }
-    if (heartbeatTimer != null) {
-      clearInterval(heartbeatTimer)
-      heartbeatTimer = null
-    }
-    if (devtoolsTimer != null) {
-      clearInterval(devtoolsTimer)
-      devtoolsTimer = null
-    }
-    if (scrollTimer != null) {
-      clearTimeout(scrollTimer)
-      scrollTimer = null
-    }
-
-    window.removeEventListener('keydown', onKeydown, true)
-    window.removeEventListener('keyup', onKeyup, true)
-    document.removeEventListener('paste', onPaste, true)
-    document.removeEventListener('copy', onCopy, true)
-    document.removeEventListener('cut', onCut, true)
-    document.removeEventListener('drop', onDrop, true)
-    document.removeEventListener('contextmenu', onContextMenu, true)
-    document.removeEventListener('beforeinput', onBeforeInput, true)
-    document.removeEventListener('input', onInputCapture, true)
-    document.removeEventListener('compositionstart', onCompositionStart, true)
-    document.removeEventListener('compositionend', onCompositionEnd, true)
-    document.removeEventListener('selectstart', onSelectStart, true)
-    document.removeEventListener('mouseup', onMouseUp, true)
-    document.removeEventListener('dragstart', onDragStart, true)
-    document.removeEventListener('fullscreenchange', onFullscreenChange)
-    window.removeEventListener('focus', onFocus)
-    window.removeEventListener('blur', onBlur)
-    window.removeEventListener('scroll', onScroll, true)
-    document.removeEventListener('visibilitychange', onVisibilityChange)
-    document.removeEventListener('focusin', onFocusIn, true)
-    document.removeEventListener('focusout', onFocusOut, true)
-    window.removeEventListener('pagehide', onPageHide)
-
-    restoreOverrides()
-
-    focusState = null
-    currentQuestion = null
+    window.clearInterval(timer)
+    listeners.forEach(([target, type, fn]) => target.removeEventListener(type, fn, target !== window))
     questionStartedAt = null
-    devtoolsOpen = false
-    composing = false
-    compositionEndedAt = 0
+    away = null
     contentHidden.value = false
+    copiedText = null
+    void flush()
   }
-
-  const exitFullscreen = async () => {
-    if (!enforceFullscreen) return
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen()
-      }
-    } catch (err) {
-      // 忽略退出失败
-    }
+  function setCurrentQuestion(qid: string | null) {
+    if (questionId === qid) return
+    commitDwell()
+    questionId = qid
+    questionStartedAt = tracking && canCountDwell() ? now() : null
   }
-
-  onBeforeUnmount(() => stopTracking())
-
+  async function exitFullscreen() {
+    try { if (document.fullscreenElement) await document.exitFullscreen() } catch { /* Browser already left. */ }
+  }
+  onBeforeUnmount(() => { disposed = true; stopTracking(); window.clearTimeout(timer) })
   return {
-    fullscreenActive,
-    fullscreenExitCount,
-    blockedActionCount,
-    contentHidden,
-    startTracking,
-    stopTracking,
-    enterFullscreen,
-    exitFullscreen,
-    setCurrentQuestion,
-    setEnforceFullscreen,
-    flush
+    fullscreenActive, fullscreenExitCount, blockedActionCount, contentHidden,
+    startTracking, stopTracking, enterFullscreen, exitFullscreen, setCurrentQuestion,
+    setEnforceFullscreen: (value: boolean) => { enforceFullscreen = value }, recordEditorEdit, flush
   }
 }

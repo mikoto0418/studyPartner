@@ -5,12 +5,12 @@ from app.services.judge_service import judge_code, language_spec
 
 
 class LanguageSpecTests(unittest.TestCase):
-    def test_only_three_languages_are_offered(self):
-        self.assertEqual(set(judge_service.LANGUAGE_SPECS), {"python", "javascript", "java"})
+    def test_four_exam_languages_and_legacy_javascript_are_available(self):
+        self.assertEqual(set(judge_service.LANGUAGE_SPECS), {"python", "javascript", "java", "c", "cpp"})
 
     def test_unknown_language_is_rejected(self):
         with self.assertRaises(ValueError):
-            language_spec("cpp")
+            language_spec("ruby")
 
 
 class JudgeShapeTests(unittest.TestCase):

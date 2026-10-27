@@ -30,6 +30,10 @@ export const authApi = {
     return request.get('/auth/me')
   },
 
+  confirmIdentity(name: string) {
+    return request.post('/auth/identity', { name })
+  },
+
   changePassword(data: { old_password: string; new_password: string }) {
     return request.post('/auth/change-password', data)
   }

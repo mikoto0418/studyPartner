@@ -10,6 +10,29 @@ from app.core.security import get_password_hash
 from app.core.exceptions import ValidationError, NotFoundError
 
 class UserService:
+    @classmethod
+    async def confirm_identity(cls, db: AsyncSession, user: User, name: str) -> User:
+        # 锁定档案，避免双击或两个浏览器同时提交时相互覆盖。
+        profile = (
+            await db.execute(
+                select(StudentProfile)
+                .where(StudentProfile.user_id == user.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalars().first()
+        if not profile or (profile.extra_info or {}).get("identity_required") is not True:
+            await db.refresh(user, attribute_names=["nickname"])
+            return await cls.get_user(db, user.id)
+        user.nickname = name
+        profile.extra_info = {
+            **(profile.extra_info or {}),
+            "identity_required": False,
+            "identity_confirmed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.commit()
+        return await cls.get_user(db, user.id)
+
     @staticmethod
     async def get_user(db: AsyncSession, user_id: UUID) -> Optional[User]:
         result = await db.execute(

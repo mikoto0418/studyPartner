@@ -18,6 +18,8 @@ class ClassMemberOut(BaseModel):
     user_id: UUID
     username: Optional[str] = None
     nickname: Optional[str] = None
+    display_name: str = "未设置姓名"
+    requires_identity_confirmation: bool = False
     status: str
     joined_at: Optional[datetime] = None
 

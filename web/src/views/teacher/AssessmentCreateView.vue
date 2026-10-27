@@ -53,6 +53,7 @@ const timeLimitMinutes = ref<number | null>(null)
 // 是否要求全程全屏作答。默认开——这是这类考试的默认形态；
 // 随发布保存到试卷配置里，学生端按它决定是否强制全屏。
 const requireFullscreen = ref(true)
+const fullscreenExitAutoSubmit = ref(false)
 
 // 主观题批阅倾向：随发布保存，AI 预批阅和人工批改都按它执行
 const gradingMode = ref<'lenient' | 'standard' | 'strict'>('standard')
@@ -143,6 +144,7 @@ function buildDraft() {
     dueAt: dueAt.value ? dueAt.value.toISOString() : null,
     timeLimitMinutes: timeLimitMinutes.value,
     requireFullscreen: requireFullscreen.value,
+    fullscreenExitAutoSubmit: fullscreenExitAutoSubmit.value,
     gradingMode: gradingMode.value,
     gradingExtra: gradingExtra.value,
     selectedClassId: selectedClassId.value,
@@ -206,6 +208,7 @@ function applyDraft(d: any) {
   dueAt.value = d.dueAt ? new Date(d.dueAt) : null
   timeLimitMinutes.value = d.timeLimitMinutes || null
   requireFullscreen.value = d.requireFullscreen !== false
+  fullscreenExitAutoSubmit.value = d.fullscreenExitAutoSubmit === true
   gradingMode.value = d.gradingMode || 'standard'
   gradingExtra.value = d.gradingExtra || ''
   hasDraft.value = true
@@ -335,6 +338,29 @@ async function startParse() {
     startPolling()
   } catch {
     // 拦截器已提示错误
+  } finally {
+    loading.value = false
+  }
+}
+
+async function createManual() {
+  if (!title.value.trim()) {
+    ElMessage.warning('请输入试卷标题')
+    return
+  }
+  loading.value = true
+  try {
+    const res = await assessmentApi.createPaper({
+      title: title.value.trim(),
+      description: description.value || undefined
+    })
+    paperId.value = res.data.id
+    questions.value = []
+    parseError.value = ''
+    activeStep.value = 2
+    ElMessage.success('空白试卷已创建，可以直接添加题目')
+  } catch {
+    // 请求层展示失败原因，留在当前步骤以便重试。
   } finally {
     loading.value = false
   }
@@ -601,6 +627,7 @@ async function doPublish() {
       due_at: dueAt.value ? dueAt.value.toISOString() : null,
       time_limit_minutes: timeLimitMinutes.value && timeLimitMinutes.value > 0 ? timeLimitMinutes.value : null,
       require_fullscreen: requireFullscreen.value,
+      fullscreen_exit_auto_submit: requireFullscreen.value && fullscreenExitAutoSubmit.value,
       grading_preference: {
         mode: gradingMode.value,
         extra: gradingExtra.value.trim()
@@ -640,6 +667,7 @@ function reset() {
   dueAt.value = null
   timeLimitMinutes.value = null
   requireFullscreen.value = true
+  fullscreenExitAutoSubmit.value = false
   gradingMode.value = 'standard'
   gradingExtra.value = ''
 }
@@ -794,6 +822,7 @@ async function resendPaper(paper: any) {
   if (t.due_at) dueAt.value = new Date(t.due_at)
   timeLimitMinutes.value = t.time_limit_minutes || null
   requireFullscreen.value = t.require_fullscreen !== false
+  fullscreenExitAutoSubmit.value = t.fullscreen_exit_auto_submit === true
   if (paper.grading_preference) {
     gradingMode.value = paper.grading_preference.mode || 'standard'
     gradingExtra.value = paper.grading_preference.extra || ''
@@ -1047,6 +1076,10 @@ onUnmounted(() => {
                 <span>{{ loading ? '提交中…' : '开始拆题' }}</span>
               </button>
               <p class="ui-field-help">拆题会调用管理端「模型配置」里 question_parsing 通道所指定的模型。</p>
+              <button class="ui-button-secondary w-full" :disabled="loading" @click="createManual">
+                <Plus class="h-3.5 w-3.5" />
+                <span>手动命题（无需上传文件）</span>
+              </button>
             </div>
           </div>
         </section>
@@ -1303,12 +1336,16 @@ onUnmounted(() => {
             <div class="rounded-lg border border-gray-100 p-4 dark:border-zinc-800">
               <p class="text-xs font-semibold text-gray-900 dark:text-zinc-50">作答环境</p>
               <p class="mt-1 text-[11px] leading-relaxed text-gray-400">
-                开启后学生进入作答页即被强制全屏，退出全屏会遮住卷面并计违规，连续退出 3 次自动交卷。
+                开启后学生进入作答页即被强制全屏，退出全屏会遮住卷面并记录。是否累计退出 3 次后自动交卷可单独选择。
                 关闭则允许窗口化作答，复制粘贴等限制照常生效。
               </p>
               <label class="mt-3 flex items-center gap-2 text-xs text-gray-700 dark:text-zinc-200">
                 <input v-model="requireFullscreen" type="checkbox" />
                 <span>要求全程全屏作答{{ requireFullscreen ? '' : '（当前关闭）' }}</span>
+              </label>
+              <label class="mt-3 flex items-center gap-2 text-xs">
+                <input v-model="fullscreenExitAutoSubmit" :disabled="!requireFullscreen" type="checkbox" />
+                <span>累计退出全屏 3 次自动交卷（可选，默认关闭）</span>
               </label>
             </div>
 

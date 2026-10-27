@@ -14,6 +14,7 @@ from app.models.knowledge import FileModel, KnowledgeDocument, KnowledgeChunk
 from app.models.bilibili import StudyTimeLog, BilibiliResource, BilibiliWatchLog
 from app.models.learning_path import (
     ClassGroup,
+    ClassTeacher,
     ClassMember,
     LearningPathAssignee,
     LearningPathEdge,
@@ -49,7 +50,7 @@ __all__ = [
     "MemoryPage", "MemorySource", "MemoryLink", "MemoryEvent", "MemoryReviewTask",
     "FileModel", "KnowledgeDocument", "KnowledgeChunk",
     "StudyTimeLog", "BilibiliResource", "BilibiliWatchLog",
-    "ClassGroup", "ClassMember",
+    "ClassGroup", "ClassTeacher", "ClassMember",
     "LearningPathTask", "LearningPathStage", "LearningPathNode", "LearningPathEdge",
     "LearningPathResource", "LearningPathAssignee", "LearningNodeProgress",
     "LearningNodeSubmission", "LearningInsight", "ClassMemorySnapshot", "StudentGrowthReport",

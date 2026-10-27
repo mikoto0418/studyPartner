@@ -17,9 +17,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 只放行这三种：沙箱镜像里确实装了对应工具链。
-# 其余语言（c/cpp/go/rust）在 v1.12.2-languages 镜像里没有编译器，放进来只会让教师
-# 建出永远判不了的题。
+# 与 deploy/judge/Dockerfile 中安装的工具链对应。JavaScript 保留以兼容旧卷。
 LANGUAGE_SPECS: Dict[str, Dict[str, Any]] = {
     "python": {
         "label": "Python 3",
@@ -41,13 +39,23 @@ LANGUAGE_SPECS: Dict[str, Dict[str, Any]] = {
         "label": "Java 17",
         "source_name": "Main.java",
         # 必须指定 UTF-8：镜像默认编码不是 UTF-8，中文注释/字符串会编译失败
-        "compile_args": ["/usr/bin/javac", "-encoding", "UTF-8", "Main.java"],
-        "run_args": ["/usr/bin/java", "-cp", ".", "Main"],
+        "compile_args": ["/bin/sh", "-c", "javac -J-Xmx256m -encoding UTF-8 Main.java && jar cf program.jar *.class"],
+        "run_args": ["/usr/bin/java", "-Xms16m", "-Xmx128m", "-XX:ReservedCodeCacheSize=32m", "-XX:+UseSerialGC", "-cp", "program.jar", "Main"],
+        "artifact": "program.jar",
         "binary": True,
     },
+    "c": {
+        "label": "C17", "source_name": "main.c",
+        "compile_args": ["/usr/bin/gcc", "-std=c17", "-O2", "main.c", "-o", "main", "-lm"],
+        "run_args": ["/w/main"], "artifact": "main", "binary": True,
+    },
+    "cpp": {
+        "label": "C++17", "source_name": "main.cpp",
+        "compile_args": ["/usr/bin/g++", "-std=c++17", "-O2", "main.cpp", "-o", "main"],
+        "run_args": ["/w/main"], "artifact": "main", "binary": True,
+    },
 }
-# Java 的 class 文件会多个产出，按后缀收
-CACHE_OUT_EXTRA = {"java": ["Main.class"]}
+CACHE_OUT_EXTRA = {key: [spec["artifact"] + "?"] for key, spec in LANGUAGE_SPECS.items() if spec["binary"]}
 
 SOURCE_CODE_MAX = 100_000  # 单份代码上限，避免把超大文件塞进沙箱
 
@@ -127,6 +135,19 @@ def _normalize(text: str) -> str:
     return "\n".join(lines)
 
 
+def release_compiled(file_id: Optional[str]) -> None:
+    if not file_id:
+        return
+    headers = {"Authorization": f"Bearer {settings.JUDGE_AUTH_TOKEN}"} if settings.JUDGE_AUTH_TOKEN else {}
+    req = urlrequest.Request(f"{settings.JUDGE_BASE_URL.rstrip('/')}/file/{file_id}", headers=headers, method="DELETE")
+    try:
+        with urlrequest.urlopen(req, timeout=5):
+            pass
+    except Exception:
+        # 文件服务也有 TTL；清理故障不能覆盖已经得到的判题结果。
+        logger.warning("Could not release judge cache %s", file_id)
+
+
 def compile_source(language: str, source: str) -> Tuple[Optional[str], str]:
     """返回 (编译产物 fileId, 错误信息)。
 
@@ -143,11 +164,13 @@ def compile_source(language: str, source: str) -> Tuple[Optional[str], str]:
             "cmd": [
                 {
                     "args": args,
-                    "env": ["PATH=/usr/bin:/bin", "HOME=/tmp"],
+                    "env": ["PATH=/usr/bin:/bin", "HOME=/tmp", "LANG=C.UTF-8"],
                     "files": _output_files(),
                     "copyIn": {spec["source_name"]: {"content": source}},
                     "copyOutCached": CACHE_OUT_EXTRA.get(language, []),
+                    "copyOut": ["stdout", "stderr"],
                     "cpuLimit": settings.JUDGE_COMPILE_CPU_LIMIT_NS,
+                    "clockLimit": settings.JUDGE_COMPILE_CPU_LIMIT_NS * 2,
                     "memoryLimit": settings.JUDGE_COMPILE_MEMORY_LIMIT_BYTES,
                     "procLimit": settings.JUDGE_PROC_LIMIT,
                 }
@@ -155,19 +178,20 @@ def compile_source(language: str, source: str) -> Tuple[Optional[str], str]:
         }
     )
     first = result[0] if result else {}
+    if not first or first.get("status") in {"Internal Error", "File Error"}:
+        raise JudgeUnavailable(first.get("error") or "编译环境未就绪")
     files = first.get("files") or {}
     stderr = files.get("stderr") or ""
     stdout = files.get("stdout") or ""
-    if first.get("exitStatus") != 0:
+    if first.get("exitStatus") != 0 or first.get("status") != "Accepted":
         return None, (stderr or stdout or "编译失败").strip()[:4000]
     if not spec["binary"]:
         return None, ""
     file_ids = first.get("fileIds") or {}
-    # Java 只需 Main.class；其余语言不会走到这里
-    for name in CACHE_OUT_EXTRA.get(language, []):
-        if name in file_ids:
-            return file_ids[name], ""
-    return None, "编译产物缺失，判题服务可能未正确返回缓存文件"
+    artifact = spec["artifact"]
+    if artifact in file_ids:
+        return file_ids[artifact], ""
+    raise JudgeUnavailable("编译产物缺失")
 
 
 def run_case(
@@ -185,7 +209,7 @@ def run_case(
     files[0] = {"content": stdin_text or ""}
     copy_in: Dict[str, Any] = {}
     if spec["binary"]:
-        copy_in["Main.class"] = {"fileId": compiled_id}
+        copy_in[spec["artifact"]] = {"fileId": compiled_id}
     else:
         copy_in[spec["source_name"]] = {"content": source}
 
@@ -194,11 +218,12 @@ def run_case(
             "cmd": [
                 {
                     "args": spec["run_args"],
-                    "env": ["PATH=/usr/bin:/bin", "HOME=/tmp"],
+                    "env": ["PATH=/usr/bin:/bin", "HOME=/tmp", "LANG=C.UTF-8"],
                     "files": files,
                     "copyIn": copy_in,
                     "copyOut": ["stdout", "stderr"],
                     "cpuLimit": settings.JUDGE_CPU_LIMIT_NS,
+                    "clockLimit": settings.JUDGE_CPU_LIMIT_NS * 3,
                     "memoryLimit": settings.JUDGE_MEMORY_LIMIT_BYTES,
                     "procLimit": settings.JUDGE_PROC_LIMIT,
                 }
@@ -206,6 +231,8 @@ def run_case(
         }
     )
     first = result[0] if result else {}
+    if not first or first.get("status") in {"Internal Error", "File Error"}:
+        raise JudgeUnavailable(first.get("error") or "运行环境未就绪")
     out_files = first.get("files") or {}
     return {
         "status": first.get("status") or "",
@@ -222,9 +249,11 @@ def _status_of(raw: Dict[str, Any]) -> str:
         return "time_limit"
     if "non zero" in status or "nonzero" in status or (raw.get("exitStatus") or 0) != 0:
         return "runtime_error"
-    if "memory limit" in status:
+    if status in {"memory limit exceeded", "output limit exceeded", "signalled", "dangerous syscall"}:
         return "runtime_error"
-    return "ok"
+    if status == "accepted" and raw.get("exitStatus") == 0:
+        return "ok"
+    raise JudgeUnavailable(f"未知判题状态：{status or '空'}")
 
 
 def judge_code(
@@ -269,35 +298,34 @@ def judge_code(
 
     passed = 0
     overall = "accepted"
-    for index, tc in visible:
-        expected = tc.get("expected_output") or ""
-        try:
+    try:
+        for index, tc in visible:
+            expected = tc.get("expected_output") or ""
             raw = run_case(language, source, tc.get("input") or "", compiled_id)
-        except JudgeUnavailable as exc:
-            return JudgeResult(ok=False, status="judge_error", message=str(exc))
-        state = _status_of(raw)
-        actual = raw.get("stdout") or ""
-        ok = state == "ok" and _normalize(actual) == _normalize(expected)
-        if ok:
-            passed += 1
-        elif state == "time_limit":
-            overall = "time_limit" if overall == "accepted" else overall
-        elif state == "runtime_error":
-            overall = "runtime_error" if overall == "accepted" else overall
-        elif overall == "accepted":
-            overall = "wrong_answer"
-        cases.append(
-            CaseResult(
-                index=index,
-                passed=ok,
-                status=state if ok or state != "ok" else "wrong_answer",
-                input_text=tc.get("input") or "",
-                expected=expected,
-                actual=actual[:4000],
-                stderr=(raw.get("stderr") or "")[:2000],
-                time_ms=raw.get("time_ms"),
+            state = _status_of(raw)
+            actual = raw.get("stdout") or ""
+            ok = state == "ok" and _normalize(actual) == _normalize(expected)
+            if ok:
+                passed += 1
+            elif state in {"time_limit", "runtime_error"}:
+                overall = state
+            elif overall == "accepted":
+                overall = "wrong_answer"
+            cases.append(
+                CaseResult(
+                    index=index, passed=ok,
+                    status=state if ok or state != "ok" else "wrong_answer",
+                    input_text=tc.get("input") or "", expected=expected,
+                    actual=actual[:4000], stderr=(raw.get("stderr") or "")[:2000],
+                    time_ms=raw.get("time_ms"),
+                )
             )
-        )
+            if state in {"time_limit", "runtime_error"}:
+                break
+    except JudgeUnavailable as exc:
+        return JudgeResult(ok=False, status="judge_error", message=str(exc))
+    finally:
+        release_compiled(compiled_id)
 
     if passed == len(visible):
         overall = "accepted"
@@ -362,10 +390,12 @@ def dry_run(
 
     try:
         raw = run_case(language, source, stdin_text or "", compiled_id)
+        state = _status_of(raw)
     except JudgeUnavailable as exc:
         return DryRunResult(status="judge_error", message=str(exc))
+    finally:
+        release_compiled(compiled_id)
 
-    state = _status_of(raw)
     cases = [
         DryRunCase(
             index=0,

@@ -53,7 +53,7 @@ request.interceptors.response.use(
       clearAuthStorage()
       router.push('/login')
     } else if (status === 403) {
-      ElMessage.error('权限不足，无法进行此操作')
+      ElMessage.error(data?.message || '权限不足，无法进行此操作')
     } else if (isTimeout) {
       ElMessage.error('请求超时，当前网络或隧道响应较慢，请稍后重试')
     } else {
