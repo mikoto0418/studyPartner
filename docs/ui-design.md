@@ -1,4 +1,4 @@
-# AI 伴学与智能体协同平台 UI 设计与界面交互规范文档
+# MemoryPath 学迹 UI 设计与界面交互规范文档
 
 ## 版本与变更记录
 - **文档版本**：V1.0
@@ -80,7 +80,7 @@
 #### 2.1.2 核心组件清单与样式细节
 1.  **产品标识**：
     *   顶部精致小巧的纯黑图标与文字：`flex items-center justify-center space-x-2 mb-8`。
-    *   主标：`text-xl font-semibold text-gray-900 dark:text-zinc-50 tracking-wide`（“AI 伴学协同平台”）。
+    *   主标：`text-xl font-semibold text-gray-900 dark:text-zinc-50 tracking-wide`（“MemoryPath 学迹”）。
 2.  **账号密码输入组件**：
     *   采用无干扰的纯扁平输入框，带有极细的浅灰色边框：`w-full px-3 py-2 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded text-sm text-gray-900 dark:text-zinc-50 placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:bg-white`。
 3.  **极简三态角色切换器**：

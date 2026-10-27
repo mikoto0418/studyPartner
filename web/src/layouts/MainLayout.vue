@@ -6,28 +6,20 @@ import AppSidebar from '../components/common/AppSidebar.vue'
 import IdentityGate from '../components/common/IdentityGate.vue'
 import { notificationApi } from '../api/modules/notification'
 import type { NotificationOut } from '../api/modules/notification'
+import { useTheme } from '../composables/useTheme'
 
 import { onUnmounted } from 'vue'
 import { studyTimeApi } from '../api/modules/study_time'
 
 const route = useRoute()
 const isExamWorkspace = computed(() => route.name === 'StudentAssessmentDo')
+const { isDark, toggleTheme } = useTheme()
 
-const isDark = ref(false)
 const showNotifications = ref(false)
 
 const pageTitle = computed(() => {
-  return (route.meta.title as string) || 'AI伴学平台'
+  return (route.meta.title as string) || 'MemoryPath 学迹'
 })
-
-const toggleTheme = () => {
-  isDark.value = !isDark.value
-  if (isDark.value) {
-    document.documentElement.classList.add('dark')
-  } else {
-    document.documentElement.classList.remove('dark')
-  }
-}
 
 // Notifications state
 const notifications = ref<NotificationOut[]>([])

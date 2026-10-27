@@ -11,7 +11,7 @@ from app.core.exceptions import CustomException
 
 app = FastAPI(
     title=settings.APP_NAME,
-    description="通用 AI 伴学与智能体协同平台 API 服务",
+    description="MemoryPath 学迹 · AI 伴学与智能体协同平台 API 服务",
     version="1.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",

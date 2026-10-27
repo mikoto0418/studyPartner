@@ -1,4 +1,4 @@
-# AI 伴学与智能体协同平台 — 部署与运维指南
+# MemoryPath 学迹 — 部署与运维指南
 
 > 2026-10-20：1022 二面使用独立 Compose 配置和可重复执行的初始化入口，
 > 同时初始化考试草稿并启动四语言 go-judge 沙箱；
@@ -218,7 +218,7 @@ studyPartner/
 
 ```yaml
 # ============================================================
-# AI 伴学与智能体协同平台 - Docker Compose 生产配置
+# MemoryPath 学迹 - Docker Compose 生产配置
 # ============================================================
 # 使用方法：
 #   1. 复制 .env.example 为 .env 并填写配置
@@ -386,7 +386,7 @@ services:
       APP_ENV: production
       APP_DEBUG: "false"
       APP_SECRET_KEY: ${APP_SECRET_KEY:?APP_SECRET_KEY is required}
-      APP_NAME: ${APP_NAME:-AI伴学与智能体协同平台}
+      APP_NAME: ${APP_NAME:-MemoryPath 学迹}
       APP_URL: ${APP_URL:-https://study.example.com}
       # --- 数据库 ---
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sp_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-studypartner}
@@ -564,7 +564,7 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_API_BASE_URL=${APP_URL:-https://study.example.com}/api/v1
-        - VITE_APP_TITLE=${APP_NAME:-AI伴学与智能体协同平台}
+        - VITE_APP_TITLE=${APP_NAME:-MemoryPath 学迹}
     image: sp-frontend:latest
     container_name: sp-frontend
     restart: unless-stopped
@@ -780,7 +780,7 @@ server {
 
 ```bash
 # ==============================================================
-# AI 伴学与智能体协同平台 — 环境变量配置
+# MemoryPath 学迹 — 环境变量配置
 # ==============================================================
 # 使用方法：cp .env.example .env && vim .env
 # 带有 :? 标记的变量为必填项，部署前必须设置
@@ -789,7 +789,7 @@ server {
 # --------------------------------------------------------------
 # 应用基础配置
 # --------------------------------------------------------------
-APP_NAME=AI伴学与智能体协同平台
+APP_NAME=MemoryPath 学迹
 APP_URL=https://study.example.com
 APP_SECRET_KEY=          # 必填！应用密钥，用 `openssl rand -hex 32` 生成
 
@@ -859,7 +859,7 @@ SMTP_HOST=smtp.example.com
 SMTP_PORT=465
 SMTP_USER=noreply@example.com
 SMTP_PASSWORD=
-SMTP_FROM=AI伴学平台 <noreply@example.com>
+SMTP_FROM=MemoryPath 学迹 <noreply@example.com>
 SMTP_USE_SSL=true
 
 # --------------------------------------------------------------
@@ -920,7 +920,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
 ```nginx
 # ==============================================================
-# AI 伴学与智能体协同平台 — Nginx 反向代理配置
+# MemoryPath 学迹 — Nginx 反向代理配置
 # ==============================================================
 
 user  nginx;
@@ -1329,7 +1329,7 @@ nslookup study.example.com
 
 ```sql
 -- ==============================================================
--- AI 伴学与智能体协同平台 — PostgreSQL 初始化脚本
+-- MemoryPath 学迹 — PostgreSQL 初始化脚本
 -- 该脚本在 PostgreSQL 容器首次启动时自动执行
 -- ==============================================================
 
@@ -1360,7 +1360,7 @@ $$;
 -- 输出初始化完成信息
 DO $$
 BEGIN
-    RAISE NOTICE '数据库初始化完成 — AI 伴学与智能体协同平台';
+    RAISE NOTICE '数据库初始化完成 — MemoryPath 学迹';
 END
 $$;
 ```
@@ -1710,7 +1710,7 @@ echo "=========================================="
 ```bash
 #!/bin/bash
 # ==============================================================
-# AI 伴学与智能体协同平台 — 一键部署脚本
+# MemoryPath 学迹 — 一键部署脚本
 # ==============================================================
 # 使用方法：bash deploy/scripts/deploy.sh
 # ==============================================================
@@ -1736,7 +1736,7 @@ cd "$PROJECT_ROOT"
 
 echo ""
 echo "=========================================="
-echo " AI 伴学与智能体协同平台 — 自动部署"
+echo " MemoryPath 学迹 — 自动部署"
 echo "=========================================="
 echo ""
 

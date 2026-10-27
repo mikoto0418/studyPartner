@@ -12,7 +12,12 @@
 > 设置全场截止时间时，截止及其后 5 秒传输余量结束前，`reference_answer`、`analysis` 均为 `null`，之后开放。
 > `attempt.graded_score` 表示所有已批改题目的得分（含编程题），供待批状态展示；`objective_score` 保持原有口径。
 
-> AI 伴学与智能体协同平台 — RESTful API 设计规范
+> MemoryPath 学迹 · AI 伴学与智能体协同平台 — RESTful API 设计规范
+
+> 2026-10-27：行为批量上报支持可选 UUID `event_id`，同一学生的重试事件幂等写入。
+> 教师监考返回 `left_count`、`fullscreen_exit_count`，行为详情返回统一归并后的 `is_flag`；这些表示待复核信号。
+> 教师逐题答案覆盖未保存题目，新增 `has_saved_answer`、`saved_at`（服务器记录更新时间），`language` 优先返回实际作答语言。
+> 详细使用说明见 [教师监考](exam-monitoring.md)。
 
 版本：V1.0
 更新日期：2026-06-02
@@ -4692,7 +4697,7 @@ data: {"type": "done", "content": "", "message_id": "msg_003", "conversation_id"
   "code": 0,
   "message": "success",
   "data": {
-    "platform_name": "AI 伴学平台",
+    "platform_name": "MemoryPath 学迹",
     "registration_enabled": false,
     "max_file_size_mb": 50,
     "allowed_file_types": [".pdf", ".doc", ".docx", ".md", ".txt", ".jpg", ".png"],
