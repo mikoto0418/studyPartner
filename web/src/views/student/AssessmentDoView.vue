@@ -105,7 +105,7 @@ const syncClock = async () => {
 const runResults = ref<Record<string, CodeRunResult | null>>({})
 const runInputs = ref<Record<string, string>>({})
 const runningCode = ref(false)
-const runSources = ref<Record<string, { code: string; language: string }>>({})
+const runSources = ref<Record<string, { code: string; language: string; stdin: string }>>({})
 const mobilePane = ref<'statement' | 'editor'>('statement')
 const splitPercent = ref(43)
 const workspace = ref<HTMLElement | null>(null)
@@ -455,7 +455,7 @@ const currentRunResult = computed<CodeRunResult | null>(
 const currentRunStale = computed(() => {
   const q = currentQuestion.value
   const source = q && runSources.value[q.id]
-  return !!q && !!source && (source.code !== String(answers.value[q.id] || '') || source.language !== (codeLanguages.value[q.id] || q.language || 'python'))
+  return !!q && !!source && (source.code !== String(answers.value[q.id] || '') || source.language !== (codeLanguages.value[q.id] || q.language || 'python') || source.stdin !== (runInputs.value[q.id] || ''))
 })
 
 const runStatusLabel = (status: string) => {
@@ -488,7 +488,7 @@ const runCode = async () => {
       stdin: stdin && stdin.length ? stdin : null
     })
     runResults.value = { ...runResults.value, [q.id]: res.data }
-    runSources.value[q.id] = { code, language }
+    runSources.value[q.id] = { code, language, stdin: stdin || '' }
     if (res.data?.status === 'ok') {
       ElMessage.success('自测运行完成，请看下方输出')
     } else if (res.data?.status === 'judge_error') {
@@ -1057,7 +1057,7 @@ onUnmounted(() => {
                       @input="runInputs = { ...runInputs, [currentQuestion!.id]: ($event.target as HTMLTextAreaElement).value }" />
                   </label>
                   <div v-if="currentRunResult" class="mt-3 space-y-2" aria-live="polite">
-                    <p v-if="currentRunStale" class="rounded bg-amber-50 p-2 text-xs text-amber-700">代码或语言已修改，以下为上一次运行的结果。</p>
+                    <p v-if="currentRunStale" class="rounded bg-amber-50 p-2 text-xs text-amber-700">代码、语言或输入已修改，以下为上一次运行的结果。</p>
                     <p class="text-xs font-semibold" :class="currentRunResult.status === 'ok' ? 'text-emerald-600' : 'text-amber-600'">
                       {{ runStatusLabel(currentRunResult.status) }}
                       <span v-if="currentRunResult.runs_left >= 0" class="ml-1 font-normal text-gray-400">· 剩余自测 {{ currentRunResult.runs_left }} 次</span>

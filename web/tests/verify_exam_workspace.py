@@ -145,7 +145,7 @@ async def main():
         await editor.click()
         await editor.press('End')
         await editor.press_sequentially('x')
-        await expect(page.get_by_text('代码或语言已修改，以下为上一次运行的结果。')).to_be_visible()
+        await expect(page.get_by_text('代码、语言或输入已修改，以下为上一次运行的结果。')).to_be_visible()
         if os.environ.get('WORKSPACE_SCREENSHOT'):
             target = Path(os.environ['WORKSPACE_SCREENSHOT'])
             target.parent.mkdir(parents=True, exist_ok=True)

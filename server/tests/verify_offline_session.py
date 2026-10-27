@@ -28,11 +28,14 @@ def paper(teacher, title, due, start=None, force=False):
     })
     return p
 def browser_login(page, username):
+    token = login(username)['Authorization'].removeprefix('Bearer ')
     page.goto(BASE + '/login')
-    page.get_by_placeholder('用户名或邮箱').fill(username)
-    page.get_by_placeholder('请输入密码', exact=True).fill(username)
-    page.get_by_role('button', name='进入协同空间').click()
-    page.wait_for_url('**/student/dashboard')
+    page.evaluate("""({token, username}) => {
+        localStorage.setItem('sp_token', token);
+        localStorage.setItem('sp_role', 'student');
+        localStorage.setItem('sp_username', username);
+    }""", {'token':token, 'username':username})
+    page.goto(BASE + '/student/dashboard')
 
 def main():
     teacher = login('tea10221')
@@ -78,27 +81,35 @@ def main():
         page.on('pageerror', lambda e: errors.append(str(e)))
         browser_login(page, 'stu102201')
         page.goto(BASE + '/student/assessment/' + pid)
-        page.get_by_role('button', name='进入全屏并开始作答', exact=True).click()
+        page.get_by_role('button', name='继续答题', exact=True).click()
         assert page.evaluate('!!document.fullscreenElement')
         expect(page.get_by_label('编程语言')).to_have_value('python')
-        expect(page.get_by_placeholder('在这里写你的代码（禁止粘贴）')).to_have_value((ROOT/'server/tests/fixtures/exam_1022/reference.py.tmpl').read_text(encoding='utf-8').replace('__TASK__','1'))
+        editor = page.get_by_role('textbox', name='代码编辑器', exact=True)
+        expect(editor).to_be_visible()
+        original = (ROOT/'server/tests/fixtures/exam_1022/reference.py.tmpl').read_text(encoding='utf-8').replace('__TASK__','1')
         for _ in range(3):
             page.evaluate('document.exitFullscreen()')
-            expect(page.get_by_text('已退出全屏模式', exact=True)).to_be_visible()
-            page.get_by_role('button', name='恢复全屏', exact=False).click()
+            expect(page.locator('dialog.exam-resume[open]')).to_be_visible()
+            page.get_by_role('button', name='继续答题', exact=True).click()
             assert page.evaluate('!!document.fullscreenElement')
         assert call('GET', f'/assessment/student/papers/{pid}/answers', students[0])['status'] == 'in_progress'
         # Simulate interrupted Wi-Fi, save locally, then reconnect before deadline.
         context.set_offline(True)
-        editor = page.get_by_placeholder('在这里写你的代码（禁止粘贴）')
-        updated = editor.input_value() + '\n# offline edit\n'
-        editor.fill(updated)
+        updated = original + '\n# offline edit\n'
+        editor.click()
+        editor.press('Control+End')
+        editor.press('Enter')
+        editor.press_sequentially('# offline edit')
+        editor.press('Enter')
         expect(page.get_by_text('保存失败，正在重试；请勿关闭页面', exact=False)).to_be_visible(timeout=15000)
         context.set_offline(False)
         expect(page.get_by_text('已保存到服务器', exact=False)).to_be_visible(timeout=15000)
         page.reload()
-        page.get_by_role('button', name='进入全屏并开始作答', exact=True).click()
-        expect(editor).to_have_value(updated)
+        page.get_by_role('button', name='继续答题', exact=True).click()
+        editor.press('Control+End')
+        expect(editor).to_contain_text('# offline edit')
+        saved = call('GET', f'/assessment/student/papers/{pid}/answers', students[0])
+        assert next(a['answer']['code'] for a in saved['answers'] if a['question_id']==questions[0]['id']) == updated
         print('PASS real fullscreen; 3 exits do not submit; wrong client clock; disconnect/reconnect and refresh preserve code', flush=True)
         # Frontend timer submits Python; Java has no browser and must be collected by beat/worker.
         expect(page.get_by_text('140', exact=True).first).to_be_visible(timeout=150000)

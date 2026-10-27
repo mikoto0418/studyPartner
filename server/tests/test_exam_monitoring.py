@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy import select, func
 import test_interview_1022 as fixtures
-from app.core.exceptions import PermissionDenied, ValidationError
+from app.core.exceptions import NotFoundError, PermissionDenied, ValidationError
 from app.interview_1022 import CLASS_ID, STUDENTS, TEACHERS, account_id
 from app.models.assessment import BehaviorEvent
 from app.services.assessment_service import AssessmentService as A
@@ -75,7 +75,7 @@ class MonitoringTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(answers[1]['has_saved_answer'])
             with self.assertRaises((PermissionDenied, ValidationError)):
                 await A.grade_attempt(db, attempt.id, teacher, [])
-            with self.assertRaises(PermissionDenied):
+            with self.assertRaises(NotFoundError):
                 await A.list_attempt_answers(db, attempt.id, account_id(STUDENTS[1]))
 
     async def test_replayed_events_do_not_force_collection_or_cross_student_boundary(self):

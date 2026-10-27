@@ -256,6 +256,7 @@ class BehaviorBatchReq(BaseModel):
 
 class AttemptAnswerOut(BaseModel):
     has_saved_answer: bool = False
+    attempt_status: Optional[str] = None
     saved_at: Optional[datetime] = None
     question_id: UUID
     order_index: int

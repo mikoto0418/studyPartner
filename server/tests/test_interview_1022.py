@@ -30,6 +30,9 @@ TEST_URL = os.getenv("INTERVIEW_TEST_DATABASE_URL", "")
 @unittest.skipUnless(TEST_URL, "Set INTERVIEW_TEST_DATABASE_URL to a disposable *_test PostgreSQL DB")
 class InterviewTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # Avoid per-await traceback collection during large schema setup on Windows.
+        # The database remains isolated and all assertions/cleanup still run.
+        asyncio.get_running_loop().set_debug(False)
         from sqlalchemy.engine import make_url
         if not (make_url(TEST_URL).database or "").endswith("_test"):
             raise ValueError("Refusing to reset a database whose name does not end in _test")

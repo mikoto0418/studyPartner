@@ -2685,6 +2685,7 @@ class AssessmentService:
                 "max_score": q.score,
                 "answer": a.answer if a else None,
                 "has_saved_answer": a is not None,
+                "attempt_status": attempt.status,
                 "saved_at": a.updated_at if a else None,
                 "score": a.score if a else 0.0,
                 "graded": a.graded if a else False,

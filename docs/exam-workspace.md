@@ -42,3 +42,12 @@ docker compose --env-file .env.interview -f docker-compose.interview.yml up -d -
 ## 开源依赖
 
 本项目保留现有 Apache-2.0 许可。编辑器使用 MIT 许可的 [CodeMirror](https://codemirror.net/)，依赖版本锁定于 `web/package-lock.json`，相关许可见 [third-party-notices.md](third-party-notices.md)。
+
+## 本次验证（2026-10-27）
+
+- `web`：`npm test` 19 项通过，`npm run build` 类型检查与生产构建通过。
+- 在生产构建预览服务上运行 `web/tests/verify_exam_workspace.py` 和 `web/tests/verify_exam_monitoring.py`，两套真实 Chrome 回归通过。覆盖左右与窄屏布局、四语言编辑、切题历史、复制粘贴规则、保存、旧运行结果、交卷期间只读、全屏遮罩与刷新导航限制、交卷解锁、教师代码读取与轮询。
+- 后端在独立 PostgreSQL 测试库运行 `python -m pytest tests -q --tb=short --disable-warnings`：83 项通过，2 项真实 go-judge 集成测试跳过。覆盖重复/并发上报幂等、权限、草稿与空题、定时收卷和全屏自动收卷开关。
+- 本机 Docker 当日无法启动，本轮未重跑真实判题容器与完整离线部署联调。具备运行环境后可设 `RUN_JUDGE_INTEGRATION=1` 复跑，并运行 `server/tests/verify_offline_session.py`。
+
+浏览器回归使用模拟 API，不访问正式数据。后端测试需要 `INTERVIEW_TEST_DATABASE_URL` 指向以 `_test` 结尾的独立数据库，测试会重建该库内的数据表。不得指向正式考试数据库。
